@@ -1,0 +1,14 @@
+Hi {{admin_name}},
+
+We couldn’t process your recent payment for your Poolyn organization.
+
+Your network is still active, but we’ve started a short grace period to give you time to update your payment details.
+
+To avoid any interruption for your team, please update your billing information as soon as possible.
+
+Your network will remain fully active during this period.
+
+Update payment details:
+{{billing_link}}
+
+— Poolyn Team

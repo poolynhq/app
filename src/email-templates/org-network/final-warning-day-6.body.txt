@@ -1,0 +1,17 @@
+Hi {{admin_name}},
+
+This is your final reminder.
+
+Your organization’s Poolyn network will be paused within 24 hours due to an unresolved payment.
+
+Once paused:
+
+* your team will no longer have access to your private network
+* members will revert to standard explorer mode
+
+To keep your network active:
+
+Update payment details now:
+{{billing_link}}
+
+— Poolyn Team

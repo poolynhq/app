@@ -1,0 +1,12 @@
+Hi {{admin_name}},
+
+Your organization’s Poolyn network has been paused due to non-payment.
+
+Your team members can still use Poolyn as individuals, but your private network is no longer active.
+
+You can reactivate your network at any time by updating your payment details:
+
+Reactivate network:
+{{billing_link}}
+
+— Poolyn Team

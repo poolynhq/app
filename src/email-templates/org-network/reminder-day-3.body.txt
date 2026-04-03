@@ -1,0 +1,12 @@
+Hi {{admin_name}},
+
+Just a quick reminder that your organization’s payment is still pending.
+
+Your team can continue using Poolyn for now, but your network will be paused if this isn’t resolved within the next few days.
+
+To keep your network active and avoid disruptions:
+
+Update payment details:
+{{billing_link}}
+
+— Poolyn Team

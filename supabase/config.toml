@@ -1,0 +1,34 @@
+# =============================================================================
+# Supabase CLI configuration (optional for this repo)
+# =============================================================================
+#
+# When do you need this?
+# - Local development: `supabase start` / `supabase functions serve` use
+#   config.toml if present.
+# - Hosted Supabase: the dashboard manages your project; this file does NOT
+#   replace dashboard settings. Edge Function deploy still reads function-level
+#   config from here when you run `supabase functions deploy`.
+#
+# If you only use the hosted dashboard and never run the Supabase CLI locally,
+# you can delete this file. The Edge Function still works when deployed; you
+# would set secrets (SERVICE_ROLE_KEY, CRON_SECRET) in the dashboard instead.
+#
+# =============================================================================
+# process-org-grace-expiry
+# =============================================================================
+# verify_jwt = false allows scheduled/cron invocations without an end-user JWT.
+# Protect the URL with CRON_SECRET in the function (see index.ts) or restrict
+# invocation to Supabase’s scheduled triggers only.
+#
+# Doc: https://supabase.com/docs/guides/functions/function-configuration
+
+[functions.process-org-grace-expiry]
+verify_jwt = false
+
+# Passenger JWT required; uses anon + user Authorization to run poolyn_prepare.
+[functions.create-ride-payment-intent]
+verify_jwt = true
+
+# Stripe signs the body; no Supabase JWT.
+[functions.stripe-webhook]
+verify_jwt = false

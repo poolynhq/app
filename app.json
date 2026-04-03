@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "Poolyn",
+    "slug": "poolyn",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "poolyn",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B8457"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.poolyn.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Poolyn needs your location to find carpool matches near your route.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Poolyn uses your location during active rides so passengers can see your ETA.",
+        "NSCameraUsageDescription": "Poolyn uses the camera so you can take a photo of your vehicle for verification.",
+        "NSPhotoLibraryUsageDescription": "Poolyn accesses your photos so you can upload a vehicle image."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B8457"
+      },
+      "package": "com.poolyn.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-location",
+      "expo-font",
+      "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Poolyn accesses your photos so you can upload a vehicle image.",
+          "cameraPermission": "Poolyn uses the camera so you can take a photo of your vehicle for verification."
+        }
+      ]
+    ]
+  }
+}
