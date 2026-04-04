@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
 
+const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
 interface DiscoverMapLayersProps {
   demandGeoJson: GeoJSON.FeatureCollection;
   supplyGeoJson: GeoJSON.FeatureCollection;
   routeGeoJson: GeoJSON.FeatureCollection;
+  viewerGeoJson?: GeoJSON.FeatureCollection;
   title?: string;
   mapHeight?: number;
   /** [lng, lat] when there is no data to fit */
@@ -76,6 +79,7 @@ export function DiscoverMapLayers({
   demandGeoJson,
   supplyGeoJson,
   routeGeoJson,
+  viewerGeoJson = EMPTY_FC,
   title = "Commute map",
   mapHeight = 240,
   fallbackCenter = DEFAULT_CENTER,
@@ -86,10 +90,11 @@ export function DiscoverMapLayers({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  const hasData =
+  const hasPeerData =
     demandGeoJson.features.length > 0 ||
     supplyGeoJson.features.length > 0 ||
     routeGeoJson.features.length > 0;
+  const hasViewerPins = viewerGeoJson.features.length > 0;
 
   // Initialise map once on mount
   useEffect(() => {
@@ -129,15 +134,16 @@ export function DiscoverMapLayers({
           type: "heatmap",
           source: "demand",
           paint: {
-            "heatmap-intensity": 0.9,
-            "heatmap-radius": 25,
-            "heatmap-opacity": 0.65,
+            "heatmap-intensity": 1,
+            "heatmap-radius": 30,
+            "heatmap-opacity": 0.72,
             "heatmap-color": [
               "interpolate", ["linear"], ["heatmap-density"],
-              0, "rgba(33,102,172,0)",
-              0.3, "rgba(103,169,207,0.8)",
-              0.6, "rgba(253,219,199,1)",
-              1, "rgba(178,24,43,1)",
+              0, "rgba(255,247,237,0)",
+              0.15, "rgba(254,215,170,0.45)",
+              0.4, "rgba(251,146,60,0.75)",
+              0.7, "rgba(234,88,12,0.88)",
+              1, "rgba(185,28,28,0.95)",
             ],
           },
         });
@@ -179,11 +185,67 @@ export function DiscoverMapLayers({
           type: "line",
           source: "routes",
           layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": "#3B82F6", "line-width": 3, "line-opacity": 0.8 },
+          paint: { "line-color": "#2563EB", "line-width": 4, "line-opacity": 0.82 },
         });
 
-        const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson]);
-        if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 600 });
+        map.addSource("viewer", { type: "geojson", data: viewerGeoJson });
+        map.addLayer({
+          id: "viewer-home",
+          type: "circle",
+          source: "viewer",
+          filter: ["==", ["get", "kind"], "home"],
+          paint: {
+            "circle-radius": 11,
+            "circle-color": "#EA580C",
+            "circle-opacity": 0.95,
+            "circle-stroke-width": 3,
+            "circle-stroke-color": "#FFFFFF",
+          },
+        });
+        map.addLayer({
+          id: "viewer-work",
+          type: "circle",
+          source: "viewer",
+          filter: ["==", ["get", "kind"], "work"],
+          paint: {
+            "circle-radius": 10,
+            "circle-color": "#1D4ED8",
+            "circle-opacity": 0.95,
+            "circle-stroke-width": 3,
+            "circle-stroke-color": "#FFFFFF",
+          },
+        });
+        map.addLayer({
+          id: "viewer-home-label",
+          type: "symbol",
+          source: "viewer",
+          filter: ["==", ["get", "kind"], "home"],
+          layout: {
+            "text-field": "Home",
+            "text-size": 11,
+            "text-offset": [0, -1.8],
+            "text-anchor": "bottom",
+            "text-allow-overlap": true,
+          },
+          paint: { "text-color": "#9A3412", "text-halo-color": "#FFFFFF", "text-halo-width": 1.5 },
+        });
+        map.addLayer({
+          id: "viewer-work-label",
+          type: "symbol",
+          source: "viewer",
+          filter: ["==", ["get", "kind"], "work"],
+          layout: {
+            "text-field": "Work",
+            "text-size": 11,
+            "text-offset": [0, -1.8],
+            "text-anchor": "bottom",
+            "text-allow-overlap": true,
+          },
+          paint: { "text-color": "#1E40AF", "text-halo-color": "#FFFFFF", "text-halo-width": 1.5 },
+        });
+
+        const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson]);
+        if (bounds) map.fitBounds(bounds, { padding: 56, maxZoom: 13, duration: 600 });
         else map.flyTo({ center: fallbackCenter, zoom: 11, duration: 0 });
 
         if (mounted) setLoading(false);
@@ -220,13 +282,13 @@ export function DiscoverMapLayers({
     const routeSrc = map.getSource("routes");
     if (routeSrc) routeSrc.setData(routeGeoJson);
 
-    if (hasData) {
-      const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson]);
-      if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 400 });
-    } else {
-      map.flyTo({ center: fallbackCenter, zoom: 11, duration: 400 });
-    }
-  }, [demandGeoJson, supplyGeoJson, routeGeoJson, hasData, loading, fallbackCenter]);
+    const viewerSrc = map.getSource("viewer");
+    if (viewerSrc) viewerSrc.setData(viewerGeoJson);
+
+    const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson]);
+    if (bounds) map.fitBounds(bounds, { padding: 56, maxZoom: 13, duration: 400 });
+    else map.flyTo({ center: fallbackCenter, zoom: 11, duration: 400 });
+  }, [demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson, loading, fallbackCenter]);
 
   if (error) {
     return (
@@ -254,10 +316,19 @@ export function DiscoverMapLayers({
         </View>
       )}
 
-      {!loading && !hasData && (
+      {!loading && !hasPeerData && !hasViewerPins && (
         <View style={styles.emptyOverlay}>
           <Text style={styles.emptyText}>
-            Route density will appear as commuters save their schedules and post rides.
+            No commute pins yet. Add home and work under Profile → Commute. Orange heat = others’
+            demand; green = drivers; blue lines = posted ride routes.
+          </Text>
+        </View>
+      )}
+      {!loading && !hasPeerData && hasViewerPins && (
+        <View style={styles.emptyOverlay}>
+          <Text style={styles.emptyText}>
+            Your home (orange) and work (blue) are shown. Heat fills in as others save commutes or
+            post rides in this scope.
           </Text>
         </View>
       )}

@@ -6,10 +6,14 @@ import { useMemo } from "react";
 import { View, Text, StyleSheet, Platform, ActivityIndicator } from "react-native";
 import { WebView } from "react-native-webview";
 
+const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
 interface DiscoverMapLayersProps {
   demandGeoJson: GeoJSON.FeatureCollection;
   supplyGeoJson: GeoJSON.FeatureCollection;
   routeGeoJson: GeoJSON.FeatureCollection;
+  /** Your saved home / work (the API intentionally excludes you from aggregate layers). */
+  viewerGeoJson?: GeoJSON.FeatureCollection;
   title?: string;
   /** Map viewport height in px (default 280). */
   mapHeight?: number;
@@ -29,11 +33,13 @@ function buildMapHtml(
   demand: GeoJSON.FeatureCollection,
   supply: GeoJSON.FeatureCollection,
   routes: GeoJSON.FeatureCollection,
+  viewer: GeoJSON.FeatureCollection,
   fallbackCenter: [number, number]
 ): string {
   const demandJson = JSON.stringify(demand);
   const supplyJson = JSON.stringify(supply);
   const routeJson = JSON.stringify(routes);
+  const viewerJson = JSON.stringify(viewer);
   const fb = JSON.stringify(fallbackCenter);
 
   return `<!DOCTYPE html>
@@ -56,11 +62,12 @@ function buildMapHtml(
 </head>
 <body>
 <div id="map"></div>
-<div id="empty">No route or pickup signals in this view yet. Complete your commute in Profile, or widen to Nearby commuters. The map is centered on your saved home area when available.</div>
+<div id="empty"></div>
 <script>
 var DEMAND = ${demandJson};
 var SUPPLY = ${supplyJson};
 var ROUTES = ${routeJson};
+var VIEWER = ${viewerJson};
 var FALLBACK = ${fb};
 
 function extendPoint(bounds, c) {
@@ -89,15 +96,16 @@ map.on('load', function () {
   map.addLayer({
     id: 'demand-heat', type: 'heatmap', source: 'demand',
     paint: {
-      'heatmap-intensity': 0.9,
-      'heatmap-radius': 28,
-      'heatmap-opacity': 0.68,
+      'heatmap-intensity': 1,
+      'heatmap-radius': 30,
+      'heatmap-opacity': 0.72,
       'heatmap-color': [
         'interpolate', ['linear'], ['heatmap-density'],
-        0,   'rgba(33,102,172,0)',
-        0.3, 'rgba(103,169,207,0.8)',
-        0.6, 'rgba(253,219,199,1)',
-        1,   'rgba(178,24,43,1)'
+        0,   'rgba(255,247,237,0)',
+        0.15,'rgba(254,215,170,0.45)',
+        0.4, 'rgba(251,146,60,0.75)',
+        0.7, 'rgba(234,88,12,0.88)',
+        1,   'rgba(185,28,28,0.95)'
       ]
     }
   });
@@ -130,21 +138,77 @@ map.on('load', function () {
     paint: { 'line-color': '#2563EB', 'line-width': 4, 'line-opacity': 0.82 }
   });
 
+  map.addSource('viewer', { type: 'geojson', data: VIEWER });
+  map.addLayer({
+    id: 'viewer-home', type: 'circle', source: 'viewer',
+    filter: ['==', ['get', 'kind'], 'home'],
+    paint: {
+      'circle-radius': 11,
+      'circle-color': '#EA580C',
+      'circle-opacity': 0.95,
+      'circle-stroke-width': 3,
+      'circle-stroke-color': '#FFFFFF'
+    }
+  });
+  map.addLayer({
+    id: 'viewer-work', type: 'circle', source: 'viewer',
+    filter: ['==', ['get', 'kind'], 'work'],
+    paint: {
+      'circle-radius': 10,
+      'circle-color': '#1D4ED8',
+      'circle-opacity': 0.95,
+      'circle-stroke-width': 3,
+      'circle-stroke-color': '#FFFFFF'
+    }
+  });
+  map.addLayer({
+    id: 'viewer-home-label', type: 'symbol', source: 'viewer',
+    filter: ['==', ['get', 'kind'], 'home'],
+    layout: {
+      'text-field': 'Home',
+      'text-size': 11,
+      'text-offset': [0, -1.8],
+      'text-anchor': 'bottom',
+      'text-allow-overlap': true
+    },
+    paint: { 'text-color': '#9A3412', 'text-halo-color': '#FFFFFF', 'text-halo-width': 1.5 }
+  });
+  map.addLayer({
+    id: 'viewer-work-label', type: 'symbol', source: 'viewer',
+    filter: ['==', ['get', 'kind'], 'work'],
+    layout: {
+      'text-field': 'Work',
+      'text-size': 11,
+      'text-offset': [0, -1.8],
+      'text-anchor': 'bottom',
+      'text-allow-overlap': true
+    },
+    paint: { 'text-color': '#1E40AF', 'text-halo-color': '#FFFFFF', 'text-halo-width': 1.5 }
+  });
+
   var bounds = new maplibregl.LngLatBounds();
-  [DEMAND, SUPPLY].forEach(function (fc) {
+  [DEMAND, SUPPLY, VIEWER].forEach(function (fc) {
     fc.features.forEach(function (f) { extendFromGeometry(bounds, f.geometry); });
   });
   ROUTES.features.forEach(function (f) { extendFromGeometry(bounds, f.geometry); });
 
   if (!bounds.isEmpty()) {
-    map.fitBounds(bounds, { padding: 52, maxZoom: 13, duration: 650 });
+    map.fitBounds(bounds, { padding: 56, maxZoom: 13, duration: 650 });
   } else {
     map.setCenter(FALLBACK);
     map.setZoom(11);
   }
 
-  var hasData = DEMAND.features.length + SUPPLY.features.length + ROUTES.features.length > 0;
-  if (!hasData) document.getElementById('empty').style.display = 'block';
+  var hasPeerData = DEMAND.features.length + SUPPLY.features.length + ROUTES.features.length > 0;
+  var hasViewerPins = VIEWER.features.length > 0;
+  var emptyEl = document.getElementById('empty');
+  if (!hasPeerData && !hasViewerPins) {
+    emptyEl.textContent = 'No commute pins yet. Add home & work under Profile → Commute, or switch to Nearby commuters. Orange heat = others’ demand; green = drivers; blue lines = posted ride routes.';
+    emptyEl.style.display = 'block';
+  } else if (!hasPeerData && hasViewerPins) {
+    emptyEl.textContent = 'Your home (orange ring) and work (blue) are shown. Orange heat will fill in as colleagues save commutes, post rides, or requests in this scope.';
+    emptyEl.style.display = 'block';
+  }
 });
 </script>
 </body>
@@ -155,17 +219,25 @@ export function DiscoverMapLayers({
   demandGeoJson,
   supplyGeoJson,
   routeGeoJson,
+  viewerGeoJson = EMPTY_FC,
   title = "Commute map",
   mapHeight = 280,
   fallbackCenter = DEFAULT_CENTER,
   remoteLoading = false,
 }: DiscoverMapLayersProps) {
   const html = useMemo(
-    () => buildMapHtml(demandGeoJson, supplyGeoJson, routeGeoJson, fallbackCenter),
-    [demandGeoJson, supplyGeoJson, routeGeoJson, fallbackCenter]
+    () =>
+      buildMapHtml(
+        demandGeoJson,
+        supplyGeoJson,
+        routeGeoJson,
+        viewerGeoJson,
+        fallbackCenter
+      ),
+    [demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson, fallbackCenter]
   );
 
-  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]}`;
+  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]},${viewerGeoJson.features.length}`;
 
   return (
     <View style={styles.container}>
@@ -204,8 +276,16 @@ export function DiscoverMapLayers({
       </View>
       <View style={styles.legend}>
         <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: "#B91C1C" }]} />
-          <Text style={styles.legendText}>Rider demand</Text>
+          <View style={[styles.legendDot, { backgroundColor: "#EA580C" }]} />
+          <Text style={styles.legendText}>Your home</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: "#1D4ED8" }]} />
+          <Text style={styles.legendText}>Your work</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendSwatch, { backgroundColor: "#FDBA74" }]} />
+          <Text style={styles.legendText}>Others’ demand</Text>
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendDot, { backgroundColor: "#0B8457" }]} />
@@ -213,7 +293,7 @@ export function DiscoverMapLayers({
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendLine]} />
-          <Text style={styles.legendText}>Routes</Text>
+          <Text style={styles.legendText}>Ride routes</Text>
         </View>
       </View>
       {Platform.OS === "android" ? (
@@ -297,6 +377,11 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
+  },
+  legendSwatch: {
+    width: 12,
+    height: 8,
+    borderRadius: 3,
   },
   legendLine: {
     width: 14,

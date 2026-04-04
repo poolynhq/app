@@ -29,6 +29,7 @@ import { canViewerActAsDriver } from "@/lib/commuteMatching";
 import { useDiscoverMapLayers } from "@/hooks/useDiscoverMapLayers";
 import { DiscoverMapLayers } from "@/components/maps/DiscoverMapLayers";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
+import { buildViewerCommuteMapFeatures } from "@/lib/viewerCommuteMapMarkers";
 import {
   Colors,
   Spacing,
@@ -103,6 +104,30 @@ export default function Discover() {
     const work = parseGeoPoint(profile.work_location as unknown);
     if (work) return [work.lng, work.lat];
     return [138.6, -34.85];
+  }, [profile]);
+
+  const viewerMapFeatures = useMemo(
+    () => buildViewerCommuteMapFeatures(profile ?? null),
+    [profile]
+  );
+
+  const mapLensHint = useMemo(() => {
+    if (!profile) return "";
+    const mode = profile.active_mode;
+    const asDriver =
+      profile.role === "driver" || (profile.role === "both" && mode === "driver");
+    const asPassenger =
+      profile.role === "passenger" || (profile.role === "both" && mode === "passenger");
+    if (asDriver && !asPassenger) {
+      return "Driving lens: green dots are other drivers’ start points; blue lines are their posted routes. Orange heat is passenger-side demand (homes + requests)—useful when you’re offering seats.";
+    }
+    if (asPassenger && !asDriver) {
+      return "Riding lens: warm heat shows where others need pickups; green is drivers on record. Your orange/blue pins are your own commute—everyone else is aggregated without you in the counts.";
+    }
+    if (profile.role === "both" && mode === null) {
+      return "Pick Driving or Riding in Home (flex mode) to tailor this hint. Your home and work always show as orange and blue pins.";
+    }
+    return "Your home (orange) and work (blue) are always shown. Other layers come from colleagues’ saved commutes, pending requests, and scheduled rides in your current scope.";
   }, [profile]);
 
   const filteredPassenger = useMemo(
@@ -284,10 +309,12 @@ export default function Discover() {
               <Text style={styles.mapErrorText}>{mapLayersError}</Text>
             </View>
           ) : null}
+          {mapLensHint ? <Text style={styles.mapLensHint}>{mapLensHint}</Text> : null}
           <DiscoverMapLayers
             demandGeoJson={demandPoints}
             supplyGeoJson={supplyPoints}
             routeGeoJson={routeLines}
+            viewerGeoJson={viewerMapFeatures}
             title="Network activity"
             mapHeight={Platform.OS === "web" ? 320 : 340}
             fallbackCenter={mapFallbackCenter}
@@ -295,8 +322,9 @@ export default function Discover() {
           />
           {!hasMapData && !mapLayersLoading && !mapLayersError ? (
             <Text style={styles.mapFootnote}>
-              No plotted commuters in this scope yet. Save home &amp; work routes under Profile →
-              Commute, or switch to Nearby commuters.
+              The server only plots other people’s commutes, requests, and rides—so heat can stay
+              light until your network has data. Your pins still show if home/work are saved. Try
+              Nearby commuters or ask teammates to finish Profile → Commute.
             </Text>
           ) : null}
         </View>
@@ -638,6 +666,12 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: Colors.error,
     lineHeight: 20,
+  },
+  mapLensHint: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+    marginBottom: Spacing.sm,
   },
   mapFootnote: {
     fontSize: FontSize.xs,

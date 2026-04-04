@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase";
 import { useDiscoverMapLayers } from "@/hooks/useDiscoverMapLayers";
 import { DiscoverMapLayers } from "@/components/maps/DiscoverMapLayers";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
+import { buildViewerCommuteMapFeatures } from "@/lib/viewerCommuteMapMarkers";
 import { Organisation } from "@/types/database";
 import {
   Colors,
@@ -246,6 +247,11 @@ export default function Dashboard() {
     if (work) return [work.lng, work.lat];
     return [138.6, -34.85];
   }, [profile]);
+
+  const homeViewerMapFeatures = useMemo(
+    () => buildViewerCommuteMapFeatures(profile ?? null),
+    [profile]
+  );
 
   useEffect(() => {
     async function loadOrgContext() {
@@ -714,6 +720,7 @@ export default function Dashboard() {
             demandGeoJson={demandPoints}
             supplyGeoJson={supplyPoints}
             routeGeoJson={routeLines}
+            viewerGeoJson={homeViewerMapFeatures}
             title="Live network map"
             mapHeight={268}
             fallbackCenter={homeMapFallbackCenter}
