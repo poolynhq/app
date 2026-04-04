@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Share, Image } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -95,8 +95,8 @@ function ProfileCompletion({
 const pStyles = StyleSheet.create({
   card: {
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.base,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
     borderWidth: 1,
     borderColor: Colors.border,
     marginBottom: Spacing.xl,
@@ -163,6 +163,38 @@ const pStyles = StyleSheet.create({
     color: Colors.primary,
   },
 });
+
+const ROUTINE_ACCENT = "#0D9488";
+const ADHOC_ACCENT = "#7C3AED";
+
+function PillarSection({
+  variant,
+  eyebrow,
+  title,
+  subtitle,
+  children,
+}: {
+  variant: "routine" | "adhoc";
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  const accent = variant === "routine" ? ROUTINE_ACCENT : ADHOC_ACCENT;
+  return (
+    <View
+      style={[styles.pillarShell, variant === "routine" ? styles.pillarShellRoutine : styles.pillarShellAdhoc]}
+  >
+      <View style={[styles.pillarAccentBar, { backgroundColor: accent }]} />
+      <View style={styles.pillarContent}>
+        <Text style={[styles.pillarEyebrow, { color: accent }]}>{eyebrow}</Text>
+        <Text style={styles.pillarTitle}>{title}</Text>
+        <Text style={styles.pillarSubtitle}>{subtitle}</Text>
+        <View style={styles.pillarChildren}>{children}</View>
+      </View>
+    </View>
+  );
+}
 
 export default function Dashboard() {
   const router = useRouter();
@@ -327,7 +359,13 @@ export default function Dashboard() {
                 {firstName}
               </Text>
             </View>
-            <TouchableOpacity style={styles.bellBtnHero} activeOpacity={0.75}>
+            <TouchableOpacity
+              style={styles.bellBtnHero}
+              activeOpacity={0.75}
+              onPress={() => router.push("/(tabs)/profile/activity")}
+              accessibilityRole="button"
+              accessibilityLabel="Activity and messages"
+            >
               <Ionicons name="notifications-outline" size={24} color={Colors.text} />
             </TouchableOpacity>
           </View>
@@ -420,237 +458,337 @@ export default function Dashboard() {
           )}
         </View>
 
-        {/* Role badge + flexible mode toggle */}
-        <View style={styles.roleWrap}>
-          <View style={[styles.roleBadge, { backgroundColor: rolePalette.light, borderColor: rolePalette.border }]}>
-            <Ionicons
-              name={rolePalette.icon}
-              size={16}
-              color={rolePalette.primary}
-            />
-            <Text style={[styles.roleBadgeText, { color: rolePalette.text }]}>{roleBadgeLabel}</Text>
-          </View>
-          <View style={styles.visibilityRow}>
-            <TouchableOpacity
-              style={[
-                styles.visibilityChip,
-                profile?.visibility_mode !== "nearby" && styles.visibilityChipActive,
-              ]}
-              onPress={() => setVisibilityMode("network")}
-            >
-              <Text
-                style={[
-                  styles.visibilityText,
-                  profile?.visibility_mode !== "nearby" && styles.visibilityTextActive,
-                ]}
-              >
-                Your Network
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.visibilityChip,
-                profile?.visibility_mode === "nearby" && styles.visibilityChipActive,
-              ]}
-              onPress={() => setVisibilityMode("nearby")}
-            >
-              <Text
-                style={[
-                  styles.visibilityText,
-                  profile?.visibility_mode === "nearby" && styles.visibilityTextActive,
-                ]}
-              >
-                Nearby Commuters
-              </Text>
-            </TouchableOpacity>
+        {/* Snapshot stats */}
+        <View style={styles.statsSection}>
+          <Text style={styles.statsSectionLabel}>At a glance</Text>
+          <View style={styles.statsGrid}>
+            <View style={styles.statCard}>
+              <View style={styles.statInlineRow}>
+                <View style={[styles.statIcon, { backgroundColor: "#EFF6FF" }]}>
+                  <Ionicons name="star" size={20} color={Colors.info} />
+                </View>
+                <Text style={styles.statValue}>{profile?.points_balance ?? 0}</Text>
+              </View>
+              <Text style={styles.statLabel}>Points</Text>
+            </View>
+            <View style={styles.statCard}>
+              <View style={styles.statInlineRow}>
+                <View style={[styles.statIcon, { backgroundColor: Colors.accentLight }]}>
+                  <Ionicons name="flash" size={20} color={Colors.accent} />
+                </View>
+                <Text style={styles.statValue}>
+                  {profile?.flex_credits_balance ?? 3}
+                </Text>
+              </View>
+              <Text style={styles.statLabel}>Flex credits</Text>
+            </View>
+            <View style={styles.statCard}>
+              <View style={styles.statInlineRow}>
+                <View style={[styles.statIcon, { backgroundColor: Colors.primaryLight }]}>
+                  <Ionicons name="leaf" size={20} color={Colors.primary} />
+                </View>
+                <Text style={styles.statValue}>0</Text>
+              </View>
+              <Text style={styles.statLabel}>CO₂ saved (kg)</Text>
+            </View>
+            <View style={styles.statCard}>
+              <View style={styles.statInlineRow}>
+                <View style={[styles.statIcon, { backgroundColor: "#F3E8FF" }]}>
+                  <Ionicons name="car" size={20} color="#8B5CF6" />
+                </View>
+                <Text style={styles.statValue}>0</Text>
+              </View>
+              <Text style={styles.statLabel}>Total rides</Text>
+            </View>
           </View>
         </View>
 
-        {/* Stats grid — value inline with icon, label below */}
-        <View style={styles.statsGrid}>
-          <View style={styles.statCard}>
-            <View style={styles.statInlineRow}>
-              <View style={[styles.statIcon, { backgroundColor: "#EFF6FF" }]}>
-                <Ionicons name="star" size={20} color={Colors.info} />
-              </View>
-              <Text style={styles.statValue}>{profile?.points_balance ?? 0}</Text>
-            </View>
-            <Text style={styles.statLabel}>Points</Text>
-          </View>
-          <View style={styles.statCard}>
-            <View style={styles.statInlineRow}>
-              <View style={[styles.statIcon, { backgroundColor: Colors.accentLight }]}>
-                <Ionicons name="flash" size={20} color={Colors.accent} />
-              </View>
-              <Text style={styles.statValue}>
-                {profile?.flex_credits_balance ?? 3}
+        {/* ── Routine Poolyn: recurring commute, map, same-day matching ── */}
+        <PillarSection
+          variant="routine"
+          eyebrow="ROUTINE POOLYN"
+          title="Your regular commute"
+          subtitle="Home–work rhythms, network visibility, and demand around routes you use often. Use Discover to post pickup requests and confirm matches."
+        >
+          <View style={styles.roleWrap}>
+            <View
+              style={[
+                styles.roleBadge,
+                { backgroundColor: rolePalette.light, borderColor: rolePalette.border },
+              ]}
+            >
+              <Ionicons name={rolePalette.icon} size={16} color={rolePalette.primary} />
+              <Text style={[styles.roleBadgeText, { color: rolePalette.text }]}>
+                {roleBadgeLabel}
               </Text>
             </View>
-            <Text style={styles.statLabel}>Flex Credits</Text>
-          </View>
-          <View style={styles.statCard}>
-            <View style={styles.statInlineRow}>
-              <View style={[styles.statIcon, { backgroundColor: Colors.primaryLight }]}>
-                <Ionicons name="leaf" size={20} color={Colors.primary} />
-              </View>
-              <Text style={styles.statValue}>0</Text>
-            </View>
-            <Text style={styles.statLabel}>CO₂ saved (kg)</Text>
-          </View>
-          <View style={styles.statCard}>
-            <View style={styles.statInlineRow}>
-              <View style={[styles.statIcon, { backgroundColor: "#F3E8FF" }]}>
-                <Ionicons name="car" size={20} color="#8B5CF6" />
-              </View>
-              <Text style={styles.statValue}>0</Text>
-            </View>
-            <Text style={styles.statLabel}>Total rides</Text>
-          </View>
-        </View>
-
-        {/* Flexible mode toggle — only for 'both' role users */}
-        {isFlexible && (
-          <View style={[styles.modeToggleCard, { borderColor: rolePalette.border, backgroundColor: rolePalette.light }]}>
-            <View style={styles.modeToggleHeader}>
-              <Ionicons name="swap-horizontal" size={18} color={rolePalette.primary} />
-              <Text style={[styles.modeToggleTitle, { color: rolePalette.text }]}>What are you doing today?</Text>
-            </View>
-            <View style={styles.modeToggleRow}>
+            <View style={styles.visibilityRow}>
               <TouchableOpacity
                 style={[
-                  styles.modeBtn,
-                  {
-                    backgroundColor: activeMode === "driver"
-                      ? RoleTheme.driver.primary
-                      : Colors.surface,
-                    borderColor: activeMode === "driver"
-                      ? RoleTheme.driver.primary
-                      : Colors.border,
-                  },
+                  styles.visibilityChip,
+                  profile?.visibility_mode !== "nearby" && styles.visibilityChipActive,
                 ]}
-                onPress={() => toggleMode("driver")}
-                activeOpacity={0.8}
+                onPress={() => setVisibilityMode("network")}
               >
-                <Ionicons
-                  name="car-sport-outline"
-                  size={18}
-                  color={activeMode === "driver" ? "#FFFFFF" : Colors.textSecondary}
-                />
                 <Text
                   style={[
-                    styles.modeBtnText,
-                    { color: activeMode === "driver" ? "#FFFFFF" : Colors.textSecondary },
+                    styles.visibilityText,
+                    profile?.visibility_mode !== "nearby" && styles.visibilityTextActive,
                   ]}
                 >
-                  Driving
+                  Your network
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
-                  styles.modeBtn,
-                  {
-                    backgroundColor: activeMode === "passenger"
-                      ? RoleTheme.passenger.primary
-                      : Colors.surface,
-                    borderColor: activeMode === "passenger"
-                      ? RoleTheme.passenger.primary
-                      : Colors.border,
-                  },
+                  styles.visibilityChip,
+                  profile?.visibility_mode === "nearby" && styles.visibilityChipActive,
                 ]}
-                onPress={() => toggleMode("passenger")}
-                activeOpacity={0.8}
+                onPress={() => setVisibilityMode("nearby")}
               >
-                <Ionicons
-                  name="people-outline"
-                  size={18}
-                  color={activeMode === "passenger" ? "#FFFFFF" : Colors.textSecondary}
-                />
                 <Text
                   style={[
-                    styles.modeBtnText,
-                    { color: activeMode === "passenger" ? "#FFFFFF" : Colors.textSecondary },
+                    styles.visibilityText,
+                    profile?.visibility_mode === "nearby" && styles.visibilityTextActive,
                   ]}
                 >
-                  Riding
+                  Nearby commuters
                 </Text>
               </TouchableOpacity>
             </View>
-            {!activeMode && (
-              <Text style={styles.modeNeutralHint}>
-                Tap to declare your mode. Your commute matches will update instantly.
-              </Text>
-            )}
           </View>
-        )}
 
-        {/* Quick actions — hidden for Flexible until Driving or Riding is chosen */}
-        {showQuickActions && (
-          <>
-            <Text style={styles.sectionTitle}>Quick actions</Text>
-            <View style={styles.quickActions}>
-              {quickDriver && (
+          {isFlexible && (
+            <View
+              style={[
+                styles.modeToggleCard,
+                { borderColor: rolePalette.border, backgroundColor: rolePalette.light },
+              ]}
+            >
+              <View style={styles.modeToggleHeader}>
+                <Ionicons name="swap-horizontal" size={18} color={rolePalette.primary} />
+                <Text style={[styles.modeToggleTitle, { color: rolePalette.text }]}>
+                  Today I&apos;m…
+                </Text>
+              </View>
+              <View style={styles.modeToggleRow}>
                 <TouchableOpacity
-                  style={styles.actionCard}
-                  activeOpacity={0.7}
-                  onPress={() => router.push("/(tabs)/rides")}
+                  style={[
+                    styles.modeBtn,
+                    {
+                      backgroundColor:
+                        activeMode === "driver" ? RoleTheme.driver.primary : Colors.surface,
+                      borderColor:
+                        activeMode === "driver" ? RoleTheme.driver.primary : Colors.border,
+                    },
+                  ]}
+                  onPress={() => toggleMode("driver")}
+                  activeOpacity={0.8}
                 >
-                  <View style={styles.actionTitleRow}>
-                    <View style={[styles.actionIcon, { backgroundColor: Colors.primaryLight }]}>
-                      <Ionicons name="add-circle" size={24} color={Colors.primary} />
-                    </View>
-                    <Text style={styles.actionTitle}>Offer a ride</Text>
-                  </View>
-                  <Text style={styles.actionDesc}>
-                    Share your commute and earn points
+                  <Ionicons
+                    name="car-sport-outline"
+                    size={18}
+                    color={activeMode === "driver" ? "#FFFFFF" : Colors.textSecondary}
+                  />
+                  <Text
+                    style={[
+                      styles.modeBtnText,
+                      { color: activeMode === "driver" ? "#FFFFFF" : Colors.textSecondary },
+                    ]}
+                  >
+                    Driving
                   </Text>
                 </TouchableOpacity>
-              )}
-              {quickPassenger && (
                 <TouchableOpacity
-                  style={styles.actionCard}
-                  activeOpacity={0.7}
-                  onPress={() => router.push("/(tabs)/discover")}
+                  style={[
+                    styles.modeBtn,
+                    {
+                      backgroundColor:
+                        activeMode === "passenger"
+                          ? RoleTheme.passenger.primary
+                          : Colors.surface,
+                      borderColor:
+                        activeMode === "passenger"
+                          ? RoleTheme.passenger.primary
+                          : Colors.border,
+                    },
+                  ]}
+                  onPress={() => toggleMode("passenger")}
+                  activeOpacity={0.8}
                 >
-                  <View style={styles.actionTitleRow}>
-                    <View style={[styles.actionIcon, { backgroundColor: "#EFF6FF" }]}>
-                      <Ionicons name="search" size={24} color={Colors.info} />
-                    </View>
-                    <Text style={styles.actionTitle}>Find a ride</Text>
-                  </View>
-                  <Text style={styles.actionDesc}>
-                    Match with a colleague nearby
+                  <Ionicons
+                    name="people-outline"
+                    size={18}
+                    color={activeMode === "passenger" ? "#FFFFFF" : Colors.textSecondary}
+                  />
+                  <Text
+                    style={[
+                      styles.modeBtnText,
+                      { color: activeMode === "passenger" ? "#FFFFFF" : Colors.textSecondary },
+                    ]}
+                  >
+                    Riding
                   </Text>
                 </TouchableOpacity>
-              )}
-              {showPostRequest && (
-                <TouchableOpacity
-                  style={styles.actionCard}
-                  activeOpacity={0.7}
-                  onPress={() => router.push("/(tabs)/discover")}
-                >
-                  <View style={styles.actionTitleRow}>
-                    <View style={[styles.actionIcon, { backgroundColor: "#F3E8FF" }]}>
-                      <Ionicons name="megaphone-outline" size={24} color="#8B5CF6" />
-                    </View>
-                    <Text style={styles.actionTitle}>Post a request</Text>
-                  </View>
-                  <Text style={styles.actionDesc}>
-                    Let drivers know you need a lift
-                  </Text>
-                </TouchableOpacity>
+              </View>
+              {!activeMode && (
+                <Text style={styles.modeNeutralHint}>
+                  Choose driving or riding so matches and the map align with what you&apos;re doing.
+                </Text>
               )}
             </View>
-          </>
-        )}
+          )}
 
-        {/* Profile completion */}
+          {showQuickActions && (
+            <>
+              <Text style={styles.pillarInlineLabel}>Quick actions</Text>
+              <View style={styles.quickActions}>
+                {quickDriver && (
+                  <TouchableOpacity
+                    style={styles.actionCard}
+                    activeOpacity={0.72}
+                    onPress={() => router.push("/(tabs)/rides")}
+                  >
+                    <View style={styles.actionTitleRow}>
+                      <View style={[styles.actionIcon, { backgroundColor: Colors.primaryLight }]}>
+                        <Ionicons name="add-circle" size={24} color={Colors.primary} />
+                      </View>
+                      <Text style={styles.actionTitle}>Offer a ride</Text>
+                    </View>
+                    <Text style={styles.actionDesc}>Share a recurring or upcoming leg</Text>
+                  </TouchableOpacity>
+                )}
+                {quickPassenger && (
+                  <TouchableOpacity
+                    style={styles.actionCard}
+                    activeOpacity={0.72}
+                    onPress={() => router.push("/(tabs)/discover")}
+                  >
+                    <View style={styles.actionTitleRow}>
+                      <View style={[styles.actionIcon, { backgroundColor: "#EFF6FF" }]}>
+                        <Ionicons name="search" size={24} color={Colors.info} />
+                      </View>
+                      <Text style={styles.actionTitle}>Find a ride</Text>
+                    </View>
+                    <Text style={styles.actionDesc}>Browse drivers on similar corridors</Text>
+                  </TouchableOpacity>
+                )}
+                {showPostRequest && (
+                  <TouchableOpacity
+                    style={styles.actionCard}
+                    activeOpacity={0.72}
+                    onPress={() => router.push("/(tabs)/discover")}
+                  >
+                    <View style={styles.actionTitleRow}>
+                      <View style={[styles.actionIcon, { backgroundColor: "#F3E8FF" }]}>
+                        <Ionicons name="megaphone-outline" size={24} color="#8B5CF6" />
+                      </View>
+                      <Text style={styles.actionTitle}>Post a request</Text>
+                    </View>
+                    <Text style={styles.actionDesc}>Signal pickup need along your route</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </>
+          )}
+
+          <Text style={styles.pillarInlineLabel}>Demand &amp; supply near routes</Text>
+          <Text style={styles.mapSectionHint}>
+            {effectiveRole === "driver" || (isFlexible && activeMode === "driver")
+              ? "Green: drivers · Orange heat: riders needing seats · Blue: shared route corridors"
+              : effectiveRole === "passenger" || (isFlexible && activeMode === "passenger")
+                ? "Orange: rider demand · Green: drivers · Blue: corridors — open Discover to request pickup"
+                : "Overview of network activity. Pick Driving or Riding above for tailored hints."}
+          </Text>
+          <DiscoverMapLayers
+            demandGeoJson={demandPoints}
+            supplyGeoJson={supplyPoints}
+            routeGeoJson={routeLines}
+            title="Live network map"
+            mapHeight={268}
+          />
+          <TouchableOpacity
+            style={styles.discoverCta}
+            onPress={() => router.push("/(tabs)/discover")}
+            activeOpacity={0.88}
+          >
+            <View style={styles.discoverCtaTextCol}>
+              <Text style={styles.discoverCtaTitle}>Open Discover</Text>
+              <Text style={styles.discoverCtaSub}>Matches, map tools, and passenger requests</Text>
+            </View>
+            <Ionicons name="arrow-forward-circle" size={28} color={Colors.textOnPrimary} />
+          </TouchableOpacity>
+        </PillarSection>
+
+        {/* ── Ad-hoc Poolyn: dated / one-off trips ── */}
+        <PillarSection
+          variant="adhoc"
+          eyebrow="AD-HOC POOLYN"
+          title="One-off & planned trips"
+          subtitle="Longer or dated trips—think city-to-city with a calendar morning or afternoon. Post from My Rides; search and overlap matching will grow here."
+        >
+          <TouchableOpacity
+            style={styles.adhocRow}
+            onPress={() => router.push("/(tabs)/rides")}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.adhocIconWrap, { backgroundColor: "#EDE9FE" }]}>
+              <Ionicons name="calendar-outline" size={22} color={ADHOC_ACCENT} />
+            </View>
+            <View style={styles.adhocRowText}>
+              <Text style={styles.adhocRowTitle}>Post a dated trip</Text>
+              <Text style={styles.adhocRowSub}>
+                Create a drive with departure time and route—ad-hoc board features arrive next.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.adhocRow}
+            onPress={() => router.push("/(tabs)/discover")}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.adhocIconWrap, { backgroundColor: "#E0F2FE" }]}>
+              <Ionicons name="compass-outline" size={22} color={Colors.info} />
+            </View>
+            <View style={styles.adhocRowText}>
+              <Text style={styles.adhocRowTitle}>Search &amp; discover</Text>
+              <Text style={styles.adhocRowSub}>
+                Explore demand and supply; post passenger requests for any trip type.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.adhocRow}
+            onPress={() => router.push("/(tabs)/rides")}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.adhocIconWrap, { backgroundColor: Colors.primaryLight }]}>
+              <Ionicons name="albums-outline" size={22} color={Colors.primary} />
+            </View>
+            <View style={styles.adhocRowText}>
+              <Text style={styles.adhocRowTitle}>My rides &amp; bookings</Text>
+              <Text style={styles.adhocRowSub}>Everything you&apos;re hosting or booked on.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
+          </TouchableOpacity>
+        </PillarSection>
+
         <ProfileCompletion
           profile={profile}
           onEditProfile={() => router.push("/(tabs)/profile?edit=1")}
         />
 
         {org?.org_type === "community" && (
-          <View style={[styles.shareLeaderCard, { borderColor: Colors.accent, backgroundColor: Colors.accentLight }]}>
+          <View
+            style={[
+              styles.shareLeaderCard,
+              { borderColor: Colors.accent, backgroundColor: Colors.accentLight },
+            ]}
+          >
             <View style={styles.shareLeaderHeader}>
               <Ionicons name="megaphone-outline" size={20} color="#D97706" />
               <Text style={styles.shareLeaderTitle}>
@@ -664,41 +802,19 @@ export default function Dashboard() {
                 ? "Help your team save time and money. Share Poolyn with a manager or HR lead who can activate a Business account."
                 : "Share Poolyn with your leadership so your company can sponsor a Business account and unlock priority matching."}
             </Text>
-            <TouchableOpacity style={styles.shareLeaderBtn} onPress={handleShareWithLeadership} activeOpacity={0.8}>
+            <TouchableOpacity
+              style={styles.shareLeaderBtn}
+              onPress={handleShareWithLeadership}
+              activeOpacity={0.8}
+            >
               <Ionicons name="share-social-outline" size={16} color="#FFFFFF" />
               <Text style={styles.shareLeaderBtnText}>Share with leadership</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* Same demand/supply map as Discover — aggregate activity, not live GPS tracks */}
-        <Text style={styles.sectionTitle}>Commute activity map</Text>
-        <Text style={styles.mapSectionHint}>
-          {effectiveRole === "driver" || (isFlexible && activeMode === "driver")
-            ? "Green dots: drivers · Orange heat: riders looking for seats · Blue: route overlap"
-            : effectiveRole === "passenger" || (isFlexible && activeMode === "passenger")
-              ? "Orange heat: rider demand · Green: available drivers · Blue: shared corridors"
-              : "Orange heat: rider demand · Green: drivers · Blue: route corridors — pick Driving or Riding above to tailor quick actions"}
-        </Text>
-        <DiscoverMapLayers
-          demandGeoJson={demandPoints}
-          supplyGeoJson={supplyPoints}
-          routeGeoJson={routeLines}
-          title="Network activity"
-          mapHeight={200}
-        />
-        <TouchableOpacity
-          style={styles.mapOpenDiscover}
-          onPress={() => router.push("/(tabs)/discover")}
-          activeOpacity={0.85}
-        >
-          <Text style={styles.mapOpenDiscoverText}>Open Discover for matches</Text>
-          <Ionicons name="chevron-forward" size={18} color={Colors.primary} />
-        </TouchableOpacity>
-
-        {/* How it works — only shown early */}
         <View style={styles.howItWorks}>
-          <Text style={styles.howTitle}>How Poolyn works</Text>
+          <Text style={styles.howTitle}>Why Poolyn</Text>
           {[
             {
               icon: "location-outline" as const,
@@ -733,15 +849,138 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   content: {
     paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.xs,
+    paddingTop: Spacing.md,
     paddingBottom: Spacing["5xl"],
+  },
+  statsSection: {
+    marginBottom: Spacing["2xl"],
+  },
+  statsSectionLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    color: Colors.textTertiary,
+    letterSpacing: 1.2,
+    marginBottom: Spacing.sm,
+  },
+  pillarShell: {
+    flexDirection: "row",
+    borderRadius: BorderRadius.xl,
+    borderWidth: 1,
+    marginBottom: Spacing["2xl"],
+    overflow: "hidden",
+    ...Shadow.md,
+  },
+  pillarShellRoutine: {
+    backgroundColor: "#F0FDFA",
+    borderColor: "#99F6E4",
+  },
+  pillarShellAdhoc: {
+    backgroundColor: "#FAF5FF",
+    borderColor: "#DDD6FE",
+  },
+  pillarAccentBar: {
+    width: 5,
+    alignSelf: "stretch",
+  },
+  pillarContent: {
+    flex: 1,
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.base,
+    paddingLeft: Spacing.md,
+  },
+  pillarEyebrow: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.4,
+    marginBottom: Spacing.xs,
+  },
+  pillarTitle: {
+    fontSize: FontSize.xl,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    letterSpacing: -0.4,
+    marginBottom: Spacing.sm,
+  },
+  pillarSubtitle: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 21,
+    marginBottom: Spacing.lg,
+  },
+  pillarChildren: {
+    gap: Spacing.lg,
+  },
+  pillarInlineLabel: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginBottom: -Spacing.sm,
+  },
+  discoverCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.md,
+    backgroundColor: ROUTINE_ACCENT,
+    borderRadius: BorderRadius.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.base,
+    marginTop: Spacing.sm,
+  },
+  discoverCtaTextCol: {
+    flex: 1,
+  },
+  discoverCtaTitle: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+    color: Colors.textOnPrimary,
+  },
+  discoverCtaSub: {
+    fontSize: FontSize.xs,
+    color: "rgba(255,255,255,0.88)",
+    marginTop: 2,
+    lineHeight: 18,
+  },
+  adhocRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.md,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(124,58,237,0.12)",
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    ...Shadow.sm,
+  },
+  adhocIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: BorderRadius.md,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  adhocRowText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  adhocRowTitle: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+  },
+  adhocRowSub: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: 3,
+    lineHeight: 17,
   },
   heroHeader: {
     marginHorizontal: -Spacing.xl,
     paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.lg,
-    marginBottom: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
+    marginBottom: Spacing.xl,
     borderBottomLeftRadius: BorderRadius.xl,
     borderBottomRightRadius: BorderRadius.xl,
     borderWidth: 1,
@@ -869,7 +1108,7 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full,
   },
   roleWrap: {
-    marginBottom: Spacing.xl,
+    marginBottom: 0,
     gap: Spacing.sm,
   },
   roleBadgeText: {
@@ -908,12 +1147,14 @@ const styles = StyleSheet.create({
   },
   statCard: {
     width: "47%",
+    minHeight: 104,
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.border,
+    justifyContent: "center",
     ...Shadow.sm,
   },
   statInlineRow: {
@@ -941,17 +1182,11 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 16,
   },
-  sectionTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-    color: Colors.text,
-    marginBottom: Spacing.md,
-  },
   quickActions: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: Spacing.md,
-    marginBottom: Spacing.xl,
+    marginBottom: 0,
   },
   actionCard: {
     width: "47%",
@@ -994,30 +1229,18 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
     lineHeight: 20,
-    marginBottom: Spacing.md,
-    marginTop: -Spacing.sm,
-  },
-  mapOpenDiscover: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: Spacing.xs,
-    marginTop: Spacing.md,
-    marginBottom: Spacing.xl,
-    paddingVertical: Spacing.sm,
-  },
-  mapOpenDiscoverText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.primary,
+    marginBottom: Spacing.sm,
+    marginTop: 0,
   },
   howItWorks: {
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.base,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
     borderWidth: 1,
     borderColor: Colors.border,
     gap: Spacing.md,
+    marginTop: Spacing.sm,
+    ...Shadow.sm,
   },
   howTitle: {
     fontSize: FontSize.base,
@@ -1040,7 +1263,7 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.lg,
     borderWidth: 1.5,
     padding: Spacing.base,
-    marginBottom: Spacing.xl,
+    marginBottom: 0,
     ...Shadow.sm,
   },
   modeToggleHeader: {
