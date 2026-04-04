@@ -7,6 +7,9 @@ interface DiscoverMapLayersProps {
   routeGeoJson: GeoJSON.FeatureCollection;
   title?: string;
   mapHeight?: number;
+  /** [lng, lat] when there is no data to fit */
+  fallbackCenter?: [number, number];
+  remoteLoading?: boolean;
 }
 
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
@@ -67,12 +70,16 @@ function collectBounds(
   return found ? [[minLng, minLat], [maxLng, maxLat]] : null;
 }
 
+const DEFAULT_CENTER: [number, number] = [138.6, -34.85];
+
 export function DiscoverMapLayers({
   demandGeoJson,
   supplyGeoJson,
   routeGeoJson,
   title = "Commute map",
   mapHeight = 240,
+  fallbackCenter = DEFAULT_CENTER,
+  remoteLoading = false,
 }: DiscoverMapLayersProps) {
   const containerRef = useRef<any>(null);
   const mapRef = useRef<any>(null);
@@ -104,8 +111,8 @@ export function DiscoverMapLayers({
       const map = new ml.Map({
         container: containerRef.current,
         style: MAP_STYLE,
-        center: [138.62, -34.73], // Edinburgh Parks, SA — adjust to user location later
-        zoom: 10,
+        center: fallbackCenter,
+        zoom: 11,
         attributionControl: false,
       });
       mapRef.current = map;
@@ -175,9 +182,9 @@ export function DiscoverMapLayers({
           paint: { "line-color": "#3B82F6", "line-width": 3, "line-opacity": 0.8 },
         });
 
-        // Auto-fit to data if anything is plotted
         const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson]);
         if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 600 });
+        else map.flyTo({ center: fallbackCenter, zoom: 11, duration: 0 });
 
         if (mounted) setLoading(false);
       });
@@ -195,7 +202,9 @@ export function DiscoverMapLayers({
         mapRef.current = null;
       }
     };
-  }, []); // mount once
+    // Single map instance; GeoJSON updates in the following effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Update data sources reactively when props change
   useEffect(() => {
@@ -211,12 +220,13 @@ export function DiscoverMapLayers({
     const routeSrc = map.getSource("routes");
     if (routeSrc) routeSrc.setData(routeGeoJson);
 
-    // Re-fit only when new data arrives
     if (hasData) {
       const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson]);
       if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 400 });
+    } else {
+      map.flyTo({ center: fallbackCenter, zoom: 11, duration: 400 });
     }
-  }, [demandGeoJson, supplyGeoJson, routeGeoJson, hasData, loading]);
+  }, [demandGeoJson, supplyGeoJson, routeGeoJson, hasData, loading, fallbackCenter]);
 
   if (error) {
     return (
@@ -229,13 +239,18 @@ export function DiscoverMapLayers({
 
   return (
     <View style={[styles.container, { height: mapHeight }]}>
-      {/* MapLibre GL JS attaches to this div */}
       <View ref={containerRef} style={styles.map} />
 
       {loading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="small" color="#0B8457" />
           <Text style={styles.loadingText}>Loading map…</Text>
+        </View>
+      )}
+      {!loading && remoteLoading && (
+        <View style={styles.updatingBar}>
+          <ActivityIndicator size="small" color="#0B8457" />
+          <Text style={styles.updatingBarText}>Updating layers…</Text>
         </View>
       )}
 
@@ -267,6 +282,22 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   loadingText: { fontSize: 13, color: "#6B7280" },
+  updatingBar: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    right: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  updatingBarText: { fontSize: 12, color: "#6B7280", fontWeight: "600" },
   emptyOverlay: {
     position: "absolute",
     left: 12,

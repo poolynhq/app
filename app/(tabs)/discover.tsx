@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -10,16 +10,17 @@ import {
   Modal,
   Pressable,
   Switch,
+  RefreshControl,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { showAlert } from "@/lib/platformAlert";
 import { getNetworkInsights } from "@/lib/networkInsights";
 import {
-  DiscoverMatch,
-  getDiscoverMatches,
   getRideCardsForViewer,
   type RideOpportunityCard,
   reserveRideOpportunity,
@@ -27,6 +28,7 @@ import {
 import { canViewerActAsDriver } from "@/lib/commuteMatching";
 import { useDiscoverMapLayers } from "@/hooks/useDiscoverMapLayers";
 import { DiscoverMapLayers } from "@/components/maps/DiscoverMapLayers";
+import { parseGeoPoint } from "@/lib/parseGeoPoint";
 import {
   Colors,
   Spacing,
@@ -36,10 +38,41 @@ import {
   Shadow,
 } from "@/constants/theme";
 
-type VisibilityScope = "network" | "nearby" | "all";
+function filterPassengerCards(
+  cards: RideOpportunityCard[],
+  search: string,
+  minReliability: number
+): RideOpportunityCard[] {
+  const q = search.trim().toLowerCase();
+  return cards.filter((c) => {
+    if (minReliability > 0 && c.trustReliability < minReliability) return false;
+    if (!q) return true;
+    return (
+      c.vehicleClassLabel.toLowerCase().includes(q) ||
+      String(c.overlapPercent).includes(q)
+    );
+  });
+}
+
+function filterDriverCards(
+  cards: RideOpportunityCard[],
+  search: string,
+  minReliability: number
+): RideOpportunityCard[] {
+  const q = search.trim().toLowerCase();
+  return cards.filter((c) => {
+    if (minReliability > 0 && c.counterpartyReliability < minReliability) return false;
+    if (!q) return true;
+    return c.vehicleClassLabel.toLowerCase().includes(q);
+  });
+}
 
 export default function Discover() {
+  const router = useRouter();
   const { profile, refreshProfile } = useAuth();
+  const scrollRef = useRef<ScrollView>(null);
+  const rideOpportunitiesOffset = useRef(0);
+
   const [search, setSearch] = useState("");
   const [nearbyCount, setNearbyCount] = useState(0);
   const [orgCount, setOrgCount] = useState(0);
@@ -50,101 +83,82 @@ export default function Discover() {
   const [driverRidesLoading, setDriverRidesLoading] = useState(false);
   const [orgAllowsCrossOrg, setOrgAllowsCrossOrg] = useState(false);
   const [outerRiderWarningOpen, setOuterRiderWarningOpen] = useState(false);
-  const [matches, setMatches] = useState<DiscoverMatch[]>([]);
-  const [scope, setScope] = useState<VisibilityScope>("all");
-  const scopeInitKeySeen = useRef("");
-  const [peerModal, setPeerModal] = useState<{
-    peerId: string;
-    displayName: string;
-    badgeText: string | null;
-  } | null>(null);
-  const [verifiedOnly, setVerifiedOnly] = useState(false);
   const [minReliability, setMinReliability] = useState(0);
-  const [genderFilter, setGenderFilter] = useState<
-    "any" | "male" | "female" | "non_binary" | "prefer_not_to_say"
-  >("any");
-  const { demandPoints, supplyPoints, routeLines } = useDiscoverMapLayers(profile ?? null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    if (!profile?.id) {
-      scopeInitKeySeen.current = "";
-      return;
-    }
-    const key = `${profile.id}:${profile.org_id ?? ""}`;
-    if (scopeInitKeySeen.current === key) return;
-    scopeInitKeySeen.current = key;
-    setScope(profile.org_id ? "network" : "all");
-  }, [profile?.id, profile?.org_id]);
+  const {
+    demandPoints,
+    supplyPoints,
+    routeLines,
+    reload: reloadMapLayers,
+    loading: mapLayersLoading,
+    error: mapLayersError,
+    hasMapData,
+  } = useDiscoverMapLayers(profile ?? null);
 
-  async function openLegacyMatchPeer(m: DiscoverMatch) {
-    if (!profile) return;
-    const viewerIsDriver = profile.id === m.driver_id;
-    const peerId = viewerIsDriver ? m.passenger_id : m.driver_id;
-    const displayName = viewerIsDriver
-      ? m.passenger_name ?? "Passenger"
-      : m.driver_name ?? "Driver";
-    setPeerModal({ peerId, displayName, badgeText: null });
-    const { data, error } = await supabase.rpc("get_peer_commute_badge", {
-      p_peer_id: peerId,
-    });
-    if (error) {
-      setPeerModal((prev) =>
-        prev?.peerId === peerId ? { ...prev, badgeText: "Could not load" } : prev
-      );
-      return;
-    }
-    const row = data as { explorer?: boolean; org_name?: string | null; org_type?: string | null } | null;
-    let badgeText = "…";
-    if (row) {
-      if (row.explorer) {
-        badgeText = "Explorer (independent)";
-      } else if (row.org_name) {
-        const t = row.org_type ? String(row.org_type) : "";
-        badgeText = t ? `${row.org_name} · ${t}` : String(row.org_name);
-      } else {
-        badgeText = "Network member";
-      }
-    }
-    setPeerModal((prev) =>
-      prev?.peerId === peerId ? { ...prev, badgeText } : prev
-    );
-  }
-
-  useEffect(() => {
-    async function loadInsights() {
-      if (!profile) return;
-
-      const [insights, discoverMatches] = await Promise.all([
-        getNetworkInsights(profile),
-        getDiscoverMatches(profile, {
-          scope,
-          verifiedDriversOnly: verifiedOnly,
-          minReliability,
-          genderFilter,
-        }),
-      ]);
-
-      setOrgCount(insights.orgRouteCount);
-      setNearbyCount(insights.nearbyRouteCount);
-      setMatchCount(insights.potentialMatches);
-      setMatches(discoverMatches);
-    }
-    loadInsights();
-  }, [profile, scope, verifiedOnly, minReliability, genderFilter]);
-
-  useEffect(() => {
-    async function loadRides() {
-      if (!profile) return;
-      setRidesLoading(true);
-      try {
-        const cards = await getRideCardsForViewer(profile, "passenger");
-        setRideOpportunities(cards);
-      } finally {
-        setRidesLoading(false);
-      }
-    }
-    loadRides();
+  const mapFallbackCenter = useMemo((): [number, number] => {
+    if (!profile) return [138.6, -34.85];
+    const home = parseGeoPoint(profile.home_location as unknown);
+    if (home) return [home.lng, home.lat];
+    const work = parseGeoPoint(profile.work_location as unknown);
+    if (work) return [work.lng, work.lat];
+    return [138.6, -34.85];
   }, [profile]);
+
+  const filteredPassenger = useMemo(
+    () => filterPassengerCards(rideOpportunities, search, minReliability),
+    [rideOpportunities, search, minReliability]
+  );
+
+  const filteredDriver = useMemo(
+    () => filterDriverCards(driverRideOpportunities, search, minReliability),
+    [driverRideOpportunities, search, minReliability]
+  );
+
+  const loadInsights = useCallback(async () => {
+    if (!profile) return;
+    const insights = await getNetworkInsights(profile);
+    setOrgCount(insights.orgRouteCount);
+    setNearbyCount(insights.nearbyRouteCount);
+    setMatchCount(insights.potentialMatches);
+  }, [profile]);
+
+  const loadRideCards = useCallback(async () => {
+    if (!profile) return;
+    setRidesLoading(true);
+    try {
+      const cards = await getRideCardsForViewer(profile, "passenger");
+      setRideOpportunities(cards);
+    } finally {
+      setRidesLoading(false);
+    }
+  }, [profile]);
+
+  const loadDriverRideCards = useCallback(async () => {
+    if (!profile || !canViewerActAsDriver(profile) || !profile.org_id) {
+      setDriverRideOpportunities([]);
+      return;
+    }
+    setDriverRidesLoading(true);
+    try {
+      const cards = await getRideCardsForViewer(profile, "driver");
+      setDriverRideOpportunities(cards);
+    } finally {
+      setDriverRidesLoading(false);
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    void loadInsights();
+  }, [loadInsights]);
+
+  useEffect(() => {
+    void loadRideCards();
+  }, [loadRideCards]);
+
+  useEffect(() => {
+    void loadDriverRideCards();
+  }, [loadDriverRideCards]);
 
   useEffect(() => {
     async function loadOrgCross() {
@@ -159,25 +173,20 @@ export default function Discover() {
         .maybeSingle();
       setOrgAllowsCrossOrg(data?.allow_cross_org === true);
     }
-    loadOrgCross();
+    void loadOrgCross();
   }, [profile?.org_id]);
 
-  useEffect(() => {
-    async function loadDriverRides() {
-      if (!profile || !canViewerActAsDriver(profile) || !profile.org_id) {
-        setDriverRideOpportunities([]);
-        return;
-      }
-      setDriverRidesLoading(true);
-      try {
-        const cards = await getRideCardsForViewer(profile, "driver");
-        setDriverRideOpportunities(cards);
-      } finally {
-        setDriverRidesLoading(false);
-      }
+  async function onRefresh() {
+    setRefreshing(true);
+    try {
+      reloadMapLayers();
+      await loadInsights();
+      await loadRideCards();
+      await loadDriverRideCards();
+    } finally {
+      setRefreshing(false);
     }
-    loadDriverRides();
-  }, [profile, profile?.driver_show_outer_network_riders]);
+  }
 
   async function setDriverOuterNetworkRiders(enabled: boolean) {
     if (!profile?.id) return;
@@ -194,16 +203,31 @@ export default function Discover() {
       .from("users")
       .update({ visibility_mode: mode })
       .eq("id", profile.id);
-    if (!error) {
-      await refreshProfile();
-    }
+    if (!error) await refreshProfile();
+  }
+
+  function scrollToRideOpportunities() {
+    const y = Math.max(0, rideOpportunitiesOffset.current - 24);
+    scrollRef.current?.scrollTo({ y, animated: true });
   }
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <ScrollView style={styles.safe} contentContainerStyle={{ paddingBottom: Spacing["5xl"] }}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.safe}
+        contentContainerStyle={styles.scrollContent}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={Colors.primary} />
+        }
+      >
         <View style={styles.header}>
           <Text style={styles.title}>Discover</Text>
+          <Text style={styles.subtitle}>
+            Map, route overlap, and seats you can reserve — without leaving this screen.
+          </Text>
           <View style={styles.visibilityRow}>
             <TouchableOpacity
               style={[
@@ -218,7 +242,7 @@ export default function Discover() {
                   profile?.visibility_mode !== "nearby" && styles.visibilityTextActive,
                 ]}
               >
-                Your Network
+                Your network
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -234,150 +258,121 @@ export default function Discover() {
                   profile?.visibility_mode === "nearby" && styles.visibilityTextActive,
                 ]}
               >
-                Nearby Commuters
+                Nearby commuters
               </Text>
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* Search */}
-        <View style={styles.searchWrap}>
+        {/* Map — high on screen; layers follow visibility + RPC */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Demand &amp; supply map</Text>
+            <TouchableOpacity
+              style={styles.refreshMapBtn}
+              onPress={() => reloadMapLayers()}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Refresh map layers"
+            >
+              <Ionicons name="refresh" size={18} color={Colors.primary} />
+            </TouchableOpacity>
+          </View>
+          {mapLayersError ? (
+            <View style={styles.mapErrorBanner}>
+              <Ionicons name="warning-outline" size={18} color={Colors.error} />
+              <Text style={styles.mapErrorText}>{mapLayersError}</Text>
+            </View>
+          ) : null}
+          <DiscoverMapLayers
+            demandGeoJson={demandPoints}
+            supplyGeoJson={supplyPoints}
+            routeGeoJson={routeLines}
+            title="Network activity"
+            mapHeight={Platform.OS === "web" ? 320 : 340}
+            fallbackCenter={mapFallbackCenter}
+            remoteLoading={mapLayersLoading}
+          />
+          {!hasMapData && !mapLayersLoading && !mapLayersError ? (
+            <Text style={styles.mapFootnote}>
+              No plotted commuters in this scope yet. Save home &amp; work routes under Profile →
+              Commute, or switch to Nearby commuters.
+            </Text>
+          ) : null}
+        </View>
+
+        {/* Snapshot */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Route overlap snapshot</Text>
+          <View style={styles.snapshotCard}>
+            <Text style={styles.snapshotBig}>{matchCount}</Text>
+            <Text style={styles.snapshotLabel}>
+              peers with geometry overlap (org / network context)
+            </Text>
+            <View style={styles.snapshotRow}>
+              <View style={styles.snapshotStat}>
+                <Text style={styles.snapshotStatVal}>{orgCount}</Text>
+                <Text style={styles.snapshotStatLab}>Org context</Text>
+              </View>
+              <View style={styles.snapshotStat}>
+                <Text style={styles.snapshotStatVal}>{nearbyCount}</Text>
+                <Text style={styles.snapshotStatLab}>Nearby hint</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* Filters that affect lists below */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Filter opportunities</Text>
           <View style={styles.searchBar}>
-            <Ionicons
-              name="search"
-              size={20}
-              color={Colors.textTertiary}
-            />
+            <Ionicons name="search" size={20} color={Colors.textTertiary} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search by destination or suburb..."
+              placeholder="Search by vehicle type or overlap %…"
               placeholderTextColor={Colors.textTertiary}
               value={search}
               onChangeText={setSearch}
             />
           </View>
-        </View>
-
-        {/* Scope + filters */}
-        <View style={styles.tabs}>
-          {(["all", "network", "nearby"] as VisibilityScope[]).map((s) => (
-            <TouchableOpacity
-              key={s}
-              style={[styles.tab, scope === s && styles.tabActive]}
-              onPress={() => setScope(s)}
-            >
-              <Text
-                style={[
-                  styles.tabText,
-                  scope === s && styles.tabTextActive,
-                ]}
+          <Text style={styles.filterHint}>Minimum driver / rider reliability (cards below)</Text>
+          <View style={styles.filterRow}>
+            {[0, 60, 75].map((r) => (
+              <TouchableOpacity
+                key={r}
+                style={[styles.filterChip, minReliability === r && styles.filterChipActive]}
+                onPress={() => setMinReliability(r)}
               >
-                {s === "all"
-                  ? "All"
-                  : s === "network"
-                  ? "Org"
-                  : "Nearby"}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <View style={styles.filterRow}>
-          <TouchableOpacity
-            style={[styles.filterChip, verifiedOnly && styles.filterChipActive]}
-            onPress={() => setVerifiedOnly((v) => !v)}
-          >
-            <Text style={[styles.filterText, verifiedOnly && styles.filterTextActive]}>
-              Verified drivers
-            </Text>
-          </TouchableOpacity>
-          {[0, 60, 75].map((r) => (
-            <TouchableOpacity
-              key={r}
-              style={[styles.filterChip, minReliability === r && styles.filterChipActive]}
-              onPress={() => setMinReliability(r)}
-            >
-              <Text style={[styles.filterText, minReliability === r && styles.filterTextActive]}>
-                {r === 0 ? "Any reliability" : `${r}+ reliability`}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <View style={styles.filterRow}>
-          {(["any", "female", "male"] as const).map((g) => (
-            <TouchableOpacity
-              key={g}
-              style={[styles.filterChip, genderFilter === g && styles.filterChipActive]}
-              onPress={() => setGenderFilter(g)}
-            >
-              <Text style={[styles.filterText, genderFilter === g && styles.filterTextActive]}>
-                {g === "any" ? "Any gender" : g}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* Insight state */}
-        <View style={styles.emptyState}>
-          <View style={styles.emptyIcon}>
-            <Ionicons name="compass-outline" size={48} color={Colors.textTertiary} />
+                <Text style={[styles.filterText, minReliability === r && styles.filterTextActive]}>
+                  {r === 0 ? "Any" : `${r}+`}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
-          <Text style={styles.emptyTitle}>{matchCount} potential matches found</Text>
+        </View>
 
-          <View style={styles.sectionCard}>
-            <Text style={styles.sectionCardTitle}>From your organization</Text>
-            <Text style={styles.sectionCardBody}>
-              {orgCount > 0
-                ? `${orgCount} commuters on similar routes`
-                : `Be the first in your network. We found ${nearbyCount} nearby commuters instead.`}
+        {profile?.visibility_mode === "nearby" && (
+          <View style={styles.trustNote}>
+            <Ionicons name="shield-checkmark-outline" size={18} color={Colors.primary} />
+            <Text style={styles.trustText}>
+              Nearby mode widens the map. Trust scores on cards still apply — verify identity before
+              you travel.
             </Text>
           </View>
-
-          <View style={styles.sectionCard}>
-            <Text style={styles.sectionCardTitle}>Nearby commuters</Text>
-            <Text style={styles.sectionCardBody}>
-              {nearbyCount} fallback matches outside your organization
-            </Text>
-          </View>
-
-          {profile?.visibility_mode === "nearby" && (
-            <View style={styles.trustNote}>
-              <Ionicons
-                name="shield-checkmark-outline"
-                size={18}
-                color={Colors.primary}
-              />
-              <Text style={styles.trustText}>
-                Trust indicators shown: domain badge, verified driver status, and reliability.
-              </Text>
-            </View>
-          )}
-        </View>
-
-        <View style={styles.listSection}>
-          <Text style={styles.listTitle}>Demand & supply map</Text>
-          <DiscoverMapLayers
-            demandGeoJson={demandPoints}
-            supplyGeoJson={supplyPoints}
-            routeGeoJson={routeLines}
-            title="Demand, supply, and route overlap"
-          />
-        </View>
+        )}
 
         {profile && canViewerActAsDriver(profile) && profile.org_id ? (
-          <View style={styles.listSection}>
-            <Text style={styles.listTitle}>Driving · riders on your route</Text>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Driving · riders on your route</Text>
             <Text style={styles.privacyNote}>
-              By default you only see riders in your organization. Turn on the option below to also
-              see riders outside your network when your org allows it.
+              Colleagues and (if enabled) matched riders outside your org who fit your corridor.
             </Text>
             <View style={styles.driverOuterRow}>
               <View style={styles.driverOuterLabels}>
                 <Text style={styles.driverOuterTitle}>Show riders outside my organization</Text>
                 <Text style={styles.driverOuterHint}>
                   {orgAllowsCrossOrg
-                    ? "Optional. You can keep this off and only pick up colleagues."
+                    ? "Optional. You can keep this off and only plan for colleagues."
                     : "Your organization has not enabled cross-network visibility."}
                 </Text>
               </View>
@@ -401,151 +396,110 @@ export default function Discover() {
             </View>
             {driverRidesLoading ? (
               <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.lg }} />
-            ) : driverRideOpportunities.filter((c) =>
-                !search || c.vehicleClassLabel.toLowerCase().includes(search.toLowerCase())
-              ).length === 0 ? (
+            ) : filteredDriver.length === 0 ? (
               <Text style={styles.emptyMeta}>
-                No rider matches on your route yet, or colleagues have not completed commute setup.
+                No rider matches on your route yet, or colleagues have not finished commute setup.
               </Text>
             ) : (
-              driverRideOpportunities
-                .filter((c) =>
-                  !search || c.vehicleClassLabel.toLowerCase().includes(search.toLowerCase())
-                )
-                .map((c) => (
-                  <View key={`d-${c.opportunityId}`} style={styles.matchCard}>
-                    <View style={styles.matchRow}>
-                      <Text style={styles.matchName}>
-                        Route overlap · rel. {c.counterpartyReliability}
-                        {c.matchScope === "outer_network" ? " · Outside your org" : ""}
-                      </Text>
-                      <Text style={styles.matchScore}>{c.overlapPercent}% share</Text>
-                    </View>
-                    <Text style={styles.matchMeta}>
-                      Adds ~{c.detourMinutes} min detour · est. contribution for them{" "}
-                      {(c.passengerCostCents / 100).toFixed(2)} (incl. $1 stop fee)
+              filteredDriver.map((c) => (
+                <View key={`d-${c.opportunityId}`} style={styles.matchCard}>
+                  <View style={styles.matchRow}>
+                    <Text style={styles.matchName}>
+                      Route overlap · rel. {c.counterpartyReliability}
+                      {c.matchScope === "outer_network" ? " · Outside your org" : ""}
                     </Text>
-                    <Text style={styles.driverRiderFootnote}>
-                      Riders book seats from their own app. Cross-network booking may be limited until
-                      they can see drivers on their network settings.
-                    </Text>
+                    <Text style={styles.matchScore}>{c.overlapPercent}% share</Text>
                   </View>
-                ))
+                  <Text style={styles.matchMeta}>
+                    Adds ~{c.detourMinutes} min detour · est. contribution for them{" "}
+                    {(c.passengerCostCents / 100).toFixed(2)} (incl. $1 stop fee)
+                  </Text>
+                  <Text style={styles.driverRiderFootnote}>
+                    Riders book from their app. You&apos;ll see confirmed pickups under My Rides.
+                  </Text>
+                </View>
+              ))
             )}
           </View>
         ) : null}
 
-        {/* ── Geometry-first ride opportunities (no driver identity pre-confirm) ── */}
-        <View style={styles.listSection}>
-          <Text style={styles.listTitle}>Ride opportunities (as a rider)</Text>
+        <View
+          style={styles.section}
+          onLayout={(e) => {
+            rideOpportunitiesOffset.current = e.nativeEvent.layout.y;
+          }}
+        >
+          <Text style={styles.sectionTitle}>Ride opportunities</Text>
           <Text style={styles.privacyNote}>
-            Cards show route overlap and fair cost share, not driver names until you confirm.
+            Geometry-matched seats. Driver details stay private until you reserve.
           </Text>
           {ridesLoading ? (
             <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.lg }} />
-          ) : rideOpportunities.filter((c) =>
-              !search || c.vehicleClassLabel.toLowerCase().includes(search.toLowerCase())
-            ).length === 0 ? (
+          ) : filteredPassenger.length === 0 ? (
             <Text style={styles.emptyMeta}>
-              No opportunities yet. Complete onboarding with a saved commute route, or check back
-              after colleagues add theirs.
+              No opportunities match your filters. Try lowering reliability, clear search, or
+              finish commute setup in Profile.
             </Text>
           ) : (
-            rideOpportunities
-              .filter((c) =>
-                !search || c.vehicleClassLabel.toLowerCase().includes(search.toLowerCase())
-              )
-              .map((c) => (
-                <View key={c.opportunityId} style={styles.matchCard}>
-                  <View style={styles.matchRow}>
-                    <Text style={styles.matchName}>{c.vehicleClassLabel} · {c.seatsAvailable} seats</Text>
-                    <Text style={styles.matchScore}>{c.overlapPercent}% route share</Text>
-                  </View>
-                  <Text style={styles.matchMeta}>
-                    Pickup ~{c.pickupEtaLabel} · adds {c.detourMinutes} min detour · reliability{" "}
-                    {c.trustReliability}
+            filteredPassenger.map((c) => (
+              <View key={c.opportunityId} style={styles.matchCard}>
+                <View style={styles.matchRow}>
+                  <Text style={styles.matchName}>
+                    {c.vehicleClassLabel} · {c.seatsAvailable} seats
                   </Text>
-                  <Text style={styles.costLine}>
-                    Est. contribution {(c.passengerCostCents / 100).toFixed(2)} (incl. $1 stop fee)
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.reserveBtn}
-                    onPress={async () => {
-                      const res = await reserveRideOpportunity(c);
-                      if (res.ok) {
-                        showAlert(
-                          "Seat reserved",
-                          "The driver has been notified. You will see next steps shortly."
-                        );
-                      } else {
-                        showAlert("Could not reserve", res.reason ?? "Try another opportunity.");
-                      }
-                    }}
-                  >
-                    <Text style={styles.reserveBtnText}>Reserve seat (~2 min hold)</Text>
-                  </TouchableOpacity>
+                  <Text style={styles.matchScore}>{c.overlapPercent}% route share</Text>
                 </View>
-              ))
-          )}
-        </View>
-
-        {/* ── Legacy suggestion list (ride posts) ── */}
-        <View style={styles.listSection}>
-          <Text style={styles.listTitle}>Posted rides (legacy)</Text>
-          {matches.length === 0 ? (
-            <Text style={styles.emptyMeta}>No posted rides in this filter.</Text>
-          ) : (
-            matches.slice(0, 6).map((m) => {
-              const inner = (
-                <>
-                  <View style={styles.matchRow}>
-                    <Text style={styles.matchName}>{m.driver_name ?? "Driver"}</Text>
-                    <Text style={styles.matchScore}>{Math.round(m.match_score * 100)}%</Text>
-                  </View>
-                  <Text style={styles.matchMeta}>
-                    {m.trust_label} · {m.time_overlap_mins ?? 0} min overlap
-                  </Text>
-                  {scope !== "network" ? (
-                    <Text style={styles.tapHint}>Tap for network / Explorer badge</Text>
-                  ) : null}
-                </>
-              );
-              if (scope === "network") {
-                return (
-                  <View key={m.suggestion_id} style={styles.matchCard}>
-                    {inner}
-                  </View>
-                );
-              }
-              return (
+                <Text style={styles.matchMeta}>
+                  Pickup {c.pickupEtaLabel} · +{c.detourMinutes} min detour · reliability{" "}
+                  {c.trustReliability}
+                </Text>
+                <Text style={styles.costLine}>
+                  Est. contribution {(c.passengerCostCents / 100).toFixed(2)} (incl. $1 stop fee)
+                </Text>
                 <TouchableOpacity
-                  key={m.suggestion_id}
-                  style={styles.matchCard}
-                  activeOpacity={0.85}
-                  onPress={() => openLegacyMatchPeer(m)}
+                  style={styles.reserveBtn}
+                  onPress={async () => {
+                    const res = await reserveRideOpportunity(c);
+                    if (res.ok) {
+                      showAlert(
+                        "Seat reserved",
+                        "The driver has been notified. Check My Rides for next steps."
+                      );
+                      void loadRideCards();
+                    } else {
+                      showAlert("Could not reserve", res.reason ?? "Try another opportunity.");
+                    }
+                  }}
                 >
-                  {inner}
+                  <Text style={styles.reserveBtnText}>Reserve seat (~2 min hold)</Text>
                 </TouchableOpacity>
-              );
-            })
+              </View>
+            ))
           )}
         </View>
 
-        <TouchableOpacity
-          style={styles.postBtn}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name="megaphone-outline"
-            size={20}
-            color={Colors.primary}
-          />
-          <Text
-            style={styles.postBtnText}
+        <View style={styles.footerActions}>
+          <TouchableOpacity
+            style={styles.primaryFooterBtn}
+            activeOpacity={0.88}
+            onPress={() => router.push("/(tabs)/rides")}
           >
-            {profile?.role === "driver" ? "Offer ride" : "Request ride"}
-          </Text>
-        </TouchableOpacity>
+            <Ionicons name="car-outline" size={22} color={Colors.textOnPrimary} />
+            <Text style={styles.primaryFooterBtnText}>
+              {profile?.role === "driver" || profile?.role === "both"
+                ? "Offer a ride"
+                : "My rides"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryFooterBtn}
+            activeOpacity={0.88}
+            onPress={scrollToRideOpportunities}
+          >
+            <Ionicons name="arrow-down-circle-outline" size={22} color={Colors.primary} />
+            <Text style={styles.secondaryFooterBtnText}>Jump to opportunities</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
 
       <Modal
@@ -584,30 +538,6 @@ export default function Discover() {
           </Pressable>
         </Pressable>
       </Modal>
-
-      <Modal
-        visible={peerModal != null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPeerModal(null)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setPeerModal(null)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>{peerModal?.displayName}</Text>
-            <Text style={styles.modalLabel}>Commute visibility</Text>
-            <Text style={styles.modalValue}>
-              {peerModal?.badgeText === null ? "Loading…" : peerModal?.badgeText}
-            </Text>
-            <TouchableOpacity
-              style={styles.modalCloseBtn}
-              onPress={() => setPeerModal(null)}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -616,6 +546,9 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  scrollContent: {
+    paddingBottom: Spacing["5xl"],
   },
   header: {
     paddingHorizontal: Spacing.xl,
@@ -627,14 +560,23 @@ const styles = StyleSheet.create({
     fontSize: FontSize["2xl"],
     fontWeight: FontWeight.bold,
     color: Colors.text,
+    letterSpacing: -0.3,
+  },
+  subtitle: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+    marginBottom: Spacing.xs,
   },
   visibilityRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: Spacing.sm,
+    marginTop: Spacing.xs,
   },
   visibilityChip: {
-    paddingVertical: 6,
-    paddingHorizontal: Spacing.sm,
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.full,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -647,25 +589,117 @@ const styles = StyleSheet.create({
   visibilityText: {
     fontSize: FontSize.xs,
     color: Colors.textSecondary,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.semibold,
   },
   visibilityTextActive: {
     color: Colors.textOnPrimary,
   },
-  searchWrap: {
+  section: {
     paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing.base,
+    marginBottom: Spacing.xl,
+  },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: Spacing.sm,
+  },
+  sectionTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    marginBottom: Spacing.sm,
+    letterSpacing: -0.2,
+  },
+  refreshMapBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primaryLight,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    marginBottom: Spacing.sm,
+  },
+  mapErrorBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    backgroundColor: "#FEF2F2",
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  mapErrorText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.error,
+    lineHeight: 20,
+  },
+  mapFootnote: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    marginTop: Spacing.sm,
+    lineHeight: 18,
+    paddingHorizontal: Spacing.xs,
+  },
+  snapshotCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  snapshotBig: {
+    fontSize: 40,
+    fontWeight: FontWeight.bold,
+    color: Colors.primary,
+    letterSpacing: -1,
+  },
+  snapshotLabel: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    marginTop: Spacing.xs,
+    lineHeight: 20,
+    marginBottom: Spacing.md,
+  },
+  snapshotRow: {
+    flexDirection: "row",
+    gap: Spacing.lg,
+  },
+  snapshotStat: {
+    flex: 1,
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  snapshotStatVal: {
+    fontSize: FontSize.xl,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+  },
+  snapshotStatLab: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    marginTop: 4,
   },
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.md,
+    borderRadius: BorderRadius.lg,
     paddingHorizontal: Spacing.md,
     height: 48,
     borderWidth: 1,
     borderColor: Colors.border,
     gap: Spacing.sm,
+    marginBottom: Spacing.sm,
     ...Shadow.sm,
   },
   searchInput: {
@@ -673,45 +707,19 @@ const styles = StyleSheet.create({
     fontSize: FontSize.base,
     color: Colors.text,
   },
-  tabs: {
-    flexDirection: "row",
-    paddingHorizontal: Spacing.xl,
-    gap: Spacing.sm,
-    marginBottom: Spacing.xl,
-  },
-  tab: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.base,
-    borderRadius: BorderRadius.full,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    gap: Spacing.xs,
-  },
-  tabActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  tabText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-    color: Colors.textSecondary,
-  },
-  tabTextActive: {
-    color: Colors.textOnPrimary,
+  filterHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    marginBottom: Spacing.xs,
   },
   filterRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    paddingHorizontal: Spacing.xl,
     gap: Spacing.xs,
-    marginBottom: Spacing.sm,
   },
   filterChip: {
-    paddingVertical: 6,
-    paddingHorizontal: Spacing.sm,
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.full,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -722,68 +730,24 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primaryLight,
   },
   filterText: {
-    fontSize: FontSize.xs,
+    fontSize: FontSize.sm,
     color: Colors.textSecondary,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.semibold,
   },
   filterTextActive: {
     color: Colors.primaryDark,
-  },
-  emptyState: {
-    alignItems: "center",
-    paddingHorizontal: Spacing["2xl"],
-    paddingBottom: Spacing.xl,
-  },
-  emptyIcon: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: Colors.borderLight,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: Spacing.lg,
-  },
-  emptyTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-    color: Colors.text,
-    marginBottom: Spacing.sm,
-  },
-  emptyBody: {
-    fontSize: FontSize.base,
-    color: Colors.textSecondary,
-    textAlign: "center",
-    lineHeight: 22,
-    marginBottom: Spacing.lg,
-  },
-  sectionCard: {
-    width: "100%",
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.base,
-    marginBottom: Spacing.sm,
-  },
-  sectionCardTitle: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.text,
-    marginBottom: 2,
-  },
-  sectionCardBody: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    lineHeight: 19,
   },
   trustNote: {
     flexDirection: "row",
     alignItems: "flex-start",
     backgroundColor: Colors.primaryLight,
-    borderRadius: BorderRadius.md,
-    padding: Spacing.sm,
-    gap: Spacing.xs,
-    marginBottom: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.xl,
+    marginBottom: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.primary,
   },
   trustText: {
     flex: 1,
@@ -791,33 +755,32 @@ const styles = StyleSheet.create({
     color: Colors.primaryDark,
     lineHeight: 18,
   },
-  listSection: {
-    paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing.lg,
-  },
-  listTitle: {
-    fontSize: FontSize.base,
-    color: Colors.text,
-    fontWeight: FontWeight.semibold,
-    marginBottom: Spacing.sm,
+  privacyNote: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    marginBottom: Spacing.md,
+    lineHeight: 18,
   },
   matchCard: {
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    borderRadius: BorderRadius.md,
+    borderRadius: BorderRadius.lg,
     padding: Spacing.base,
     marginBottom: Spacing.sm,
+    ...Shadow.sm,
   },
   matchRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    gap: Spacing.sm,
   },
   matchName: {
     fontSize: FontSize.sm,
     color: Colors.text,
     fontWeight: FontWeight.semibold,
+    flex: 1,
   },
   matchScore: {
     fontSize: FontSize.sm,
@@ -828,24 +791,13 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.textSecondary,
     marginTop: Spacing.xs,
-  },
-  tapHint: {
-    fontSize: FontSize.xs,
-    color: Colors.primary,
-    marginTop: Spacing.sm,
-    fontWeight: FontWeight.medium,
-  },
-  privacyNote: {
-    fontSize: FontSize.xs,
-    color: Colors.textTertiary,
-    marginBottom: Spacing.md,
     lineHeight: 18,
   },
   costLine: {
     fontSize: FontSize.sm,
     color: Colors.text,
     marginTop: Spacing.sm,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.semibold,
   },
   reserveBtn: {
     marginTop: Spacing.md,
@@ -864,67 +816,7 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
     fontStyle: "italic",
     paddingVertical: Spacing.sm,
-  },
-  postBtn: {
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.xl,
-    borderRadius: BorderRadius.md,
-    borderWidth: 2,
-    borderColor: Colors.primary,
-    gap: Spacing.sm,
-  },
-  postBtnText: {
-    color: Colors.primary,
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.semibold,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "center",
-    paddingHorizontal: Spacing.xl,
-  },
-  modalCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.xl,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    ...Shadow.sm,
-  },
-  modalTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: Colors.text,
-    marginBottom: Spacing.md,
-  },
-  modalLabel: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textTertiary,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  modalValue: {
-    fontSize: FontSize.base,
-    color: Colors.text,
-    marginTop: Spacing.xs,
-    marginBottom: Spacing.lg,
-  },
-  modalCloseBtn: {
-    alignSelf: "flex-end",
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.base,
-    backgroundColor: Colors.primary,
-    borderRadius: BorderRadius.md,
-  },
-  modalCloseText: {
-    color: Colors.textOnPrimary,
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
+    lineHeight: 20,
   },
   driverOuterRow: {
     flexDirection: "row",
@@ -951,6 +843,74 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
     marginTop: Spacing.sm,
     lineHeight: 17,
+  },
+  footerActions: {
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.md,
+    marginTop: Spacing.md,
+  },
+  primaryFooterBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    backgroundColor: Colors.primary,
+    borderRadius: BorderRadius.lg,
+    paddingVertical: Spacing.md,
+    ...Shadow.sm,
+  },
+  primaryFooterBtnText: {
+    color: Colors.textOnPrimary,
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+  },
+  secondaryFooterBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 2,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.surface,
+  },
+  secondaryFooterBtnText: {
+    color: Colors.primary,
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    paddingHorizontal: Spacing.xl,
+  },
+  modalCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  modalTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    marginBottom: Spacing.md,
+  },
+  modalCloseBtn: {
+    alignSelf: "flex-end",
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.base,
+    backgroundColor: Colors.primary,
+    borderRadius: BorderRadius.md,
+  },
+  modalCloseText: {
+    color: Colors.textOnPrimary,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
   },
   crossNetWarningBody: {
     fontSize: FontSize.sm,

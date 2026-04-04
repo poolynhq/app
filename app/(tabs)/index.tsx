@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, useMemo, type ReactNode } from "react";
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Share, Image } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,6 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useDiscoverMapLayers } from "@/hooks/useDiscoverMapLayers";
 import { DiscoverMapLayers } from "@/components/maps/DiscoverMapLayers";
+import { parseGeoPoint } from "@/lib/parseGeoPoint";
 import { Organisation } from "@/types/database";
 import {
   Colors,
@@ -236,6 +237,15 @@ export default function Dashboard() {
   }
 
   const { demandPoints, supplyPoints, routeLines } = useDiscoverMapLayers(profile ?? null);
+
+  const homeMapFallbackCenter = useMemo((): [number, number] => {
+    if (!profile) return [138.6, -34.85];
+    const home = parseGeoPoint(profile.home_location as unknown);
+    if (home) return [home.lng, home.lat];
+    const work = parseGeoPoint(profile.work_location as unknown);
+    if (work) return [work.lng, work.lat];
+    return [138.6, -34.85];
+  }, [profile]);
 
   useEffect(() => {
     async function loadOrgContext() {
@@ -706,6 +716,7 @@ export default function Dashboard() {
             routeGeoJson={routeLines}
             title="Live network map"
             mapHeight={268}
+            fallbackCenter={homeMapFallbackCenter}
           />
           <TouchableOpacity
             style={styles.discoverCta}

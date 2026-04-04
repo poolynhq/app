@@ -1,15 +1,9 @@
 /**
- * Native (iOS / Android) implementation of the Discover map.
- *
- * Uses react-native-webview + MapLibre GL JS loaded from CDN —
- * the same technique as MapPinPickerModal.tsx so it works inside
- * Expo Go without a custom native build.
- *
- * The web version (DiscoverMapLayers.web.tsx) uses the browser's
- * DOM directly so there is no WebView involved.
+ * Native (iOS / Android) — WebView + MapLibre GL JS (Expo Go friendly).
+ * See DiscoverMapLayers.web.tsx for DOM implementation.
  */
 import { useMemo } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { View, Text, StyleSheet, Platform, ActivityIndicator } from "react-native";
 import { WebView } from "react-native-webview";
 
 interface DiscoverMapLayersProps {
@@ -17,69 +11,87 @@ interface DiscoverMapLayersProps {
   supplyGeoJson: GeoJSON.FeatureCollection;
   routeGeoJson: GeoJSON.FeatureCollection;
   title?: string;
-  /** Map viewport height in px (default 220). */
+  /** Map viewport height in px (default 280). */
   mapHeight?: number;
+  /** When there is no demand/supply/route data, center here [lng, lat] (e.g. home). */
+  fallbackCenter?: [number, number];
+  /** When true, show a compact loading bar above the map (RPC in flight). */
+  remoteLoading?: boolean;
 }
 
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const ML_JS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js";
 const ML_CSS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css";
 
+const DEFAULT_CENTER: [number, number] = [138.6, -34.85];
+
 function buildMapHtml(
   demand: GeoJSON.FeatureCollection,
   supply: GeoJSON.FeatureCollection,
-  routes: GeoJSON.FeatureCollection
+  routes: GeoJSON.FeatureCollection,
+  fallbackCenter: [number, number]
 ): string {
-  // Stringify once — embedded directly into the HTML so MapLibre
-  // can read the data without any postMessage round-trip.
   const demandJson = JSON.stringify(demand);
   const supplyJson = JSON.stringify(supply);
   const routeJson = JSON.stringify(routes);
+  const fb = JSON.stringify(fallbackCenter);
 
   return `<!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
   <link href="${ML_CSS}" rel="stylesheet"/>
   <script src="${ML_JS}"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    html, body, #map { width:100%; height:100%; overflow:hidden; background:#f0f4f0; }
+    html, body, #map { width:100%; height:100%; overflow:hidden; background:#e8eef3; touch-action: none; }
     #empty {
-      display:none; position:absolute; left:12px; right:12px; bottom:12px;
-      background:rgba(255,255,255,0.92); border-radius:10px; padding:10px;
+      display:none; position:absolute; left:10px; right:10px; bottom:10px;
+      background:rgba(255,255,255,0.95); border-radius:10px; padding:10px;
       font-family:-apple-system,sans-serif; font-size:12px; color:#374151;
-      text-align:center; line-height:1.4;
+      text-align:center; line-height:1.45;
+      box-shadow:0 1px 4px rgba(0,0,0,0.08);
     }
   </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="empty">Route density will appear as commuters save their schedules and post rides.</div>
+<div id="empty">No route or pickup signals in this view yet. Complete your commute in Profile, or widen to Nearby commuters. The map is centered on your saved home area when available.</div>
 <script>
 var DEMAND = ${demandJson};
 var SUPPLY = ${supplyJson};
 var ROUTES = ${routeJson};
+var FALLBACK = ${fb};
+
+function extendPoint(bounds, c) {
+  if (Array.isArray(c) && c.length >= 2 && isFinite(c[0]) && isFinite(c[1])) bounds.extend(c);
+}
+
+function extendFromGeometry(bounds, geom) {
+  if (!geom) return;
+  if (geom.type === 'Point') extendPoint(bounds, geom.coordinates);
+  else if (geom.type === 'LineString') geom.coordinates.forEach(function (c) { extendPoint(bounds, c); });
+  else if (geom.type === 'MultiLineString') geom.coordinates.forEach(function (line) { line.forEach(function (c) { extendPoint(bounds, c); }); });
+}
 
 var map = new maplibregl.Map({
   container: 'map',
   style: '${MAP_STYLE}',
-  center: [138.62, -34.73],
-  zoom: 10,
+  center: FALLBACK,
+  zoom: 11,
   attributionControl: false
 });
 
 map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
 map.on('load', function () {
-  // ── Demand heatmap ────────────────────────────────────
   map.addSource('demand', { type: 'geojson', data: DEMAND });
   map.addLayer({
     id: 'demand-heat', type: 'heatmap', source: 'demand',
     paint: {
       'heatmap-intensity': 0.9,
-      'heatmap-radius': 25,
-      'heatmap-opacity': 0.65,
+      'heatmap-radius': 28,
+      'heatmap-opacity': 0.68,
       'heatmap-color': [
         'interpolate', ['linear'], ['heatmap-density'],
         0,   'rgba(33,102,172,0)',
@@ -90,20 +102,19 @@ map.on('load', function () {
     }
   });
 
-  // ── Supply clusters ──────────────────────────────────
   map.addSource('supply', {
     type: 'geojson', data: SUPPLY,
-    cluster: true, clusterRadius: 40
+    cluster: true, clusterRadius: 42
   });
   map.addLayer({
     id: 'supply-circles', type: 'circle', source: 'supply',
     filter: ['!', ['has', 'point_count']],
-    paint: { 'circle-radius': 6, 'circle-color': '#0B8457', 'circle-opacity': 0.85 }
+    paint: { 'circle-radius': 7, 'circle-color': '#0B8457', 'circle-opacity': 0.88 }
   });
   map.addLayer({
     id: 'supply-clusters', type: 'circle', source: 'supply',
     filter: ['has', 'point_count'],
-    paint: { 'circle-radius': 16, 'circle-color': '#1A1A2E', 'circle-opacity': 0.8 }
+    paint: { 'circle-radius': 17, 'circle-color': '#1A1A2E', 'circle-opacity': 0.82 }
   });
   map.addLayer({
     id: 'supply-count', type: 'symbol', source: 'supply',
@@ -112,29 +123,27 @@ map.on('load', function () {
     paint: { 'text-color': '#FFFFFF' }
   });
 
-  // ── Route lines ──────────────────────────────────────
   map.addSource('routes', { type: 'geojson', data: ROUTES });
   map.addLayer({
     id: 'route-line', type: 'line', source: 'routes',
     layout: { 'line-join': 'round', 'line-cap': 'round' },
-    paint: { 'line-color': '#3B82F6', 'line-width': 3, 'line-opacity': 0.8 }
+    paint: { 'line-color': '#2563EB', 'line-width': 4, 'line-opacity': 0.82 }
   });
 
-  // ── Auto-fit bounds ──────────────────────────────────
-  var all = DEMAND.features.concat(SUPPLY.features);
-  if (all.length > 0) {
-    var bounds = new maplibregl.LngLatBounds();
-    all.forEach(function (f) {
-      if (f.geometry && f.geometry.type === 'Point') {
-        bounds.extend(f.geometry.coordinates);
-      }
-    });
-    if (!bounds.isEmpty()) {
-      map.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 600 });
-    }
+  var bounds = new maplibregl.LngLatBounds();
+  [DEMAND, SUPPLY].forEach(function (fc) {
+    fc.features.forEach(function (f) { extendFromGeometry(bounds, f.geometry); });
+  });
+  ROUTES.features.forEach(function (f) { extendFromGeometry(bounds, f.geometry); });
+
+  if (!bounds.isEmpty()) {
+    map.fitBounds(bounds, { padding: 52, maxZoom: 13, duration: 650 });
+  } else {
+    map.setCenter(FALLBACK);
+    map.setZoom(11);
   }
 
-  var hasData = all.length > 0 || ROUTES.features.length > 0;
+  var hasData = DEMAND.features.length + SUPPLY.features.length + ROUTES.features.length > 0;
   if (!hasData) document.getElementById('empty').style.display = 'block';
 });
 </script>
@@ -147,50 +156,164 @@ export function DiscoverMapLayers({
   supplyGeoJson,
   routeGeoJson,
   title = "Commute map",
-  mapHeight = 220,
+  mapHeight = 280,
+  fallbackCenter = DEFAULT_CENTER,
+  remoteLoading = false,
 }: DiscoverMapLayersProps) {
-  // Re-build HTML only when data changes, not on every render
   const html = useMemo(
-    () => buildMapHtml(demandGeoJson, supplyGeoJson, routeGeoJson),
-    [demandGeoJson, supplyGeoJson, routeGeoJson]
+    () => buildMapHtml(demandGeoJson, supplyGeoJson, routeGeoJson, fallbackCenter),
+    [demandGeoJson, supplyGeoJson, routeGeoJson, fallbackCenter]
   );
+
+  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]}`;
 
   return (
     <View style={styles.container}>
-      <Text style={styles.label}>{title}</Text>
-      <WebView
-        source={{ html }}
-        style={[styles.map, { height: mapHeight }]}
-        javaScriptEnabled
-        originWhitelist={["*"]}
-        // Allow loading CDN scripts and map tiles over HTTPS
-        mixedContentMode="compatibility"
-        scrollEnabled={false}
-        // Suppress "Reload" prompt if CDN is slow
-        renderLoading={() => <View style={[styles.loading, { height: mapHeight }]} />}
-        startInLoadingState
-      />
+      <View style={styles.labelRow}>
+        <Text style={styles.label}>{title}</Text>
+        {remoteLoading ? (
+          <View style={styles.remoteLoading}>
+            <ActivityIndicator size="small" color="#0B8457" />
+            <Text style={styles.remoteLoadingText}>Updating…</Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={styles.mapClip}>
+        <WebView
+          key={centerKey}
+          source={{ html }}
+          style={[styles.map, { height: mapHeight }]}
+          javaScriptEnabled
+          domStorageEnabled
+          originWhitelist={["*"]}
+          mixedContentMode="compatibility"
+          scrollEnabled={false}
+          bounces={false}
+          overScrollMode="never"
+          androidLayerType="hardware"
+          nestedScrollEnabled
+          setSupportMultipleWindows={false}
+          startInLoadingState
+          renderLoading={() => (
+            <View style={[styles.loading, { height: mapHeight }]}>
+              <ActivityIndicator color="#0B8457" />
+              <Text style={styles.loadingText}>Loading map…</Text>
+            </View>
+          )}
+        />
+      </View>
+      <View style={styles.legend}>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: "#B91C1C" }]} />
+          <Text style={styles.legendText}>Rider demand</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: "#0B8457" }]} />
+          <Text style={styles.legendText}>Drivers</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendLine]} />
+          <Text style={styles.legendText}>Routes</Text>
+        </View>
+      </View>
+      {Platform.OS === "android" ? (
+        <Text style={styles.panHint}>Pinch and drag inside the map to zoom and pan.</Text>
+      ) : (
+        <Text style={styles.panHint}>Use two fingers to zoom; drag to move the map.</Text>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    borderRadius: 14,
+    borderRadius: 16,
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "#E5E7EB",
-    backgroundColor: "#F0F4F0",
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#1A1A2E",
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 6,
     backgroundColor: "#FFFFFF",
   },
-  map: { minHeight: 160 },
-  loading: { backgroundColor: "#F0F4F0" },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
+    gap: 8,
+  },
+  label: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#1A1A2E",
+    flex: 1,
+  },
+  remoteLoading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  remoteLoadingText: {
+    fontSize: 12,
+    color: "#6B7280",
+    fontWeight: "600",
+  },
+  mapClip: {
+    marginHorizontal: 10,
+    marginBottom: 4,
+    borderRadius: 12,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  map: {
+    minHeight: 160,
+    backgroundColor: "#e8eef3",
+  },
+  loading: {
+    backgroundColor: "#e8eef3",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+  },
+  loadingText: {
+    fontSize: 13,
+    color: "#6B7280",
+  },
+  legend: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 14,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  legendItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  legendLine: {
+    width: 14,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#2563EB",
+  },
+  legendText: {
+    fontSize: 11,
+    color: "#6B7280",
+    fontWeight: "600",
+  },
+  panHint: {
+    fontSize: 11,
+    color: "#9CA3AF",
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    lineHeight: 15,
+  },
 });

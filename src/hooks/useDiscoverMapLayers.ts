@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types/database";
 
@@ -23,20 +23,43 @@ export function useDiscoverMapLayers(profile: User | null) {
   const [routeLines, setRouteLines] = useState<GeoJSON.FeatureCollection>(
     emptyFeatureCollection
   );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const reload = useCallback(() => {
+    setReloadToken((t) => t + 1);
+  }, []);
 
   useEffect(() => {
-    async function loadMapLayers() {
-      if (!profile?.id) return;
+    let cancelled = false;
 
-      const { data, error } = await supabase.rpc("get_map_layers_for_discover", {
+    async function loadMapLayers() {
+      if (!profile?.id) {
+        setDemandPoints(emptyFeatureCollection);
+        setSupplyPoints(emptyFeatureCollection);
+        setRouteLines(emptyFeatureCollection);
+        setLoading(false);
+        setError(null);
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+
+      const { data, error: rpcError } = await supabase.rpc("get_map_layers_for_discover", {
         p_user_id: profile.id,
         p_scope: profile.visibility_mode === "nearby" ? "extended" : "network",
       });
 
-      if (error || !data) {
+      if (cancelled) return;
+
+      if (rpcError || !data) {
         setDemandPoints(emptyFeatureCollection);
         setSupplyPoints(emptyFeatureCollection);
         setRouteLines(emptyFeatureCollection);
+        setError(rpcError?.message ?? "Could not load map");
+        setLoading(false);
         return;
       }
 
@@ -44,10 +67,27 @@ export function useDiscoverMapLayers(profile: User | null) {
       setDemandPoints(payload.demand_points ?? emptyFeatureCollection);
       setSupplyPoints(payload.supply_points ?? emptyFeatureCollection);
       setRouteLines(payload.route_lines ?? emptyFeatureCollection);
+      setLoading(false);
     }
 
-    loadMapLayers();
-  }, [profile?.id, profile?.visibility_mode]);
+    void loadMapLayers();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, profile?.visibility_mode, reloadToken]);
 
-  return { demandPoints, supplyPoints, routeLines };
+  const hasMapData =
+    demandPoints.features.length > 0 ||
+    supplyPoints.features.length > 0 ||
+    routeLines.features.length > 0;
+
+  return {
+    demandPoints,
+    supplyPoints,
+    routeLines,
+    reload,
+    loading,
+    error,
+    hasMapData,
+  };
 }
