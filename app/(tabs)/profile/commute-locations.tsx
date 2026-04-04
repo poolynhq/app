@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useIsFocused } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -6,6 +7,7 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
+  Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -14,6 +16,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { showAlert } from "@/lib/platformAlert";
+import { parseGeoPoint } from "@/lib/parseGeoPoint";
+import {
+  buildStaticCommuteMapUrl,
+  fetchRouteInfo,
+  mapboxTokenPresent,
+  reverseGeocodeShort,
+  type RouteInfo,
+} from "@/lib/mapboxCommutePreview";
 import {
   Colors,
   Spacing,
@@ -37,31 +47,200 @@ function distanceMeters(
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
 }
 
-function parsePointWkt(w: unknown): { lat: number; lng: number } | null {
-  if (w == null || typeof w !== "string") return null;
-  const m = /^POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i.exec(w.trim());
-  if (!m) return null;
-  const lng = parseFloat(m[1]);
-  const lat = parseFloat(m[2]);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  return { lat, lng };
+/** Illustrative one-way cash range from driving distance (not a quote). */
+function estimateContributionRangeAud(distanceKm: number): { low: string; high: string } {
+  const midAud = Math.min(Math.max(distanceKm * 0.14, 2.8), 22);
+  const low = Math.max(2.2, midAud * 0.7);
+  const high = midAud * 1.35;
+  return { low: low.toFixed(2), high: high.toFixed(2) };
 }
+
+type LocationRowSnapshot = {
+  home_location: unknown;
+  work_location: unknown;
+  pickup_location: unknown;
+  work_location_label: string | null;
+};
 
 export default function CommuteLocationsScreen() {
   const router = useRouter();
+  const isFocused = useIsFocused();
   const { profile, refreshProfile } = useAuth();
   const [savingPickup, setSavingPickup] = useState(false);
+  const [locRow, setLocRow] = useState<LocationRowSnapshot | null>(null);
+
+  const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
+  const [fetchingRoute, setFetchingRoute] = useState(false);
+  const [storedDistanceM, setStoredDistanceM] = useState<number | null>(null);
+  const [storedDurationS, setStoredDurationS] = useState<number | null>(null);
+
+  const [homeLabel, setHomeLabel] = useState<string | null>(null);
+  const [workLabelGeo, setWorkLabelGeo] = useState<string | null>(null);
+  const [pickupLabelGeo, setPickupLabelGeo] = useState<string | null>(null);
 
   const canRide = profile?.role === "passenger" || profile?.role === "both";
 
-  const homePt = useMemo(() => parsePointWkt(profile?.home_location), [profile?.home_location]);
-  const pickupPt = useMemo(() => parsePointWkt(profile?.pickup_location), [profile?.pickup_location]);
+  useEffect(() => {
+    if (!isFocused || !profile?.id) return;
+    let cancelled = false;
+    void (async () => {
+      await refreshProfile();
+      const { data, error } = await supabase
+        .from("users")
+        .select("home_location, work_location, pickup_location, work_location_label")
+        .eq("id", profile.id)
+        .maybeSingle();
+      if (__DEV__) {
+        if (error) console.warn("[commute-locations] location refetch:", error.message);
+        else if (data) {
+          const h = parseGeoPoint(data.home_location);
+          const w = parseGeoPoint(data.work_location);
+          const p = parseGeoPoint(data.pickup_location);
+          console.warn("[commute-locations] parsed pins", {
+            hasHomeRaw: data.home_location != null,
+            hasWorkRaw: data.work_location != null,
+            hasPickupRaw: data.pickup_location != null,
+            homeParsed: Boolean(h),
+            workParsed: Boolean(w),
+            pickupParsed: Boolean(p),
+          });
+        }
+      }
+      if (!cancelled && data) setLocRow(data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isFocused, profile?.id, refreshProfile]);
 
+  const homePt = useMemo(
+    () => parseGeoPoint(locRow?.home_location ?? profile?.home_location),
+    [locRow?.home_location, profile?.home_location]
+  );
+  const workPt = useMemo(
+    () => parseGeoPoint(locRow?.work_location ?? profile?.work_location),
+    [locRow?.work_location, profile?.work_location]
+  );
+  const pickupPt = useMemo(
+    () => parseGeoPoint(locRow?.pickup_location ?? profile?.pickup_location),
+    [locRow?.pickup_location, profile?.pickup_location]
+  );
+
+  /** Saved “from” point: home if present, else routine pickup pin (some profiles only store pickup + work). */
+  const routineStartPt = useMemo(() => homePt ?? pickupPt, [homePt, pickupPt]);
+
+  /** True only when pickup is intentionally different from saved home (one-day override). */
   const alternateActive = useMemo(() => {
-    if (!pickupPt) return false;
-    if (!homePt) return true;
+    if (!pickupPt || !homePt) return false;
     return distanceMeters(homePt, pickupPt) > 80;
   }, [homePt, pickupPt]);
+
+  const tripStart = useMemo(() => {
+    if (alternateActive) return pickupPt;
+    return routineStartPt;
+  }, [alternateActive, pickupPt, routineStartPt]);
+
+  const hasCommute = Boolean(workPt && routineStartPt);
+
+  useEffect(() => {
+    if (!profile?.id || !hasCommute) {
+      setStoredDistanceM(null);
+      setStoredDurationS(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("commute_routes")
+        .select("distance_m, duration_s")
+        .eq("user_id", profile.id)
+        .eq("direction", "to_work")
+        .maybeSingle();
+      if (cancelled || error) return;
+      if (data) {
+        setStoredDistanceM(data.distance_m);
+        setStoredDurationS(data.duration_s);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, hasCommute]);
+
+  useEffect(() => {
+    if (!tripStart || !workPt) {
+      setRouteInfo(null);
+      return;
+    }
+    let cancelled = false;
+    setFetchingRoute(true);
+    fetchRouteInfo(tripStart, workPt).then((info) => {
+      if (!cancelled) {
+        setRouteInfo(info);
+        setFetchingRoute(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tripStart, workPt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (homePt && mapboxTokenPresent()) {
+        const h = await reverseGeocodeShort(homePt.lat, homePt.lng);
+        if (!cancelled) setHomeLabel(h);
+      } else {
+        setHomeLabel(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [homePt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (workPt && mapboxTokenPresent()) {
+        const w = await reverseGeocodeShort(workPt.lat, workPt.lng);
+        if (!cancelled) setWorkLabelGeo(w);
+      } else {
+        setWorkLabelGeo(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workPt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (pickupPt && mapboxTokenPresent()) {
+        const p = await reverseGeocodeShort(pickupPt.lat, pickupPt.lng);
+        if (!cancelled) setPickupLabelGeo(p);
+      } else {
+        setPickupLabelGeo(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pickupPt]);
+
+  const primaryKm =
+    routeInfo?.primary.distanceKm ??
+    (storedDistanceM != null ? storedDistanceM / 1000 : null);
+  const primaryMin =
+    routeInfo?.primary.durationMin ??
+    (storedDurationS != null ? storedDurationS / 60 : null);
+
+  const costRange =
+    primaryKm != null && Number.isFinite(primaryKm)
+      ? estimateContributionRangeAud(primaryKm)
+      : null;
 
   const setPickupFromDevice = useCallback(async () => {
     if (!profile?.id) return;
@@ -109,32 +288,143 @@ export default function CommuteLocationsScreen() {
     }
   }, [profile?.id, refreshProfile]);
 
+  const workTitle =
+    locRow?.work_location_label?.trim() ||
+    profile?.work_location_label?.trim() ||
+    workLabelGeo ||
+    (workPt ? "Saved workplace pin" : "");
+
+  const startTitle = alternateActive
+    ? pickupLabelGeo || "Today’s pickup pin"
+    : homePt
+      ? homeLabel || "Saved home area"
+      : pickupLabelGeo || "Saved trip start";
+
+  const startLegendShort = alternateActive ? "Pickup" : homePt ? "Home" : "Start";
+
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.lead}>
-          Home and work define your commute corridor. You can change them anytime; we rebuild your saved
-          route for matching.
+          Your routine commute is used to match you with people on a similar corridor. Pickup overrides apply
+          only for riders when you are not starting from home today.
         </Text>
 
-        <TouchableOpacity
-          style={styles.primaryCard}
-          onPress={() => router.push("/(onboarding)/location?fromProfile=1")}
-          activeOpacity={0.85}
-        >
-          <View style={styles.cardIcon}>
-            <Ionicons name="home-outline" size={22} color={Colors.primary} />
-          </View>
-          <View style={styles.cardTextCol}>
-            <Text style={styles.cardTitle}>Home & work locations</Text>
-            <Text style={styles.cardBody}>
-              {profile?.work_location_label?.trim()
-                ? `Work: ${profile.work_location_label.trim()}`
-                : "Set or update where you start and end your commute"}
+        {!hasCommute ? (
+          <View style={styles.emptyCard}>
+            <Ionicons name="map-outline" size={36} color={Colors.primary} />
+            <Text style={styles.emptyTitle}>Set your commute</Text>
+            <Text style={styles.emptyBody}>
+              Add your home and workplace pins so we can show your route and match you accurately.
             </Text>
+            <TouchableOpacity
+              style={styles.primaryBtn}
+              onPress={() => router.push("/(onboarding)/location?fromProfile=1")}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.primaryBtnText}>Add locations</Text>
+              <Ionicons name="arrow-forward" size={18} color={Colors.textOnPrimary} />
+            </TouchableOpacity>
           </View>
-          <Ionicons name="chevron-forward" size={22} color={Colors.textTertiary} />
-        </TouchableOpacity>
+        ) : (
+          <>
+            <View style={styles.summaryCard}>
+              <Text style={styles.summaryEyebrow}>Trip start</Text>
+              <Text style={styles.summaryLine} numberOfLines={3}>
+                {startTitle}
+              </Text>
+              {alternateActive ? (
+                <Text style={styles.summaryHint}>Using today’s pickup instead of saved home.</Text>
+              ) : !homePt && pickupPt ? (
+                <Text style={styles.summaryHint}>
+                  Trip start is your saved pickup pin. Use Edit locations to add a separate home pin if you
+                  want both.
+                </Text>
+              ) : null}
+
+              <Text style={[styles.summaryEyebrow, { marginTop: Spacing.md }]}>Destination</Text>
+              <Text style={styles.summaryLine} numberOfLines={3}>
+                {workTitle}
+              </Text>
+
+              {mapboxTokenPresent() && tripStart && workPt ? (
+                <View style={styles.mapBlock}>
+                  <Image
+                    source={{ uri: buildStaticCommuteMapUrl(tripStart, workPt, routeInfo) }}
+                    style={styles.mapImage}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.legendRow}>
+                    <View style={styles.legendItem}>
+                      <View style={[styles.legendDot, { backgroundColor: Colors.primary }]} />
+                      <Text style={styles.legendText}>{startLegendShort}</Text>
+                    </View>
+                    <Ionicons name="arrow-forward" size={12} color={Colors.textTertiary} />
+                    <View style={styles.legendItem}>
+                      <View style={[styles.legendDot, { backgroundColor: "#E74C3C" }]} />
+                      <Text style={styles.legendText}>Work</Text>
+                    </View>
+                    {routeInfo && routeInfo.alternates.length > 0 ? (
+                      <View style={styles.altBadge}>
+                        <Text style={styles.altBadgeText}>
+                          +{routeInfo.alternates.length} alt{" "}
+                          {routeInfo.alternates.length === 1 ? "route" : "routes"}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+
+                  {fetchingRoute ? (
+                    <ActivityIndicator size="small" color={Colors.primary} style={{ marginTop: Spacing.sm }} />
+                  ) : primaryKm != null && primaryMin != null ? (
+                    <>
+                      <Text style={styles.statsMain}>
+                        {primaryKm.toFixed(1)} km ·{" "}
+                        {primaryMin < 60
+                          ? `~${Math.round(primaryMin)} min drive`
+                          : `~${Math.floor(primaryMin / 60)}h ${Math.round(primaryMin % 60)}m drive`}
+                      </Text>
+                      {routeInfo?.alternates.map((alt, i) => (
+                        <Text key={i} style={styles.statsAlt}>
+                          Alt {i + 1}: {alt.distanceKm.toFixed(1)} km ·{" "}
+                          {alt.durationMin < 60
+                            ? `~${Math.round(alt.durationMin)} min`
+                            : `~${Math.floor(alt.durationMin / 60)}h ${Math.round(alt.durationMin % 60)}m`}
+                        </Text>
+                      ))}
+                    </>
+                  ) : (
+                    <Text style={styles.statsLight}>Could not load drive times. Try again later.</Text>
+                  )}
+
+                  {costRange ? (
+                    <View style={styles.costBox}>
+                      <Text style={styles.costLabel}>Approx. passenger contribution (one way)</Text>
+                      <Text style={styles.costValue}>
+                        ${costRange.low} – ${costRange.high} AUD
+                      </Text>
+                      <Text style={styles.costDisclaimer}>
+                        Indicative only — actual shared-ride pricing depends on your network, trip, and driver.
+                        Organisation members may have different fees.
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              ) : (
+                <Text style={styles.statsLight}>Add a Mapbox token to preview your route on the map.</Text>
+              )}
+
+              <TouchableOpacity
+                style={styles.editBtn}
+                onPress={() => router.push("/(onboarding)/location?fromProfile=1")}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="create-outline" size={20} color={Colors.primary} />
+                <Text style={styles.editBtnText}>Edit locations</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
 
         {canRide ? (
           <View style={styles.pickupCard}>
@@ -147,7 +437,13 @@ export default function CommuteLocationsScreen() {
               use it for matching; clear it when you are back to your usual start.
             </Text>
             <Text style={styles.pickupStatus}>
-              {alternateActive ? "Using alternate pickup (not your saved home pin)." : "Using saved home as pickup."}
+              {alternateActive
+                ? "Using alternate pickup (not your saved home pin)."
+                : homePt
+                  ? "Using saved home as pickup."
+                  : pickupPt
+                    ? "Trip start uses your saved pickup pin (no separate home on file)."
+                    : "Set a trip start in Edit locations to enable pickup overrides."}
             </Text>
             <TouchableOpacity
               style={[styles.pickupBtn, savingPickup && styles.pickupBtnDisabled]}
@@ -189,34 +485,155 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: Spacing.lg,
   },
-  primaryCard: {
+  emptyCard: {
+    alignItems: "center",
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: Spacing.xl,
+    ...Shadow.sm,
+  },
+  emptyTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  emptyBody: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    lineHeight: 20,
+    marginBottom: Spacing.lg,
+  },
+  primaryBtn: {
     flexDirection: "row",
     alignItems: "center",
+    gap: Spacing.sm,
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: BorderRadius.md,
+  },
+  primaryBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textOnPrimary,
+  },
+  summaryCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     padding: Spacing.base,
     borderWidth: 1,
     borderColor: Colors.border,
-    gap: Spacing.md,
     marginBottom: Spacing.xl,
     ...Shadow.sm,
   },
-  cardIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.primaryLight,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  cardTextCol: { flex: 1, minWidth: 0 },
-  cardTitle: {
-    fontSize: FontSize.base,
+  summaryEyebrow: {
+    fontSize: 10,
     fontWeight: FontWeight.semibold,
-    color: Colors.text,
+    color: Colors.textTertiary,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
     marginBottom: 4,
   },
-  cardBody: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 18 },
+  summaryLine: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.medium,
+    color: Colors.text,
+    lineHeight: 22,
+  },
+  summaryHint: {
+    fontSize: FontSize.xs,
+    color: Colors.info,
+    marginTop: 4,
+  },
+  mapBlock: { marginTop: Spacing.md },
+  mapImage: {
+    width: "100%",
+    height: 200,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.borderLight,
+  },
+  legendRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+  },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  legendText: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: FontWeight.medium },
+  altBadge: {
+    marginLeft: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.primaryLight,
+  },
+  altBadgeText: { fontSize: 10, fontWeight: FontWeight.semibold, color: Colors.primaryDark },
+  statsMain: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginTop: Spacing.sm,
+  },
+  statsAlt: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: 4,
+  },
+  statsLight: {
+    fontSize: FontSize.sm,
+    color: Colors.textTertiary,
+    marginTop: Spacing.sm,
+  },
+  costBox: {
+    marginTop: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  costLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primaryDark,
+    marginBottom: 4,
+  },
+  costValue: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+  },
+  costDisclaimer: {
+    fontSize: 10,
+    color: Colors.textSecondary,
+    lineHeight: 15,
+    marginTop: Spacing.sm,
+  },
+  editBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    marginTop: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.surface,
+  },
+  editBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primary,
+  },
   pickupCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,

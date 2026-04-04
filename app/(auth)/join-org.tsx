@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -10,7 +10,7 @@ import {
   ScrollView,
   ActivityIndicator,
 } from "react-native";
-import { Link, router } from "expo-router";
+import { Link, router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "@/lib/supabase";
 import {
@@ -23,11 +23,21 @@ import {
 } from "@/constants/theme";
 
 export default function JoinOrg() {
+  const params = useLocalSearchParams<{ code?: string | string[] }>();
   const [inviteCode, setInviteCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [orgName, setOrgName] = useState("");
   const [joined, setJoined] = useState(false);
+
+  useEffect(() => {
+    const raw = params.code;
+    const c = typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "";
+    const trimmed = c.trim().toUpperCase().slice(0, 8);
+    if (trimmed.length >= 8) {
+      setInviteCode(trimmed);
+    }
+  }, [params.code]);
 
   async function handleJoin() {
     setError("");

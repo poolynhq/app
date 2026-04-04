@@ -41,6 +41,12 @@ const tabs: {
     iconFocused: "person-add",
   },
   {
+    name: "domain-join-requests",
+    title: "Join requests",
+    icon: "mail-outline",
+    iconFocused: "mail",
+  },
+  {
     name: "transfer-admin",
     title: "Transfer",
     icon: "swap-horizontal-outline",
@@ -82,6 +88,7 @@ export default function AdminLayout() {
             title: tab.title,
             href:
               tab.name === "claim-explorers" ||
+              tab.name === "domain-join-requests" ||
               tab.name === "transfer-admin" ||
               tab.name === "org-paywall"
                 ? null

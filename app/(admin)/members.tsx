@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   TouchableOpacity,
+  TextInput,
+  ScrollView,
 } from "react-native";
 import { showAlert } from "@/lib/platformAlert";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -16,6 +18,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { OrgRole, OrganisationNetworkStatus, UserRole } from "@/types/database";
 import { orgRequiresFullActivationPaywall, orgStatusIsGrace } from "@/lib/orgNetworkUi";
+import { SortSelectDropdown } from "@/components/admin/SortSelectDropdown";
 import {
   Colors,
   Spacing,
@@ -34,7 +37,26 @@ interface MemberRow {
   active: boolean;
   onboarding_completed: boolean;
   org_member_verified: boolean;
+  created_at: string;
 }
+
+type MembersSortKey = "name_asc" | "name_desc" | "created_asc" | "created_desc";
+type MembersRoleFilter = "all" | "driver" | "passenger" | "both" | "verified";
+
+const MEMBER_FILTER_CHIPS: { key: MembersRoleFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "driver", label: "Drivers" },
+  { key: "passenger", label: "Passengers" },
+  { key: "both", label: "Both" },
+  { key: "verified", label: "Verified" },
+];
+
+const MEMBER_SORT_OPTIONS: { key: MembersSortKey; label: string }[] = [
+  { key: "name_asc", label: "Name A–Z" },
+  { key: "name_desc", label: "Name Z–A" },
+  { key: "created_asc", label: "Oldest join first" },
+  { key: "created_desc", label: "Newest join first" },
+];
 
 interface FlexGrantRow {
   id: string;
@@ -45,8 +67,8 @@ interface FlexGrantRow {
 }
 
 const ROLE_CONFIG: Record<UserRole, { label: string; bg: string; fg: string }> = {
-  driver: { label: "Driver", bg: Colors.primaryLight, fg: Colors.primaryDark },
-  passenger: { label: "Passenger", bg: "#EFF6FF", fg: Colors.info },
+  driver: { label: "Driver", bg: "#EFF6FF", fg: Colors.info },
+  passenger: { label: "Passenger", bg: Colors.primaryLight, fg: Colors.primaryDark },
   both: { label: "Both", bg: "#F3E8FF", fg: "#8B5CF6" },
 };
 
@@ -118,7 +140,7 @@ function MemberItem({
           </View>
           {!item.onboarding_completed && (
             <View style={styles.pendingBadge}>
-              <Text style={styles.pendingBadgeText}>Onboarding</Text>
+              <Text style={styles.pendingBadgeText}>Pending</Text>
             </View>
           )}
           {item.org_member_verified && (
@@ -170,6 +192,9 @@ export default function Members() {
   const [recentGrants, setRecentGrants] = useState<FlexGrantRow[]>([]);
   const [domainPendingCount, setDomainPendingCount] = useState(0);
   const [orgNetworkStatus, setOrgNetworkStatus] = useState<OrganisationNetworkStatus | null>(null);
+  const [query, setQuery] = useState("");
+  const [roleFilter, setRoleFilter] = useState<MembersRoleFilter>("all");
+  const [sortKey, setSortKey] = useState<MembersSortKey>("name_asc");
 
   const fetchMembers = useCallback(async () => {
     if (!profile?.org_id) return;
@@ -186,7 +211,7 @@ export default function Members() {
       const { data, error: err } = await supabase
         .from("users")
         .select(
-          "id, full_name, email, role, org_role, active, onboarding_completed, org_member_verified"
+          "id, full_name, email, role, org_role, active, onboarding_completed, org_member_verified, created_at"
         )
         .eq("org_id", profile.org_id)
         .order("full_name");
@@ -308,6 +333,31 @@ export default function Members() {
     fetchMembers();
   }, [fetchMembers]);
 
+  const filteredMembers = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let rows = members.filter((m) => {
+      if (roleFilter === "verified" && !m.org_member_verified) return false;
+      if (roleFilter === "driver" && m.role !== "driver") return false;
+      if (roleFilter === "passenger" && m.role !== "passenger") return false;
+      if (roleFilter === "both" && m.role !== "both") return false;
+      if (!q) return true;
+      const name = (m.full_name ?? "").toLowerCase();
+      return name.includes(q) || m.email.toLowerCase().includes(q);
+    });
+    rows = [...rows].sort((a, b) => {
+      if (sortKey === "created_asc" || sortKey === "created_desc") {
+        const ta = new Date(a.created_at).getTime();
+        const tb = new Date(b.created_at).getTime();
+        return sortKey === "created_asc" ? ta - tb : tb - ta;
+      }
+      const an = (a.full_name ?? a.email).toLowerCase();
+      const bn = (b.full_name ?? b.email).toLowerCase();
+      const cmp = an.localeCompare(bn);
+      return sortKey === "name_desc" ? -cmp : cmp;
+    });
+    return rows;
+  }, [members, query, roleFilter, sortKey]);
+
   if (loading) {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -350,8 +400,64 @@ export default function Members() {
         </Text>
       </View>
 
+      <View style={styles.searchWrap}>
+        <Ionicons name="search-outline" size={18} color={Colors.textTertiary} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search name or email"
+          placeholderTextColor={Colors.textTertiary}
+          value={query}
+          onChangeText={setQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {query.length > 0 ? (
+          <TouchableOpacity onPress={() => setQuery("")} hitSlop={8}>
+            <Ionicons name="close-circle" size={20} color={Colors.textTertiary} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
+      <Text style={styles.controlsLabel}>Filter</Text>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.chipScroll}
+        contentContainerStyle={styles.chipRow}
+      >
+        {MEMBER_FILTER_CHIPS.map((c) => (
+          <TouchableOpacity
+            key={c.key}
+            style={[styles.chip, roleFilter === c.key && styles.chipOn]}
+            onPress={() => setRoleFilter(c.key)}
+          >
+            <Text style={[styles.chipText, roleFilter === c.key && styles.chipTextOn]}>
+              {c.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      <Text style={styles.filterHint}>
+        Verified: admin-marked in Poolyn. Role filters match commuter role (driver / passenger /
+        both).
+      </Text>
+
+      <Text style={styles.controlsLabel}>Sort</Text>
+      <SortSelectDropdown
+        value={sortKey}
+        options={MEMBER_SORT_OPTIONS}
+        onChange={setSortKey}
+        accessibilityLabel="Sort members"
+      />
+
+      {members.length > 0 && filteredMembers.length !== members.length ? (
+        <Text style={styles.showingText}>
+          Showing {filteredMembers.length} of {members.length}
+        </Text>
+      ) : null}
+
       <FlatList
-        data={members}
+        data={filteredMembers}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
           <MemberItem
@@ -376,54 +482,87 @@ export default function Members() {
         ListHeaderComponent={
           domainPendingCount > 0 ? (
             <View style={styles.pendingBanner}>
-              <Ionicons name="people-outline" size={22} color={Colors.primary} />
+              <Ionicons name="mail-outline" size={22} color={Colors.primary} />
               <View style={{ flex: 1, marginHorizontal: Spacing.sm }}>
-                <Text style={styles.pendingTitle}>Same domain, not in the network</Text>
+                <Text style={styles.pendingTitle}>Domain explorers — join requests</Text>
                 <Text style={styles.pendingBody}>
-                  {domainPendingCount} account{domainPendingCount === 1 ? "" : "s"} match your
-                  organisation domain but are not members yet. Add them from the list (or they can
-                  stay independent if you leave them out).
+                  {domainPendingCount} account{domainPendingCount === 1 ? "" : "s"} share your
+                  company email but are not on the workplace network. Send each person an in-app join
+                  request (with your invite code), or add them directly.
                   {orgStatusIsGrace(orgNetworkStatus)
-                    ? "\n\nClaiming colleagues is paused while your organization is in a grace period."
+                    ? "\n\nRequests and claiming are paused while your organisation is in a grace period."
                     : ""}
                 </Text>
+                <View style={styles.pendingBtnRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.pendingBtn,
+                      styles.pendingBtnPrimary,
+                      orgStatusIsGrace(orgNetworkStatus) && styles.pendingBtnDisabled,
+                    ]}
+                    onPress={() => {
+                      if (orgRequiresFullActivationPaywall(orgNetworkStatus)) {
+                        router.push("/(admin)/org-paywall");
+                        return;
+                      }
+                      if (!orgStatusIsGrace(orgNetworkStatus)) {
+                        router.push("/(admin)/domain-join-requests");
+                      }
+                    }}
+                    activeOpacity={0.85}
+                    disabled={orgStatusIsGrace(orgNetworkStatus)}
+                  >
+                    <Text style={styles.pendingBtnText}>
+                      {orgRequiresFullActivationPaywall(orgNetworkStatus) ? "Activate" : "Send requests"}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.pendingBtn,
+                      styles.pendingBtnSecondary,
+                      orgStatusIsGrace(orgNetworkStatus) && styles.pendingBtnDisabled,
+                    ]}
+                    onPress={() => {
+                      if (orgRequiresFullActivationPaywall(orgNetworkStatus)) {
+                        router.push("/(admin)/org-paywall");
+                        return;
+                      }
+                      if (!orgStatusIsGrace(orgNetworkStatus)) {
+                        router.push("/(admin)/claim-explorers");
+                      }
+                    }}
+                    activeOpacity={0.85}
+                    disabled={orgStatusIsGrace(orgNetworkStatus)}
+                  >
+                    <Text style={styles.pendingBtnSecondaryText}>Add now</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-              <TouchableOpacity
-                style={[
-                  styles.pendingBtn,
-                  orgStatusIsGrace(orgNetworkStatus) && styles.pendingBtnDisabled,
-                ]}
-                onPress={() => {
-                  if (orgRequiresFullActivationPaywall(orgNetworkStatus)) {
-                    router.push("/(admin)/org-paywall");
-                    return;
-                  }
-                  if (!orgStatusIsGrace(orgNetworkStatus)) {
-                    router.push("/(admin)/claim-explorers");
-                  }
-                }}
-                activeOpacity={0.85}
-                disabled={orgStatusIsGrace(orgNetworkStatus)}
-              >
-                <Text style={styles.pendingBtnText}>
-                  {orgRequiresFullActivationPaywall(orgNetworkStatus) ? "Activate" : "Add"}
-                </Text>
-              </TouchableOpacity>
             </View>
           ) : null
         }
         ListEmptyComponent={
-          <View style={styles.emptyCard}>
-            <Ionicons
-              name="people-outline"
-              size={48}
-              color={Colors.textTertiary}
-            />
-            <Text style={styles.emptyTitle}>No members yet</Text>
-            <Text style={styles.emptyBody}>
-              Share your invite link to grow your team.
-            </Text>
-          </View>
+          members.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Ionicons
+                name="people-outline"
+                size={48}
+                color={Colors.textTertiary}
+              />
+              <Text style={styles.emptyTitle}>No members yet</Text>
+              <Text style={styles.emptyBody}>
+                Share your invite link to grow your team.
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <Ionicons name="filter-outline" size={40} color={Colors.textTertiary} />
+              <Text style={styles.emptyTitle}>No matches</Text>
+              <Text style={styles.emptyBody}>
+                Try a different search or filter, or clear filters to see everyone.
+              </Text>
+            </View>
+          )
         }
         ListFooterComponent={
           recentGrants.length > 0 ? (
@@ -469,7 +608,81 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.md,
+  },
+  searchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.xl,
     marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: FontSize.base,
+    color: Colors.text,
+    paddingVertical: 4,
+  },
+  controlsLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginLeft: Spacing.xl,
+    marginBottom: Spacing.xs,
+  },
+  chipScroll: {
+    flexGrow: 0,
+    maxHeight: 44,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "nowrap",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: 2,
+    marginBottom: Spacing.sm,
+  },
+  chip: {
+    flexShrink: 0,
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  chipOn: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  chipText: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    fontWeight: FontWeight.medium,
+  },
+  chipTextOn: { color: Colors.textOnPrimary },
+  filterHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    lineHeight: 17,
+    marginHorizontal: Spacing.xl,
+    marginBottom: Spacing.sm,
+  },
+  showingText: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.sm,
+    fontWeight: FontWeight.medium,
   },
   summaryText: {
     fontSize: FontSize.xs,
@@ -499,7 +712,7 @@ const styles = StyleSheet.create({
   },
   pendingBanner: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     backgroundColor: Colors.primaryLight,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
@@ -518,11 +731,24 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     lineHeight: 18,
   },
+  pendingBtnRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
   pendingBtn: {
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.md,
+  },
+  pendingBtnPrimary: {
     backgroundColor: Colors.primary,
+  },
+  pendingBtnSecondary: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.primary,
   },
   pendingBtnDisabled: {
     opacity: 0.45,
@@ -531,6 +757,11 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
     color: Colors.textOnPrimary,
+  },
+  pendingBtnSecondaryText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primary,
   },
   memberRow: {
     flexDirection: "row",

@@ -328,6 +328,7 @@ export default function Profile() {
             ]
           : []),
         { icon: "notifications-outline" as const, label: "Notifications", route: "/(tabs)/profile/notifications" },
+        { icon: "pulse-outline" as const, label: "Activity", route: "/(tabs)/profile/activity" },
         ...(profile?.org_id
           ? [
               {

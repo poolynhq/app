@@ -16,6 +16,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { showAlert } from "@/lib/platformAlert";
 import { OrgRole, UserRole } from "@/types/database";
+import { SortSelectDropdown } from "@/components/admin/SortSelectDropdown";
 import {
   Colors,
   Spacing,
@@ -34,9 +35,10 @@ interface MemberRow {
   active: boolean;
   onboarding_completed: boolean;
   org_member_verified: boolean;
+  created_at: string;
 }
 
-type SortKey = "name_asc" | "name_desc" | "email_asc";
+type SortKey = "name_asc" | "name_desc" | "created_asc" | "created_desc";
 type FilterKey = "all" | "verified" | "pending_onboarding";
 
 function getInitials(name: string | null, email: string): string {
@@ -51,22 +53,23 @@ function getInitials(name: string | null, email: string): string {
   return email[0]?.toUpperCase() ?? "?";
 }
 
-const ROLE_LABELS: Record<UserRole, string> = {
-  driver: "Driver",
-  passenger: "Passenger",
-  both: "Both",
+const ROLE_META: Record<UserRole, { label: string; fg: string }> = {
+  driver: { label: "Driver", fg: Colors.info },
+  passenger: { label: "Passenger", fg: Colors.primaryDark },
+  both: { label: "Both", fg: "#8B5CF6" },
 };
 
 const FILTER_CHIPS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
-  { key: "verified", label: "Verified" },
-  { key: "pending_onboarding", label: "Onboarding" },
+  { key: "verified", label: "Verified member" },
+  { key: "pending_onboarding", label: "Pending" },
 ];
 
-const SORT_CHIPS: { key: SortKey; label: string }[] = [
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: "name_asc", label: "Name A–Z" },
   { key: "name_desc", label: "Name Z–A" },
-  { key: "email_asc", label: "Email" },
+  { key: "created_asc", label: "Oldest join first" },
+  { key: "created_desc", label: "Newest join first" },
 ];
 
 export default function TransferAdminScreen() {
@@ -89,7 +92,7 @@ export default function TransferAdminScreen() {
     const { data, error } = await supabase
       .from("users")
       .select(
-        "id, full_name, email, role, org_role, active, onboarding_completed, org_member_verified"
+        "id, full_name, email, role, org_role, active, onboarding_completed, org_member_verified, created_at"
       )
       .eq("org_id", profile.org_id)
       .order("full_name");
@@ -118,8 +121,10 @@ export default function TransferAdminScreen() {
     });
 
     rows = [...rows].sort((a, b) => {
-      if (sort === "email_asc") {
-        return a.email.localeCompare(b.email);
+      if (sort === "created_asc" || sort === "created_desc") {
+        const ta = new Date(a.created_at).getTime();
+        const tb = new Date(b.created_at).getTime();
+        return sort === "created_asc" ? ta - tb : tb - ta;
       }
       const an = (a.full_name ?? a.email).toLowerCase();
       const bn = (b.full_name ?? b.email).toLowerCase();
@@ -166,6 +171,7 @@ export default function TransferAdminScreen() {
   function renderItem({ item }: { item: MemberRow }) {
     const initials = getInitials(item.full_name, item.email);
     const disabled = !item.active || busyId !== null;
+    const roleMeta = ROLE_META[item.role];
     return (
       <TouchableOpacity
         style={[styles.row, disabled && { opacity: 0.55 }]}
@@ -191,11 +197,11 @@ export default function TransferAdminScreen() {
             {item.email}
           </Text>
           <View style={styles.metaRow}>
-            <Text style={styles.meta}>{ROLE_LABELS[item.role]}</Text>
+            <Text style={[styles.metaRole, { color: roleMeta.fg }]}>{roleMeta.label}</Text>
             {!item.onboarding_completed && (
-              <Text style={styles.metaWarn}>Onboarding</Text>
+              <Text style={styles.metaWarn}>Pending</Text>
             )}
-            {item.org_member_verified && <Text style={styles.metaOk}>Verified</Text>}
+            {item.org_member_verified && <Text style={styles.metaOk}>Verified member</Text>}
             {!item.active && <Text style={styles.metaWarn}>Inactive</Text>}
           </View>
         </View>
@@ -258,6 +264,7 @@ export default function TransferAdminScreen() {
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
+        style={styles.chipScroll}
         contentContainerStyle={styles.chipRow}
       >
         {FILTER_CHIPS.map((c) => (
@@ -272,25 +279,18 @@ export default function TransferAdminScreen() {
           </TouchableOpacity>
         ))}
       </ScrollView>
+      <Text style={styles.filterHint}>
+        Verified member: you marked them in Poolyn (workplace verification). Pending: still finishing
+        app setup (profile, vehicle, commute)—not the same as email domain or invite status.
+      </Text>
 
       <Text style={styles.chipLabel}>Sort</Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.chipRow}
-      >
-        {SORT_CHIPS.map((c) => (
-          <TouchableOpacity
-            key={c.key}
-            style={[styles.chip, sort === c.key && styles.chipOn]}
-            onPress={() => setSort(c.key)}
-          >
-            <Text style={[styles.chipText, sort === c.key && styles.chipTextOn]}>
-              {c.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      <SortSelectDropdown
+        value={sort}
+        options={SORT_OPTIONS}
+        onChange={setSort}
+        accessibilityLabel="Sort colleagues"
+      />
 
       {loading ? (
         <View style={styles.center}>
@@ -371,14 +371,29 @@ const styles = StyleSheet.create({
     marginLeft: Spacing.xl,
     marginBottom: Spacing.xs,
   },
-  chipRow: {
-    flexDirection: "row",
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.xl,
+  filterHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    lineHeight: 17,
+    marginHorizontal: Spacing.xl,
     marginBottom: Spacing.md,
   },
+  chipScroll: {
+    flexGrow: 0,
+    maxHeight: 44,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "nowrap",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: 2,
+    marginBottom: Spacing.sm,
+  },
   chip: {
-    paddingVertical: Spacing.xs,
+    flexShrink: 0,
+    paddingVertical: 8,
     paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.full,
     borderWidth: 1,
@@ -425,8 +440,8 @@ const styles = StyleSheet.create({
   },
   adminPillText: { fontSize: 10, fontWeight: FontWeight.semibold, color: Colors.accent },
   email: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
-  metaRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm, marginTop: 6 },
-  meta: { fontSize: 11, color: Colors.textTertiary },
+  metaRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm, marginTop: 6, alignItems: "center" },
+  metaRole: { fontSize: 11, fontWeight: FontWeight.semibold },
   metaOk: { fontSize: 11, color: Colors.success, fontWeight: FontWeight.medium },
   metaWarn: { fontSize: 11, color: Colors.warning, fontWeight: FontWeight.medium },
   empty: { textAlign: "center", color: Colors.textSecondary, marginTop: Spacing.xl },

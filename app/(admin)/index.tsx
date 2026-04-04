@@ -18,7 +18,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { showAlert } from "@/lib/platformAlert";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/lib/supabase";
+import { supabase, extractDomain } from "@/lib/supabase";
 import { orgRequiresFullActivationPaywall } from "@/lib/orgNetworkUi";
 import { AdminOrgStatusBanner } from "@/components/AdminOrgStatusBanner";
 import { Organisation } from "@/types/database";
@@ -40,6 +40,33 @@ const PLAN_LABELS: Record<string, string> = {
 
 const ADMIN_NETWORK_WELCOME_KEY = "@poolyn/admin_network_dashboard_welcome_v1";
 
+/** First label of a domain, title-cased (e.g. meridiantech.com → Meridiantech). */
+function readableCompanyFromDomain(domain: string): string {
+  const d = domain.trim().toLowerCase();
+  if (!d) return "";
+  const leaf = d.split(".")[0];
+  if (!leaf) return d;
+  return leaf.charAt(0).toUpperCase() + leaf.slice(1);
+}
+
+function parseDashboardRpcPayload(data: unknown): Record<string, unknown> | null {
+  if (data == null) return null;
+  if (typeof data === "string") {
+    try {
+      const p = JSON.parse(data) as unknown;
+      return typeof p === "object" && p !== null && !Array.isArray(p)
+        ? (p as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof data === "object" && !Array.isArray(data)) {
+    return data as Record<string, unknown>;
+  }
+  return null;
+}
+
 function SectionHeader({ eyebrow, title }: { eyebrow: string; title: string }) {
   return (
     <View style={styles.sectionHeaderWrap}>
@@ -53,14 +80,16 @@ function SectionHeader({ eyebrow, title }: { eyebrow: string; title: string }) {
 }
 
 export default function AdminOverview() {
-  const { profile } = useAuth();
+  const { profile, session } = useAuth();
   const router = useRouter();
 
   const [org, setOrg] = useState<Organisation | null>(null);
   const [memberCount, setMemberCount] = useState(0);
-  const [activeUsers, setActiveUsers] = useState(0);
+  /** Same email domain as org, not in the workplace network (explorers). */
+  const [domainExplorersCount, setDomainExplorersCount] = useState(0);
   const [totalRides, setTotalRides] = useState(0);
-  const [activeCommuters, setActiveCommuters] = useState(0);
+  /** Members with ride/request activity this calendar month (billing / engagement). */
+  const [monthlyActiveCommuters, setMonthlyActiveCommuters] = useState(0);
   const [pendingRequests, setPendingRequests] = useState(0);
   const [scheduledRides, setScheduledRides] = useState(0);
   const [peakHour, setPeakHour] = useState<string>("--");
@@ -73,11 +102,19 @@ export default function AdminOverview() {
   const [showAdminWelcome, setShowAdminWelcome] = useState(false);
 
   const fetchData = useCallback(async () => {
-    if (!profile?.org_id) return;
+    if (!profile?.org_id) {
+      setLoading(false);
+      return;
+    }
     try {
       setError(null);
+      if (!session?.user) {
+        return;
+      }
 
-      const [orgRes, membersRes, activeUsersRes, orgUsersRes] = await Promise.all([
+      const monthRef = new Date().toISOString().slice(0, 10);
+
+      const [orgRes, membersListRes, dashRes] = await Promise.all([
         supabase
           .from("organisations")
           .select("*")
@@ -85,22 +122,71 @@ export default function AdminOverview() {
           .single(),
         supabase
           .from("users")
-          .select("id", { count: "exact", head: true })
-          .eq("org_id", profile.org_id),
-        supabase
-          .from("users")
-          .select("id", { count: "exact", head: true })
+          .select(
+            "id, full_name, email, role, org_role, active, onboarding_completed, org_member_verified, created_at"
+          )
           .eq("org_id", profile.org_id)
-          .eq("active", true),
-        supabase.from("users").select("id").eq("org_id", profile.org_id),
+          .order("full_name"),
+        supabase.rpc("poolyn_org_admin_dashboard_stats", { p_org_id: profile.org_id }),
       ]);
 
       if (orgRes.error) throw orgRes.error;
-      if (membersRes.error) throw membersRes.error;
-      if (activeUsersRes.error) throw activeUsersRes.error;
-      if (orgUsersRes.error) throw orgUsersRes.error;
+      if (membersListRes.error) throw membersListRes.error;
 
-      const orgUserIds = (orgUsersRes.data ?? []).map((u) => u.id);
+      const memberRows = membersListRes.data ?? [];
+      if (__DEV__ && dashRes.error) {
+        console.warn("[admin overview] poolyn_org_admin_dashboard_stats", dashRes.error.message);
+      }
+      const dashPayload = !dashRes.error ? parseDashboardRpcPayload(dashRes.data) : null;
+
+      // Prefer same-org list from PostgREST when RLS returns rows (matches Members tab).
+      // Use SECURITY DEFINER RPC counts/ids only when the client list is empty (RLS gap, etc.).
+      let memberCountVal = memberRows.length;
+      let domainExplorersVal = Number(dashPayload?.domain_explorers_count ?? 0);
+      let monthlyCommutersVal = 0;
+      let orgUserIds: string[] = memberRows.map((r) => r.id);
+
+      if (dashPayload) {
+        monthlyCommutersVal = Number(dashPayload.monthly_active_commuters ?? 0);
+        if (memberRows.length === 0) {
+          memberCountVal = Number(dashPayload.total_members ?? 0);
+          const rawIds = dashPayload.member_user_ids;
+          if (Array.isArray(rawIds)) {
+            orgUserIds = rawIds.filter((x): x is string => typeof x === "string");
+          }
+        }
+      } else {
+        const { data: mauData } = await supabase.rpc("org_active_user_count", {
+          target_org_id: profile.org_id,
+        });
+        monthlyCommutersVal = typeof mauData === "number" ? mauData : 0;
+      }
+
+      if (orgUserIds.length === 0) {
+        orgUserIds = memberRows.map((r) => r.id);
+      }
+
+      if (__DEV__) {
+        if (memberRows.length === 0 && memberCountVal > 0) {
+          console.warn(
+            "[admin overview] member list empty but RPC reports",
+            memberCountVal,
+            "— check org_id",
+            profile.org_id
+          );
+        }
+        if (memberRows.length > 0 && memberCountVal !== memberRows.length) {
+          console.warn("[admin overview] count mismatch (using list length)", {
+            list: memberRows.length,
+            shown: memberCountVal,
+          });
+        }
+      }
+
+      setOrg(orgRes.data);
+      setMemberCount(memberCountVal);
+      setDomainExplorersCount(domainExplorersVal);
+      setMonthlyActiveCommuters(monthlyCommutersVal);
 
       const [ridesRes, requestsRes, scheduledRidesRes, peakRidesRes] =
         orgUserIds.length > 0
@@ -135,27 +221,50 @@ export default function AdminOverview() {
               { data: [], error: null },
             ];
 
-      if (ridesRes.error) throw ridesRes.error;
-      if (requestsRes.error) throw requestsRes.error;
-      if (scheduledRidesRes.error) throw scheduledRidesRes.error;
-      if (peakRidesRes.error) throw peakRidesRes.error;
+      let totalRidesVal = 0;
+      let pendingVal = 0;
+      let scheduledVal = 0;
+      let peakRows: { depart_at: string }[] = [];
 
-      setOrg(orgRes.data);
-      setMemberCount(membersRes.count ?? 0);
-      setActiveUsers(activeUsersRes.count ?? 0);
-      setTotalRides(ridesRes.count ?? 0);
-      setPendingRequests(requestsRes.count ?? 0);
-      setScheduledRides(scheduledRidesRes.count ?? 0);
+      if (ridesRes.error) {
+        if (__DEV__) console.warn("[admin overview] rides count:", ridesRes.error.message);
+      } else {
+        totalRidesVal = ridesRes.count ?? 0;
+      }
+      if (requestsRes.error) {
+        if (__DEV__) console.warn("[admin overview] ride_requests count:", requestsRes.error.message);
+      } else {
+        pendingVal = requestsRes.count ?? 0;
+      }
+      if (scheduledRidesRes.error) {
+        if (__DEV__) console.warn("[admin overview] scheduled rides count:", scheduledRidesRes.error.message);
+      } else {
+        scheduledVal = scheduledRidesRes.count ?? 0;
+      }
+      if (peakRidesRes.error) {
+        if (__DEV__) console.warn("[admin overview] peak rides:", peakRidesRes.error.message);
+      } else {
+        peakRows = (peakRidesRes.data ?? []) as { depart_at: string }[];
+      }
 
-      const { data: mauData } = await supabase.rpc("org_active_user_count", {
-        target_org_id: profile.org_id,
-      });
-      setActiveCommuters(typeof mauData === "number" ? mauData : 0);
+      setTotalRides(totalRidesVal);
+      setPendingRequests(pendingVal);
+      setScheduledRides(scheduledVal);
 
-      const [{ data: analyticsData }, { data: planUsageData }] = await Promise.all([
-        supabase.rpc("get_org_analytics_summary", { p_org_id: profile.org_id }),
-        supabase.rpc("get_org_plan_usage", { p_org_id: profile.org_id }),
-      ]);
+      const [{ data: analyticsData, error: analyticsErr }, { data: planUsageData, error: planErr }] =
+        await Promise.all([
+          supabase.rpc("get_org_analytics_summary", {
+            p_org_id: profile.org_id,
+            p_month: monthRef,
+          }),
+          supabase.rpc("get_org_plan_usage", {
+            p_org_id: profile.org_id,
+            p_month: monthRef,
+          }),
+        ]);
+      if (__DEV__ && (analyticsErr || planErr)) {
+        console.warn("[admin overview] analytics RPC", analyticsErr?.message ?? planErr?.message);
+      }
 
       const analytics = (analyticsData ?? {}) as Record<string, number>;
       const usage = (planUsageData ?? {}) as Record<string, number>;
@@ -164,7 +273,7 @@ export default function AdminOverview() {
       setOverageCost(Number(usage.estimated_overage_cost ?? 0));
 
       const hourBuckets: Record<number, number> = {};
-      for (const item of peakRidesRes.data ?? []) {
+      for (const item of peakRows) {
         const dt = new Date(item.depart_at);
         const h = dt.getHours();
         hourBuckets[h] = (hourBuckets[h] ?? 0) + 1;
@@ -177,7 +286,7 @@ export default function AdminOverview() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [profile?.org_id]);
+  }, [profile?.org_id, session?.user]);
 
   useEffect(() => {
     fetchData();
@@ -275,10 +384,20 @@ export default function AdminOverview() {
     }
   }
 
-  const orgDisplayName = org?.name?.trim() || "Organisation";
-  const orgDomainLine = org?.domain?.trim()
-    ? `${org.domain} · ${planLabel}`
-    : planLabel;
+  const orgDomainRaw = org?.domain?.trim() ?? "";
+  const emailDomainRaw = profile?.email ? extractDomain(profile.email) : "";
+
+  const orgDisplayName =
+    org?.name?.trim() ||
+    (orgDomainRaw ? readableCompanyFromDomain(orgDomainRaw) : "") ||
+    (emailDomainRaw ? readableCompanyFromDomain(emailDomainRaw) : "") ||
+    "Organisation";
+
+  const orgDomainLine = orgDomainRaw
+    ? `${orgDomainRaw} · ${planLabel}`
+    : emailDomainRaw
+      ? `${emailDomainRaw} · ${planLabel}`
+      : planLabel;
 
   function explainNetworkType() {
     showAlert(
@@ -328,7 +447,7 @@ export default function AdminOverview() {
                 ) : (
                   <>
                     You&apos;re set up as the admin for{" "}
-                    <Text style={styles.welcomeHighlight}>{org?.name ?? "your organisation"}</Text>.
+                    <Text style={styles.welcomeHighlight}>{orgDisplayName}</Text>.
                     When your team joins, they&apos;ll appear in{" "}
                     <Text style={styles.welcomeBold}>Manage users</Text> (Members tab).
                   </>
@@ -422,7 +541,7 @@ export default function AdminOverview() {
           </View>
         </View>
 
-        {/* Stats Grid — compact row: icon | value + label */}
+        {/* Stats: member totals (plan is in the header subtitle) */}
         <View style={styles.statsGrid}>
           <View style={styles.statCard}>
             <View style={[styles.statIcon, { backgroundColor: Colors.primaryLight }]}>
@@ -433,35 +552,29 @@ export default function AdminOverview() {
               <Text style={styles.statLabel}>Total members</Text>
             </View>
           </View>
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#EFF6FF" }]}>
-              <Ionicons name="car" size={18} color={Colors.info} />
+          <TouchableOpacity
+            style={styles.statCard}
+            activeOpacity={0.75}
+            onPress={() => {
+              if (profile?.org_role === "admin") {
+                router.push("/(admin)/domain-join-requests");
+              }
+            }}
+            disabled={profile?.org_role !== "admin"}
+            accessibilityRole="button"
+            accessibilityLabel="Open domain join requests"
+          >
+            <View style={[styles.statIcon, { backgroundColor: "#F3E8FF" }]}>
+              <Ionicons name="person-add-outline" size={18} color="#8B5CF6" />
             </View>
             <View style={styles.statTextCol}>
-              <Text style={styles.statValue}>{activeUsers}</Text>
-              <Text style={styles.statLabel}>Active users</Text>
-            </View>
-          </View>
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#ECFDF5" }]}>
-              <Ionicons name="leaf" size={18} color={Colors.success} />
-            </View>
-            <View style={styles.statTextCol}>
-              <Text style={styles.statValue}>{activeCommuters}</Text>
-              <Text style={styles.statLabel}>Active commuters</Text>
-            </View>
-          </View>
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: Colors.accentLight }]}>
-              <Ionicons name="diamond" size={18} color={Colors.accent} />
-            </View>
-            <View style={styles.statTextCol}>
-              <Text style={styles.statValuePlan} numberOfLines={1}>
-                {planLabel}
+              <Text style={styles.statValue}>{domainExplorersCount}</Text>
+              <Text style={styles.statLabel}>Domain explorers</Text>
+              <Text style={styles.statHint}>
+                Same company email, not on the network — send join requests
               </Text>
-              <Text style={styles.statLabel}>Current plan</Text>
             </View>
-          </View>
+          </TouchableOpacity>
         </View>
 
         <SectionHeader eyebrow="Performance" title="Analytics" />
@@ -485,8 +598,17 @@ export default function AdminOverview() {
 
         <SectionHeader eyebrow="Billing" title="Plan usage & monetization" />
         <View style={styles.healthCard}>
-          <Text style={styles.healthBody}>Active users this month: {activeCommuters}</Text>
-          <Text style={styles.healthBody}>Overage users: {overageUsers}</Text>
+          <Text style={styles.healthBody}>
+            Members with ride or request activity this month: {monthlyActiveCommuters}
+          </Text>
+          <Text style={styles.healthMuted}>
+            Counts people in your org who drove, rode, or sent a ride request in the current
+            calendar month (used for plan limits). Separate from domain explorers, who share your
+            email domain but are not members yet.
+          </Text>
+          <Text style={[styles.healthBody, { marginTop: Spacing.sm }]}>
+            Overage users: {overageUsers}
+          </Text>
           <Text style={styles.healthBody}>Estimated overage: ${overageCost.toFixed(2)}</Text>
         </View>
 
@@ -754,6 +876,12 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     lineHeight: 22,
   },
+  healthMuted: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    lineHeight: 18,
+    marginTop: Spacing.xs,
+  },
   statCard: {
     width: "47%",
     flexDirection: "row",
@@ -785,17 +913,17 @@ const styles = StyleSheet.create({
     color: Colors.text,
     lineHeight: 22,
   },
-  statValuePlan: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold,
-    color: Colors.text,
-    lineHeight: 18,
-  },
   statLabel: {
     fontSize: 10,
     color: Colors.textSecondary,
     marginTop: 1,
     fontWeight: FontWeight.medium,
+  },
+  statHint: {
+    fontSize: 9,
+    color: Colors.textTertiary,
+    marginTop: 2,
+    lineHeight: 12,
   },
   quickActions: {
     flexDirection: "row",

@@ -18,7 +18,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { MapPinPickerModal } from "@/components/maps/MapPinPickerModal";
 import { upsertCommuteRouteToWork } from "@/lib/commuteRouteStorage";
-import { simplifyRouteCoords } from "@/lib/mapboxRouteGeometry";
+import {
+  buildStaticCommuteMapUrl,
+  fetchRouteInfo,
+  reverseGeocodeShort,
+  type RouteInfo,
+} from "@/lib/mapboxCommutePreview";
+import { parseGeoPoint } from "@/lib/parseGeoPoint";
 import {
   Colors,
   Spacing,
@@ -35,27 +41,6 @@ interface GeoSuggestion {
   lat: number;
   lng: number;
   countryCode?: string; // ISO 3166-1 alpha-2 lowercase, e.g. "au"
-}
-
-interface SingleRoute {
-  distanceKm: number;
-  durationMin: number;
-  coords: [number, number][]; // [lng, lat][]
-}
-
-interface RouteInfo {
-  primary: SingleRoute;
-  alternates: SingleRoute[]; // up to 2 extras
-}
-
-function parsePointWkt(w: unknown): { lat: number; lng: number } | null {
-  if (w == null || typeof w !== "string") return null;
-  const m = /^POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i.exec(w.trim());
-  if (!m) return null;
-  const lng = parseFloat(m[1]);
-  const lat = parseFloat(m[2]);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  return { lat, lng };
 }
 
 // ── Mapbox v5 — address autocomplete (CORS-safe) ─────────────────────────────
@@ -203,72 +188,6 @@ async function geocodeSuggest(
   return mapboxAddressSuggest(query, proximity, signal);
 }
 
-// ── Mapbox Directions API — driving distance + duration ───────────────────────
-async function fetchRouteInfo(
-  homePin: { lat: number; lng: number },
-  workPin: { lat: number; lng: number }
-): Promise<RouteInfo | null> {
-  if (!MAPBOX_TOKEN) return null;
-  try {
-    const res = await fetch(
-      `https://api.mapbox.com/directions/v5/mapbox/driving/${homePin.lng},${homePin.lat};${workPin.lng},${workPin.lat}?access_token=${MAPBOX_TOKEN}&alternatives=true&geometries=geojson&overview=full`
-    );
-    const data = (await res.json()) as {
-      routes?: { distance: number; duration: number; geometry: { coordinates: [number, number][] } }[];
-    };
-    if (!data.routes?.length) return null;
-    const mapped = data.routes.map((r) => ({
-      distanceKm: r.distance / 1000,
-      durationMin: r.duration / 60,
-      coords: simplifyRouteCoords(r.geometry.coordinates, 22), // 22 pts keeps URL safely < 8 KB
-    }));
-    const [primary, ...alternates] = mapped;
-    return { primary, alternates: alternates.slice(0, 2) };
-  } catch {
-    return null;
-  }
-}
-
-// Build Mapbox Static Images URL with route overlays + pins.
-// Routes are GeoJSON path overlays — rendered server-side as a PNG so no
-// MapLibre / CORS issues apply. Alternates drawn first (below primary).
-function buildStaticMapUrl(
-  homePin: { lat: number; lng: number },
-  workPin: { lat: number; lng: number },
-  routeInfo: RouteInfo | null
-): string {
-  const overlays: string[] = [];
-
-  if (routeInfo) {
-    // colour + opacity: primary green, alt1 blue, alt2 amber
-    const colours = ["#0B8457", "#3B82F6", "#F59E0B"];
-    const opacities = [0.9, 0.6, 0.55];
-    const widths = [5, 3, 3];
-
-    const allRoutes = [routeInfo.primary, ...routeInfo.alternates];
-    // Draw in reverse so primary renders on top
-    [...allRoutes].reverse().forEach((r, revIdx) => {
-      const idx = allRoutes.length - 1 - revIdx;
-      const feature = {
-        type: "Feature",
-        properties: {
-          stroke: colours[idx] ?? "#0B8457",
-          "stroke-width": widths[idx] ?? 3,
-          "stroke-opacity": opacities[idx] ?? 0.6,
-        },
-        geometry: { type: "LineString", coordinates: r.coords },
-      };
-      overlays.push(`geojson(${encodeURIComponent(JSON.stringify(feature))})`);
-    });
-  }
-
-  // Pins on top of routes
-  overlays.push(`pin-l+0B8457(${homePin.lng},${homePin.lat})`);
-  overlays.push(`pin-l+E74C3C(${workPin.lng},${workPin.lat})`);
-
-  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/600x260@2x?padding=70&access_token=${MAPBOX_TOKEN}`;
-}
-
 export default function LocationSetup() {
   const router = useRouter();
   const params = useLocalSearchParams<{ fromProfile?: string | string[] }>();
@@ -314,11 +233,15 @@ export default function LocationSetup() {
   useEffect(() => {
     if (!fromProfile || !profile?.id || seededFromProfile.current) return;
     seededFromProfile.current = true;
-    const hp = parsePointWkt(profile.home_location);
-    const wp = parsePointWkt(profile.work_location);
+    const hp = parseGeoPoint(profile.home_location);
+    const pp = parseGeoPoint(profile.pickup_location);
+    const wp = parseGeoPoint(profile.work_location);
     if (hp) {
       setHomePin(hp);
       setHomeAddress("Saved home location");
+    } else if (pp) {
+      setHomePin(pp);
+      setHomeAddress("Saved trip start");
     }
     if (wp) {
       setWorkPin(wp);
@@ -326,7 +249,35 @@ export default function LocationSetup() {
       setWorkAddress(wl || "Saved work location");
       if (wl) setWorkLabel(wl);
     }
-  }, [fromProfile, profile?.id, profile?.home_location, profile?.work_location, profile?.work_location_label]);
+  }, [
+    fromProfile,
+    profile?.id,
+    profile?.home_location,
+    profile?.pickup_location,
+    profile?.work_location,
+    profile?.work_location_label,
+  ]);
+
+  useEffect(() => {
+    if (!fromProfile || !MAPBOX_TOKEN) return;
+    let cancelled = false;
+    if (
+      homePin &&
+      (homeAddress === "Saved home location" || homeAddress === "Saved trip start")
+    ) {
+      void reverseGeocodeShort(homePin.lat, homePin.lng).then((label) => {
+        if (!cancelled && label) setHomeAddress(label);
+      });
+    }
+    if (workPin && workAddress === "Saved work location") {
+      void reverseGeocodeShort(workPin.lat, workPin.lng).then((label) => {
+        if (!cancelled && label) setWorkAddress(label);
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [fromProfile, homePin, workPin, homeAddress, workAddress]);
 
   useEffect(() => {
     if (homeTimer.current) clearTimeout(homeTimer.current);
@@ -400,7 +351,7 @@ export default function LocationSetup() {
     if (!homePin || !workPin) { setRouteInfo(null); return; }
     let cancelled = false;
     setFetchingRoute(true);
-    fetchRouteInfo(homePin, workPin).then((info) => {
+    fetchRouteInfo(homePin, workPin).then((info: RouteInfo | null) => {
       if (!cancelled) { setRouteInfo(info); setFetchingRoute(false); }
     });
     return () => { cancelled = true; };
@@ -448,7 +399,7 @@ export default function LocationSetup() {
     if (!homeAddress.trim()) {
       setHomeError("Please enter your home suburb or address.");
       valid = false;
-    } else if (homeAddress.trim().length < 3) {
+    } else if (homeAddress.trim().length < 3 && !(fromProfile && homePin)) {
       setHomeError("Please enter a more specific address.");
       valid = false;
     }
@@ -456,7 +407,7 @@ export default function LocationSetup() {
     if (!workAddress.trim()) {
       setWorkError("Please enter your work or campus address.");
       valid = false;
-    } else if (workAddress.trim().length < 3) {
+    } else if (workAddress.trim().length < 3 && !(fromProfile && workPin)) {
       setWorkError("Please enter a more specific address.");
       valid = false;
     }
@@ -701,7 +652,7 @@ export default function LocationSetup() {
         {homePin && workPin && MAPBOX_TOKEN ? (
           <View style={styles.routeCard}>
             <Image
-              source={{ uri: buildStaticMapUrl(homePin, workPin, routeInfo) }}
+              source={{ uri: buildStaticCommuteMapUrl(homePin, workPin, routeInfo) }}
               style={styles.routeMapImage}
               resizeMode="cover"
             />

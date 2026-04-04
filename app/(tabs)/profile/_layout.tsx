@@ -22,6 +22,7 @@ export default function ProfileLayout() {
       <Stack.Screen name="commute-locations" options={{ title: "Commute & pickup" }} />
       <Stack.Screen name="preferences" options={{ title: "Driver preferences" }} />
       <Stack.Screen name="notifications" options={{ title: "Notifications" }} />
+      <Stack.Screen name="activity" options={{ title: "Activity" }} />
       <Stack.Screen name="workplace-network" options={{ title: "Workplace network" }} />
       <Stack.Screen name="transfer-workplace-admin" options={{ title: "Transfer admin" }} />
       <Stack.Screen name="emergency-contacts" options={{ title: "Emergency Contacts" }} />

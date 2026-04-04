@@ -1115,6 +1115,10 @@ export interface Database {
         Args: { p_org_id: string; p_month?: string };
         Returns: Json;
       };
+      poolyn_org_admin_dashboard_stats: {
+        Args: { p_org_id: string };
+        Returns: Json;
+      };
       get_map_layers_for_discover: {
         Args: { p_user_id: string; p_scope?: string };
         Returns: Json;
@@ -1198,6 +1202,10 @@ export interface Database {
       };
       admin_claim_explorers: {
         Args: { p_user_ids: string[] };
+        Returns: Json;
+      };
+      admin_send_network_join_invite: {
+        Args: { p_target_user_id: string };
         Returns: Json;
       };
       get_peer_commute_badge: {
