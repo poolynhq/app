@@ -25,12 +25,6 @@ const tabs: {
     iconFocused: "car",
   },
   {
-    name: "discover",
-    title: "Discover",
-    icon: "compass-outline",
-    iconFocused: "compass",
-  },
-  {
     name: "profile",
     title: "Profile",
     icon: "person-outline",

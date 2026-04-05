@@ -334,7 +334,7 @@ export default function MyRides() {
                 <TouchableOpacity
                   style={[styles.ctaButton, styles.ctaButtonSecondary]}
                   activeOpacity={0.8}
-                  onPress={() => router.push("/(tabs)/discover?scrollTo=opportunities")}
+                  onPress={() => router.push("/(tabs)/?scrollTo=opportunities")}
                 >
                   <Ionicons name="search" size={18} color={Colors.primary} />
                   <Text style={styles.ctaTextSecondary}>Find rides on Discover</Text>

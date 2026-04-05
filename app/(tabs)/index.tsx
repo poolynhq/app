@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, type ReactNode } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { showAlert } from "@/lib/platformAlert";
 import { useAuth } from "@/contexts/AuthContext";
@@ -48,6 +48,7 @@ import { createCommuteRideRequest, cancelMyPendingRideRequest } from "@/lib/ride
 import { usePassengerPickupState } from "@/hooks/usePassengerPickupState";
 import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
 import { fetchDrivingRoute } from "@/lib/mapboxDirections";
+import { HomeNetworkHub } from "@/components/home/HomeNetworkHub";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -230,6 +231,15 @@ type PostPickupTiming = "now" | 15 | 30 | 45 | 60;
 
 export default function Dashboard() {
   const router = useRouter();
+  const { scrollTo: scrollToParam } = useLocalSearchParams<{ scrollTo?: string | string[] }>();
+  const scrollToParamNorm = Array.isArray(scrollToParam) ? scrollToParam[0] : scrollToParam;
+  const homeScrollRef = useRef<ScrollView>(null);
+  const networkHubBlockY = useRef(0);
+  const seatsSectionInnerY = useRef(0);
+  const scrollToSeatsOnHome = useCallback(() => {
+    const y = networkHubBlockY.current + seatsSectionInnerY.current - 24;
+    homeScrollRef.current?.scrollTo({ y: Math.max(0, y), animated: true });
+  }, []);
   const { profile, refreshProfile, activeMode, toggleMode, rolePalette } = useAuth();
   const [viewerMapRefetchTick, setViewerMapRefetchTick] = useState(0);
   const [promotedViewerRouteKey, setPromotedViewerRouteKey] = useState<string | null>(null);
@@ -496,6 +506,7 @@ export default function Dashboard() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
+        ref={homeScrollRef}
         style={styles.container}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -761,7 +772,7 @@ export default function Dashboard() {
           variant="routine"
           eyebrow="ROUTINE POOLYN"
           title="Your regular commute"
-          subtitle="Home to work rhythms, map demand, and your network. Post a pickup request from Quick actions or use Discover for seats."
+          subtitle="Map, network scope, and quick actions below. Seats you can book and overlap stats are on this same page under the map."
         >
           <View style={styles.roleWrap}>
             <View
@@ -908,14 +919,17 @@ export default function Dashboard() {
                       </View>
                       <Text style={styles.actionTitle}>Offer a ride</Text>
                     </View>
-                    <Text style={styles.actionDesc}>Share a recurring or upcoming leg</Text>
+                    <Text style={styles.actionDesc}>
+                      Post your trip in My Rides with time and seats — you show up on the map and in seats others
+                      can book below.
+                    </Text>
                   </TouchableOpacity>
                 )}
                 {quickPassenger && (
                   <TouchableOpacity
                     style={styles.actionCard}
                     activeOpacity={0.72}
-                    onPress={() => router.push("/(tabs)/discover?scrollTo=opportunities")}
+                    onPress={scrollToSeatsOnHome}
                   >
                     <View style={styles.actionTitleRow}>
                       <View style={[styles.actionIcon, { backgroundColor: "#EFF6FF" }]}>
@@ -941,7 +955,9 @@ export default function Dashboard() {
                       </View>
                       <Text style={styles.actionTitle}>Post a request</Text>
                     </View>
-                    <Text style={styles.actionDesc}>Signal pickup need along your route</Text>
+                    <Text style={styles.actionDesc}>
+                      No posted trip fits? Ping drivers on your corridor — not the same as booking an existing seat.
+                    </Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -975,18 +991,24 @@ export default function Dashboard() {
               hasViewerRouteAlternates ? (key) => setPromotedViewerRouteKey(key) : undefined
             }
           />
-          <TouchableOpacity
-            style={styles.discoverCta}
-            onPress={() => router.push("/(tabs)/discover")}
-            activeOpacity={0.88}
-          >
-            <View style={styles.discoverCtaTextCol}>
-              <Text style={styles.discoverCtaTitle}>Open Discover</Text>
-              <Text style={styles.discoverCtaSub}>Matches, map tools, and passenger requests</Text>
-            </View>
-            <Ionicons name="arrow-forward-circle" size={28} color={Colors.textOnPrimary} />
-          </TouchableOpacity>
         </PillarSection>
+
+        {profile ? (
+          <View
+            style={styles.networkHubBlock}
+            onLayout={(e) => {
+              networkHubBlockY.current = e.nativeEvent.layout.y;
+            }}
+          >
+            <HomeNetworkHub
+              scrollToParam={scrollToParamNorm}
+              onRequestScrollToSeats={scrollToSeatsOnHome}
+              onSeatsSectionInnerLayout={(y) => {
+                seatsSectionInnerY.current = y;
+              }}
+            />
+          </View>
+        ) : null}
 
         {/* ── Ad-hoc Poolyn: dated / one-off trips ── */}
         <PillarSection
@@ -1007,23 +1029,6 @@ export default function Dashboard() {
               <Text style={styles.adhocRowTitle}>Post a dated trip</Text>
               <Text style={styles.adhocRowSub}>
                 Create a drive with departure time and route—ad-hoc board features arrive next.
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.adhocRow}
-            onPress={() => router.push("/(tabs)/discover")}
-            activeOpacity={0.75}
-          >
-            <View style={[styles.adhocIconWrap, { backgroundColor: "#E0F2FE" }]}>
-              <Ionicons name="compass-outline" size={22} color={Colors.info} />
-            </View>
-            <View style={styles.adhocRowText}>
-              <Text style={styles.adhocRowTitle}>Search &amp; discover</Text>
-              <Text style={styles.adhocRowSub}>
-                Explore demand and supply; post passenger requests for any trip type.
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
@@ -1495,30 +1500,8 @@ const styles = StyleSheet.create({
     color: Colors.text,
     marginBottom: -Spacing.sm,
   },
-  discoverCta: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: Spacing.md,
-    backgroundColor: ROUTINE_ACCENT,
-    borderRadius: BorderRadius.lg,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.base,
-    marginTop: Spacing.sm,
-  },
-  discoverCtaTextCol: {
-    flex: 1,
-  },
-  discoverCtaTitle: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.bold,
-    color: Colors.textOnPrimary,
-  },
-  discoverCtaSub: {
-    fontSize: FontSize.xs,
-    color: "rgba(255,255,255,0.88)",
-    marginTop: 2,
-    lineHeight: 18,
+  networkHubBlock: {
+    marginBottom: Spacing["2xl"],
   },
   adhocRow: {
     flexDirection: "row",

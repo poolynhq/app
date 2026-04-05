@@ -121,7 +121,7 @@ export default function OnboardingComplete() {
         style={styles.primaryBtn}
         onPress={() => {
           finishCommuterSetupFromAdmin();
-          router.replace("/(tabs)/discover");
+          router.replace("/(tabs)/");
         }}
         activeOpacity={0.8}
       >
@@ -144,7 +144,7 @@ export default function OnboardingComplete() {
           style={styles.secondaryBtn}
           onPress={() => {
             finishCommuterSetupFromAdmin();
-            router.replace("/(tabs)/discover");
+            router.replace("/(tabs)/");
           }}
           activeOpacity={0.8}
         >

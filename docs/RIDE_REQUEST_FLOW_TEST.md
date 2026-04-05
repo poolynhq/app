@@ -1,5 +1,7 @@
 # Ride request flow (manual test)
 
+The **Discover** tab was removed; map + overlap snapshot + seat lists live on **Home** under “NETWORK & SEATS”. Deep link `?scrollTo=opportunities` scrolls to bookable seats.
+
 Apply migrations in order:
 
 - `0047_ride_request_notify_and_accept.sql`
