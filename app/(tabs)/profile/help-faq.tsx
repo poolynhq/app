@@ -30,7 +30,7 @@ const FAQ_SECTIONS: FaqSection[] = [
       },
       {
         q: "Do I need to be part of an organisation?",
-        a: "You can join as an independent member and discover nearby commuters. However, joining through your organisation gives you access to a verified network of colleagues, improving the quality of your matches and overall trust.",
+        a: "You can join as an independent member and discover any commuter along your corridor. However, joining through your organisation gives you access to a verified network of colleagues, improving the quality of your matches and overall trust.",
       },
     ],
   },

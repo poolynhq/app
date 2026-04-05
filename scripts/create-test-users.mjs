@@ -21,9 +21,9 @@
  *   SKIP_VEHICLES=1     — skip vehicle rows for drivers
  *   RESET_PASSWORDS=1   — set every listed user’s password to TEST_USER_PASSWORD (fixes wrong password)
  *
- * Geography: Melbourne cluster shares "Meridian Tech HQ" (Richmond). Sydney cluster A shares
- * CBD; cluster B (WestGrid) uses Parramatta so some Sydney users have spatial overlap across orgs
- * when testing extended matching (depending on your rules).
+ * Geography: Meridian Tech uses one Melbourne CBD workplace; members’ homes fan in on two
+ * synthetic “train lines” (eastern suburbs corridor + northern corridor) for multi-vehicle tests.
+ * Sydney cluster A shares CBD; cluster B (WestGrid) uses Parramatta for cross-city scenarios.
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -46,7 +46,7 @@ const ORGS = [
     domain: "meridiantech.com",
     org_type: "enterprise",
     plan: "business",
-    max_seats: 80,
+    max_seats: 120,
     allow_cross_org: false,
     status: "active",
     active: true,
@@ -118,7 +118,8 @@ const ORGS = [
 ];
 
 // Shared workplaces (lng, lat) — many users aim here for easy route overlap.
-const MEL_RICHMOND = [145.019, -37.824];
+/** Melbourne CBD hub (Swanston / Town Hall) — “all lines” converge here for org testing */
+const MEL_CBD = [144.9631, -37.8136];
 const SYD_CBD = [151.2093, -33.8688];
 const SYD_PARRA = [151.007, -33.8152];
 const GL_CAMPUS = [145.134, -37.915];
@@ -141,7 +142,7 @@ const GL_CAMPUS = [145.134, -37.915];
  * }>}
  */
 const USERS = [
-  // —— Melbourne / Meridian (same office, fan of homes) ——
+  // —— Melbourne / Meridian (CBD workplace; homes fan in like train corridors) ——
   {
     email: "sarah.chen@meridiantech.com",
     full_name: "Sarah Chen",
@@ -151,8 +152,8 @@ const USERS = [
     registration_type: "enterprise",
     role: "both",
     home: [144.9631, -37.8136],
-    work: MEL_RICHMOND,
-    work_label: "Meridian Tech HQ",
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
     license_verified: true,
     vehicle: { make: "Toyota", model: "Corolla", colour: "White", plate: "MT001", seats: 4 },
   },
@@ -165,8 +166,8 @@ const USERS = [
     registration_type: "enterprise",
     role: "driver",
     home: [145.035, -37.755],
-    work: MEL_RICHMOND,
-    work_label: "Meridian Tech HQ",
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
     license_verified: true,
     vehicle: { make: "Mazda", model: "CX-5", colour: "Blue", plate: "MT002", seats: 4 },
   },
@@ -179,8 +180,8 @@ const USERS = [
     registration_type: "enterprise",
     role: "passenger",
     home: [145.0, -37.78],
-    work: MEL_RICHMOND,
-    work_label: "Meridian Tech HQ",
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
   },
   {
     email: "chris.murray@meridiantech.com",
@@ -191,8 +192,8 @@ const USERS = [
     registration_type: "enterprise",
     role: "driver",
     home: [144.986, -37.802],
-    work: MEL_RICHMOND,
-    work_label: "Meridian Tech HQ",
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
     detour_tolerance_mins: 12,
     license_verified: true,
     vehicle: { make: "Hyundai", model: "Ioniq 6", colour: "Grey", plate: "MT004", seats: 4 },
@@ -206,9 +207,270 @@ const USERS = [
     registration_type: "enterprise",
     role: "passenger",
     home: [144.978, -37.806],
-    work: MEL_RICHMOND,
-    work_label: "Meridian Tech HQ",
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
   },
+
+  // —— Meridian “Eastern line” (~Lilydale/Belgrave corridor → CBD): 4 drivers + 6 passengers ——
+  {
+    email: "tessa.briggs@meridiantech.com",
+    full_name: "Tessa Briggs",
+    phone_number: "+61400101001",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [145.208, -37.814],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Toyota", model: "RAV4", colour: "Silver", plate: "MT101", seats: 5 },
+  },
+  {
+    email: "oliver.hughes@meridiantech.com",
+    full_name: "Oliver Hughes",
+    phone_number: "+61400101002",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [145.175, -37.818],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Mazda", model: "CX-8", colour: "Grey", plate: "MT102", seats: 7 },
+  },
+  {
+    email: "mia.costa@meridiantech.com",
+    full_name: "Mia Costa",
+    phone_number: "+61400101003",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [145.132, -37.819],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Kia", model: "Carnival", colour: "Black", plate: "MT103", seats: 8 },
+  },
+  {
+    email: "noah.singh@meridiantech.com",
+    full_name: "Noah Singh",
+    phone_number: "+61400101004",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [145.082, -37.823],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Hyundai", model: "Tucson", colour: "White", plate: "MT104", seats: 5 },
+  },
+  {
+    email: "ruby.fox@meridiantech.com",
+    full_name: "Ruby Fox",
+    phone_number: "+61400101005",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [145.192, -37.816],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "henry.vance@meridiantech.com",
+    full_name: "Henry Vance",
+    phone_number: "+61400101006",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [145.158, -37.818],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "willow.reid@meridiantech.com",
+    full_name: "Willow Reid",
+    phone_number: "+61400101007",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [145.118, -37.82],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "finn.doyle@meridiantech.com",
+    full_name: "Finn Doyle",
+    phone_number: "+61400101008",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [145.095, -37.821],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "chloe.patel@meridiantech.com",
+    full_name: "Chloe Patel",
+    phone_number: "+61400101009",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [145.068, -37.822],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "oscar.webb@meridiantech.com",
+    full_name: "Oscar Webb",
+    phone_number: "+61400101010",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [145.042, -37.821],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+
+  // —— Meridian “Northern line” (~Upfield/Craigieburn corridor → CBD): 4 drivers + 6 passengers ——
+  {
+    email: "zoe.walsh@meridiantech.com",
+    full_name: "Zoe Walsh",
+    phone_number: "+61400102001",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [144.908, -37.702],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Subaru", model: "Forester", colour: "Green", plate: "MT201", seats: 5 },
+  },
+  {
+    email: "ethan.morgan@meridiantech.com",
+    full_name: "Ethan Morgan",
+    phone_number: "+61400102002",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [144.918, -37.724],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Ford", model: "Everest", colour: "Blue", plate: "MT202", seats: 7 },
+  },
+  {
+    email: "ivy.chen@meridiantech.com",
+    full_name: "Ivy Chen",
+    phone_number: "+61400102003",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [144.936, -37.742],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Tesla", model: "Model Y", colour: "Red", plate: "MT203", seats: 5 },
+  },
+  {
+    email: "jack.obrien@meridiantech.com",
+    full_name: "Jack O'Brien",
+    phone_number: "+61400102004",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "driver",
+    home: [144.958, -37.772],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+    license_verified: true,
+    vehicle: { make: "Mitsubishi", model: "Outlander", colour: "White", plate: "MT204", seats: 7 },
+  },
+  {
+    email: "amelia.hart@meridiantech.com",
+    full_name: "Amelia Hart",
+    phone_number: "+61400102005",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [144.912, -37.712],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "lucas.grant@meridiantech.com",
+    full_name: "Lucas Grant",
+    phone_number: "+61400102006",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [144.926, -37.732],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "sophie.ryan@meridiantech.com",
+    full_name: "Sophie Ryan",
+    phone_number: "+61400102007",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [144.948, -37.752],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "ben.taylor@meridiantech.com",
+    full_name: "Ben Taylor",
+    phone_number: "+61400102008",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [144.962, -37.762],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "grace.ellis@meridiantech.com",
+    full_name: "Grace Ellis",
+    phone_number: "+61400102009",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [144.964, -37.785],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+  {
+    email: "max.brooks@meridiantech.com",
+    full_name: "Max Brooks",
+    phone_number: "+61400102010",
+    orgDomain: "meridiantech.com",
+    org_role: "member",
+    registration_type: "enterprise",
+    role: "passenger",
+    home: [144.952, -37.802],
+    work: MEL_CBD,
+    work_label: "Meridian Tech — Melbourne CBD",
+  },
+
   // —— Sydney / Harbour Code → CBD ——
   {
     email: "nina.park@harbourcode.io",
@@ -408,7 +670,7 @@ async function ensureOrgSubscription(svc, orgId, plan) {
   const { error } = await svc.from("subscriptions").insert({
     org_id: orgId,
     plan,
-    seat_count: plan === "business" ? 80 : 200,
+    seat_count: plan === "business" ? 120 : 200,
     status: "active",
   });
   if (error) throw error;
@@ -446,6 +708,8 @@ async function main() {
 
   console.log("Creating / updating auth users and profiles…");
   const lines = [];
+  let authCreated = 0;
+  let authExisted = 0;
 
   for (const u of USERS) {
     const orgId = u.orgDomain ? domainToOrgId[u.orgDomain] : null;
@@ -455,6 +719,8 @@ async function main() {
     }
 
     const { id: userId, created } = await ensureAuthUser(adminAuth, u.email, u.full_name);
+    if (created) authCreated += 1;
+    else authExisted += 1;
 
     if (RESET_PASSWORDS) {
       const { error: pwErr } = await adminAuth.updateUserById(userId, { password: PASSWORD });
@@ -517,6 +783,9 @@ async function main() {
   console.log("Password:", PASSWORD);
   console.log("");
   for (const line of lines) console.log(line);
+  console.log(
+    `\nSummary: ${authCreated} new Auth user(s) created, ${authExisted} already existed (profile still updated). Total rows: ${USERS.length}.`
+  );
   console.log(
     "\nTip: these domains are fictional. For real inboxes on your own domain, use Cloudflare Email Routing or an alias service so you still receive Supabase mails if needed."
   );

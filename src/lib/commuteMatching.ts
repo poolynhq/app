@@ -6,7 +6,8 @@
 import * as turf from "@turf/turf";
 import type { Feature, LineString } from "geojson";
 import { supabase } from "@/lib/supabase";
-import type { User } from "@/types/database";
+import type { Schedule, User } from "@/types/database";
+import { computePairCommuteScheduleOverlap } from "@/lib/commuteScheduleOverlap";
 import { computePassengerCostBreakdown, type CostBreakdownCents } from "@/lib/costModel";
 import { fairnessSeedUint32, fairnessUnit } from "@/lib/fairnessHash";
 import { getBaselineCommute, type LngLat } from "@/lib/mapboxDirections";
@@ -85,6 +86,30 @@ function canActAsDriver(u: User): boolean {
   return u.active_mode !== "passenger";
 }
 
+async function fetchActiveSchedulesForUsers(
+  userIds: string[]
+): Promise<Map<string, Schedule | null>> {
+  const map = new Map<string, Schedule | null>();
+  if (userIds.length === 0) return map;
+  for (const id of userIds) map.set(id, null);
+
+  const { data } = await supabase
+    .from("schedules")
+    .select(
+      "user_id, type, weekday_times, tolerance_mins, active, id, created_at, updated_at, shift_start, shift_end"
+    )
+    .in("user_id", userIds)
+    .eq("active", true)
+    .order("updated_at", { ascending: false });
+
+  for (const row of data ?? []) {
+    const uid = row.user_id as string;
+    if (map.get(uid) !== null) continue;
+    map.set(uid, row as Schedule);
+  }
+  return map;
+}
+
 /** Discover / UI: whether this profile can see driver-side commute opportunities */
 export function canViewerActAsDriver(u: User): boolean {
   return canActAsDriver(u);
@@ -151,6 +176,9 @@ export async function getRideOpportunities(
   const maxPairs = 12;
   const out: RideOpportunityCard[] = [];
 
+  const pairUserIds = [...new Set(filtered.flatMap((r) => [r.driver_id, r.passenger_id]))];
+  const scheduleByUserId = await fetchActiveSchedulesForUsers(pairUserIds);
+
   for (const row of filtered.slice(0, maxPairs * 2)) {
     if (out.length >= maxPairs) break;
 
@@ -159,16 +187,29 @@ export async function getRideOpportunities(
 
     const { data: driverUser } = await supabase
       .from("users")
-      .select("id, home_location, work_location, reliability_score, detour_tolerance_mins, vehicles(seats, vehicle_class, active)")
+      .select(
+        "id, home_location, work_location, reliability_score, detour_tolerance_mins, schedule_flex_mins, vehicles(seats, vehicle_class, active)"
+      )
       .eq("id", driverId)
       .single();
     const { data: passengerUser } = await supabase
       .from("users")
-      .select("id, home_location, pickup_location, work_location, reliability_score")
+      .select(
+        "id, home_location, pickup_location, work_location, reliability_score, schedule_flex_mins"
+      )
       .eq("id", passengerId)
       .single();
 
     if (!driverUser || !passengerUser) continue;
+
+    const schedResult = computePairCommuteScheduleOverlap(
+      scheduleByUserId.get(driverId) ?? undefined,
+      scheduleByUserId.get(passengerId) ?? undefined,
+      (driverUser.schedule_flex_mins as number | null | undefined) ?? 15,
+      (passengerUser.schedule_flex_mins as number | null | undefined) ?? 15
+    );
+    if (!schedResult.passes) continue;
+    const timeOverlap = schedResult.ratio;
 
     const dHome = parseLngLatFromUserPoint(driverUser.home_location as string | null);
     const dWork = parseLngLatFromUserPoint(driverUser.work_location as string | null);
@@ -270,7 +311,6 @@ export async function getRideOpportunities(
 
     const relD = driverUser.reliability_score ?? 70;
     const relP = passengerUser.reliability_score ?? 70;
-    const timeOverlap = 0.75;
     const detourPenalty = Math.min(1, detourMin / 20);
     const matchScore =
       0.4 * overlapRatio +

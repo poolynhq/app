@@ -104,15 +104,27 @@ export default function ActivityScreen() {
         }
         renderItem={({ item }) => {
           const isJoinInvite = item.type === "network_join_invite";
+          const isRideRequest = item.type === "ride_request_pending";
+          const isRideAccepted = item.type === "ride_request_accepted";
           return (
             <TouchableOpacity
               style={[styles.row, !item.read && styles.rowUnread]}
               onPress={() => {
                 if (isJoinInvite) {
                   openJoinInvite(item);
-                } else {
-                  void markRead(item.id);
+                  return;
                 }
+                if (isRideRequest) {
+                  void markRead(item.id);
+                  router.push("/(tabs)/rides?tab=open");
+                  return;
+                }
+                if (isRideAccepted) {
+                  void markRead(item.id);
+                  router.push("/(tabs)/rides");
+                  return;
+                }
+                void markRead(item.id);
               }}
               activeOpacity={0.75}
             >
@@ -122,6 +134,9 @@ export default function ActivityScreen() {
                 <Text style={styles.rowMeta}>{new Date(item.created_at).toLocaleString()}</Text>
                 {isJoinInvite ? (
                   <Text style={styles.rowCta}>Tap to join with invite code →</Text>
+                ) : null}
+                {isRideRequest ? (
+                  <Text style={styles.rowCta}>Tap to open Respond on My Rides →</Text>
                 ) : null}
               </View>
               {!item.read ? <View style={styles.unreadDot} /> : null}

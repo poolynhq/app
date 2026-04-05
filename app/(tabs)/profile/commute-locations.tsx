@@ -49,9 +49,13 @@ function distanceMeters(
 
 /** Illustrative one-way cash range from driving distance (not a quote). */
 function estimateContributionRangeAud(distanceKm: number): { low: string; high: string } {
-  const midAud = Math.min(Math.max(distanceKm * 0.14, 2.8), 22);
-  const low = Math.max(2.2, midAud * 0.7);
-  const high = midAud * 1.35;
+  const d = distanceKm;
+  if (!Number.isFinite(d) || d <= 0) {
+    return { low: "—", high: "—" };
+  }
+  const midAud = Math.min(0.95 + d * 0.135, 28);
+  const low = Math.max(0.55, midAud * 0.68);
+  const high = Math.min(midAud * 1.42, 42);
   return { low: low.toFixed(2), high: high.toFixed(2) };
 }
 

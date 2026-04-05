@@ -1,15 +1,38 @@
-import { useEffect, useState, useMemo, type ReactNode } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Share, Image } from "react-native";
+import { useEffect, useState, useMemo, useCallback, type ReactNode } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  Share,
+  Image,
+  Modal,
+  Pressable,
+  ActivityIndicator,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import { showAlert } from "@/lib/platformAlert";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useDiscoverMapLayers } from "@/hooks/useDiscoverMapLayers";
 import { DiscoverMapLayers } from "@/components/maps/DiscoverMapLayers";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
-import { buildViewerCommuteMapFeatures } from "@/lib/viewerCommuteMapMarkers";
+import { useDiscoverViewerLayers } from "@/hooks/useDiscoverViewerLayers";
+import { mapLayerEmphasisForProfile } from "@/lib/mapLayerEmphasis";
+import {
+  countPickupDemandByCorridorDisjoint,
+  filterPointsToViewerCorridors,
+  filterRouteLinesToViewerCorridors,
+  formatDisjointCorridorPickupSummary,
+} from "@/lib/discoverRouteDemand";
+import {
+  DiscoverMapLegend,
+  type DiscoverMapLegendLens,
+} from "@/components/maps/DiscoverMapLegend";
 import { Organisation } from "@/types/database";
 import {
   Colors,
@@ -20,6 +43,11 @@ import {
   Shadow,
   RoleTheme,
 } from "@/constants/theme";
+import { viewerMyRoutesDisplayCollection } from "@/lib/viewerRoutePrimarySwap";
+import { createCommuteRideRequest, cancelMyPendingRideRequest } from "@/lib/rideRequests";
+import { usePassengerPickupState } from "@/hooks/usePassengerPickupState";
+import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
+import { fetchDrivingRoute } from "@/lib/mapboxDirections";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -198,9 +226,42 @@ function PillarSection({
   );
 }
 
+type PostPickupTiming = "now" | 15 | 30 | 45 | 60;
+
 export default function Dashboard() {
   const router = useRouter();
   const { profile, refreshProfile, activeMode, toggleMode, rolePalette } = useAuth();
+  const [viewerMapRefetchTick, setViewerMapRefetchTick] = useState(0);
+  const [promotedViewerRouteKey, setPromotedViewerRouteKey] = useState<string | null>(null);
+  const [postRequestOpen, setPostRequestOpen] = useState(false);
+  const [postRequestSubmitting, setPostRequestSubmitting] = useState(false);
+  const [postRequestDirection, setPostRequestDirection] = useState<"to_work" | "from_work">("to_work");
+  const [postRequestTiming, setPostRequestTiming] = useState<PostPickupTiming>("now");
+
+  const {
+    demandPoints,
+    supplyPoints,
+    routeLines,
+    reload: reloadMapLayers,
+    loading: homeMapLayersLoading,
+  } = useDiscoverMapLayers(profile ?? null);
+
+  const {
+    viewerPinsGeoJson,
+    viewerMyRoutesGeoJson,
+    routeCorridors,
+    routesLoading,
+  } = useDiscoverViewerLayers(profile ?? null, viewerMapRefetchTick);
+
+  useFocusEffect(
+    useCallback(() => {
+      void (async () => {
+        await refreshProfile();
+        reloadMapLayers();
+        setViewerMapRefetchTick((t) => t + 1);
+      })();
+    }, [refreshProfile, reloadMapLayers])
+  );
   const [org, setOrg] = useState<Organisation | null>(null);
   const [orgMemberCount, setOrgMemberCount] = useState(0);
 
@@ -210,7 +271,51 @@ export default function Dashboard() {
   const showQuickActions = !isFlexible || activeMode != null;
   const quickDriver = isFlexible ? activeMode === "driver" : profile?.role === "driver";
   const quickPassenger = isFlexible ? activeMode === "passenger" : profile?.role === "passenger";
-  const showPostRequest = quickPassenger || (!isFlexible && profile?.role === "driver");
+  const showPostRequest = quickPassenger;
+
+  const passengerPickupEnabled =
+    !!profile?.id &&
+    (profile.role === "passenger" || profile.role === "both" || showPostRequest);
+  const pickupState = usePassengerPickupState(profile?.id ?? null, passengerPickupEnabled);
+  const pendingExpiryLabel = useExpiryCountdown(pickupState.pending?.expires_at);
+  const [rideTripHint, setRideTripHint] = useState<string | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (passengerPickupEnabled && profile?.id) void pickupState.reload();
+    }, [passengerPickupEnabled, profile?.id, pickupState.reload])
+  );
+
+  useEffect(() => {
+    const r = pickupState.upcomingRides[0];
+    if (!r) {
+      setRideTripHint(null);
+      return;
+    }
+    const o = parseGeoPoint(r.origin);
+    const d = parseGeoPoint(r.destination);
+    if (!o || !d) {
+      setRideTripHint(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const res = await fetchDrivingRoute([
+        [o.lng, o.lat],
+        [d.lng, d.lat],
+      ]);
+      if (cancelled) return;
+      if (res.ok) {
+        const mins = Math.max(1, Math.round(res.route.durationS / 60));
+        setRideTripHint(`~${mins} min trip (traffic-aware est.)`);
+      } else {
+        setRideTripHint(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pickupState.upcomingRides]);
 
   const roleBadgeLabel =
     isFlexible
@@ -237,8 +342,6 @@ export default function Dashboard() {
     }
   }
 
-  const { demandPoints, supplyPoints, routeLines } = useDiscoverMapLayers(profile ?? null);
-
   const homeMapFallbackCenter = useMemo((): [number, number] => {
     if (!profile) return [138.6, -34.85];
     const home = parseGeoPoint(profile.home_location as unknown);
@@ -248,10 +351,64 @@ export default function Dashboard() {
     return [138.6, -34.85];
   }, [profile]);
 
-  const homeViewerMapFeatures = useMemo(
-    () => buildViewerCommuteMapFeatures(profile ?? null),
-    [profile]
+  const homeMapLayerEmphasis = useMemo(
+    () => mapLayerEmphasisForProfile(profile ?? null, activeMode ?? null),
+    [profile, activeMode]
   );
+
+  const homeMapDemandPoints = useMemo(
+    () => filterPointsToViewerCorridors(demandPoints, routeCorridors),
+    [demandPoints, routeCorridors]
+  );
+  const homeMapSupplyPoints = useMemo(
+    () => filterPointsToViewerCorridors(supplyPoints, routeCorridors),
+    [supplyPoints, routeCorridors]
+  );
+  const homeMapRouteLines = useMemo(
+    () => filterRouteLinesToViewerCorridors(routeLines, routeCorridors),
+    [routeLines, routeCorridors]
+  );
+
+  const homeRouteCorridorDemandLine = useMemo(() => {
+    if (homeMapLayerEmphasis !== "demand" || routeCorridors.length === 0) return "";
+    const r = countPickupDemandByCorridorDisjoint(homeMapDemandPoints, routeCorridors);
+    return formatDisjointCorridorPickupSummary(r);
+  }, [homeMapLayerEmphasis, homeMapDemandPoints, routeCorridors]);
+
+  const viewerRouteBaselineKey = useMemo(
+    () =>
+      viewerMyRoutesGeoJson.features
+        .map((f) => String((f.properties as { route_key?: string } | null)?.route_key ?? ""))
+        .join("|"),
+    [viewerMyRoutesGeoJson]
+  );
+
+  useEffect(() => {
+    setPromotedViewerRouteKey(null);
+  }, [viewerRouteBaselineKey]);
+
+  const homeViewerRoutesDisplayed = useMemo(
+    () => viewerMyRoutesDisplayCollection(viewerMyRoutesGeoJson, promotedViewerRouteKey),
+    [viewerMyRoutesGeoJson, promotedViewerRouteKey]
+  );
+
+  const hasViewerRouteAlternates = useMemo(
+    () =>
+      viewerMyRoutesGeoJson.features.some((f) =>
+        String((f.properties as { route_key?: string } | null)?.route_key ?? "").startsWith("alt_")
+      ),
+    [viewerMyRoutesGeoJson]
+  );
+
+  const homeMapLegendLens = useMemo((): DiscoverMapLegendLens => {
+    if (!profile) return "overview";
+    if (isFlexible && activeMode === null) return "flex_none";
+    if (quickPassenger && !quickDriver) return "passenger";
+    if (quickDriver && !quickPassenger) return "driver";
+    if (profile.role === "passenger") return "passenger";
+    if (profile.role === "driver") return "driver";
+    return "overview";
+  }, [profile, isFlexible, activeMode, quickPassenger, quickDriver]);
 
   useEffect(() => {
     async function loadOrgContext() {
@@ -295,7 +452,7 @@ export default function Dashboard() {
   function showExplorerInfo() {
     showAlert(
       "Independent commuter",
-      "You are not in a workplace network yet. You can mingle with other independents and nearby commuters.\n\nWhen an organisation on your email domain is set up, they can add you or send an invite code."
+      "You are not in a workplace network yet. You can mingle with other independents and any commuter along your corridor.\n\nWhen an organisation on your email domain is set up, they can add you or send an invite code."
     );
   }
 
@@ -320,7 +477,7 @@ export default function Dashboard() {
       org.domain ? `Domain: ${org.domain}` : null,
       orgMemberCount > 0 ? `${orgMemberCount} colleagues on Poolyn` : null,
       "",
-      "Community network: you share a pool with others on your work email domain. Discover starts with your network; you can widen scope to nearby commuters when you want.",
+      "Community network: you share a pool with others on your work email domain. Discover starts with your network; you can widen scope to any commuter when you want.",
     ].filter(Boolean);
     showAlert("Your network", lines.join("\n"));
   }
@@ -382,7 +539,7 @@ export default function Dashboard() {
               accessibilityRole="button"
               accessibilityLabel="Activity and messages"
             >
-              <Ionicons name="notifications-outline" size={24} color={Colors.text} />
+              <Ionicons name="notifications-outline" size={22} color={Colors.text} />
             </TouchableOpacity>
           </View>
 
@@ -474,6 +631,86 @@ export default function Dashboard() {
           )}
         </View>
 
+        {passengerPickupEnabled &&
+        (pickupState.pending || pickupState.upcomingRides.length > 0) ? (
+          <View style={styles.pickupBanner}>
+            {pickupState.pending ? (
+              <>
+                <View style={styles.pickupBannerRow}>
+                  <Ionicons name="radio-outline" size={22} color={Colors.primaryDark} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.pickupBannerTitle}>Pickup request active</Text>
+                    <Text style={styles.pickupBannerBody}>
+                      Notifying drivers on their phones. You can leave this screen open — we will update when
+                      someone accepts.
+                    </Text>
+                    <Text style={styles.pickupBannerMeta}>
+                      {pickupState.pending.direction === "from_work" ? "From work" : "To work"} ·{" "}
+                      {new Date(pickupState.pending.desired_depart_at).toLocaleString(undefined, {
+                        weekday: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </Text>
+                    {pendingExpiryLabel ? (
+                      <Text style={styles.pickupBannerCountdown}>
+                        Auto-cancels in {pendingExpiryLabel} if no one accepts — then you can post again.
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.pickupCancelBtn}
+                  onPress={() => {
+                    if (!profile?.id) return;
+                    showAlert("Cancel request?", "Drivers will stop seeing this pickup need.", [
+                      { text: "Keep waiting", style: "cancel" },
+                      {
+                        text: "Cancel request",
+                        style: "destructive",
+                        onPress: async () => {
+                          const res = await cancelMyPendingRideRequest(profile.id);
+                          if (res.ok) void pickupState.reload();
+                          else showAlert("Could not cancel", res.reason);
+                        },
+                      },
+                    ]);
+                  }}
+                >
+                  <Text style={styles.pickupCancelBtnText}>Cancel request</Text>
+                </TouchableOpacity>
+              </>
+            ) : pickupState.upcomingRides[0] ? (
+              <View style={styles.pickupBannerRow}>
+                <Ionicons name="checkmark-circle" size={22} color={Colors.primaryDark} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.pickupBannerTitle}>You are booked</Text>
+                  <Text style={styles.pickupBannerBody}>
+                    {pickupState.upcomingRides[0].driverName?.trim() || "Your driver"} accepted your pickup.
+                    {rideTripHint ? ` ${rideTripHint}.` : " Open My Rides → Active for full details."}
+                  </Text>
+                  <Text style={styles.pickupBannerMeta}>
+                    {pickupState.upcomingRides[0].direction === "from_work" ? "From work" : "To work"} ·{" "}
+                    {new Date(pickupState.upcomingRides[0].departAt).toLocaleString(undefined, {
+                      weekday: "short",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.pickupRidesLink}
+                    onPress={() => router.push("/(tabs)/rides")}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.pickupRidesLinkText}>Open My Rides</Text>
+                    <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* Snapshot stats */}
         <View style={styles.statsSection}>
           <Text style={styles.statsSectionLabel}>At a glance</Text>
@@ -481,7 +718,7 @@ export default function Dashboard() {
             <View style={styles.statCard}>
               <View style={styles.statInlineRow}>
                 <View style={[styles.statIcon, { backgroundColor: "#EFF6FF" }]}>
-                  <Ionicons name="star" size={20} color={Colors.info} />
+                  <Ionicons name="star" size={17} color={Colors.info} />
                 </View>
                 <Text style={styles.statValue}>{profile?.points_balance ?? 0}</Text>
               </View>
@@ -490,7 +727,7 @@ export default function Dashboard() {
             <View style={styles.statCard}>
               <View style={styles.statInlineRow}>
                 <View style={[styles.statIcon, { backgroundColor: Colors.accentLight }]}>
-                  <Ionicons name="flash" size={20} color={Colors.accent} />
+                  <Ionicons name="flash" size={17} color={Colors.accent} />
                 </View>
                 <Text style={styles.statValue}>
                   {profile?.flex_credits_balance ?? 3}
@@ -501,7 +738,7 @@ export default function Dashboard() {
             <View style={styles.statCard}>
               <View style={styles.statInlineRow}>
                 <View style={[styles.statIcon, { backgroundColor: Colors.primaryLight }]}>
-                  <Ionicons name="leaf" size={20} color={Colors.primary} />
+                  <Ionicons name="leaf" size={17} color={Colors.primary} />
                 </View>
                 <Text style={styles.statValue}>0</Text>
               </View>
@@ -510,7 +747,7 @@ export default function Dashboard() {
             <View style={styles.statCard}>
               <View style={styles.statInlineRow}>
                 <View style={[styles.statIcon, { backgroundColor: "#F3E8FF" }]}>
-                  <Ionicons name="car" size={20} color="#8B5CF6" />
+                  <Ionicons name="car" size={17} color="#8B5CF6" />
                 </View>
                 <Text style={styles.statValue}>0</Text>
               </View>
@@ -524,7 +761,7 @@ export default function Dashboard() {
           variant="routine"
           eyebrow="ROUTINE POOLYN"
           title="Your regular commute"
-          subtitle="Home–work rhythms, network visibility, and demand around routes you use often. Use Discover to post pickup requests and confirm matches."
+          subtitle="Home to work rhythms, map demand, and your network. Post a pickup request from Quick actions or use Discover for seats."
         >
           <View style={styles.roleWrap}>
             <View
@@ -568,7 +805,7 @@ export default function Dashboard() {
                     profile?.visibility_mode === "nearby" && styles.visibilityTextActive,
                   ]}
                 >
-                  Nearby commuters
+                  Any commuter
                 </Text>
               </TouchableOpacity>
             </View>
@@ -678,7 +915,7 @@ export default function Dashboard() {
                   <TouchableOpacity
                     style={styles.actionCard}
                     activeOpacity={0.72}
-                    onPress={() => router.push("/(tabs)/discover")}
+                    onPress={() => router.push("/(tabs)/discover?scrollTo=opportunities")}
                   >
                     <View style={styles.actionTitleRow}>
                       <View style={[styles.actionIcon, { backgroundColor: "#EFF6FF" }]}>
@@ -686,14 +923,17 @@ export default function Dashboard() {
                       </View>
                       <Text style={styles.actionTitle}>Find a ride</Text>
                     </View>
-                    <Text style={styles.actionDesc}>Browse drivers on similar corridors</Text>
+                    <Text style={styles.actionDesc}>
+                      Browse posted trips with free seats and reserve one — for when a driver already shared a ride
+                      and you do not need a new pickup request.
+                    </Text>
                   </TouchableOpacity>
                 )}
                 {showPostRequest && (
                   <TouchableOpacity
                     style={styles.actionCard}
                     activeOpacity={0.72}
-                    onPress={() => router.push("/(tabs)/discover")}
+                    onPress={() => setPostRequestOpen(true)}
                   >
                     <View style={styles.actionTitleRow}>
                       <View style={[styles.actionIcon, { backgroundColor: "#F3E8FF" }]}>
@@ -709,21 +949,31 @@ export default function Dashboard() {
           )}
 
           <Text style={styles.pillarInlineLabel}>Demand &amp; supply near routes</Text>
-          <Text style={styles.mapSectionHint}>
-            {effectiveRole === "driver" || (isFlexible && activeMode === "driver")
-              ? "Green: drivers · Orange heat: riders needing seats · Blue: shared route corridors"
-              : effectiveRole === "passenger" || (isFlexible && activeMode === "passenger")
-                ? "Orange: rider demand · Green: drivers · Blue: corridors — open Discover to request pickup"
-                : "Overview of network activity. Pick Driving or Riding above for tailored hints."}
-          </Text>
+          {profile ? (
+            <DiscoverMapLegend
+              lens={homeMapLegendLens}
+              corridorBandFilter={routeCorridors.length > 0}
+              scopeNetwork={profile.visibility_mode !== "nearby"}
+              compact
+            />
+          ) : null}
+          {homeRouteCorridorDemandLine ? (
+            <Text style={styles.mapCorridorHint}>{homeRouteCorridorDemandLine}</Text>
+          ) : null}
           <DiscoverMapLayers
-            demandGeoJson={demandPoints}
-            supplyGeoJson={supplyPoints}
-            routeGeoJson={routeLines}
-            viewerGeoJson={homeViewerMapFeatures}
+            demandGeoJson={homeMapDemandPoints}
+            supplyGeoJson={homeMapSupplyPoints}
+            routeGeoJson={homeMapRouteLines}
+            viewerPinsGeoJson={viewerPinsGeoJson}
+            viewerMyRoutesGeoJson={homeViewerRoutesDisplayed}
+            layerEmphasis={homeMapLayerEmphasis}
             title="Live network map"
             mapHeight={268}
             fallbackCenter={homeMapFallbackCenter}
+            remoteLoading={homeMapLayersLoading || routesLoading}
+            onViewerRouteAlternateTap={
+              hasViewerRouteAlternates ? (key) => setPromotedViewerRouteKey(key) : undefined
+            }
           />
           <TouchableOpacity
             style={styles.discoverCta}
@@ -858,9 +1108,259 @@ export default function Dashboard() {
           ))}
         </View>
       </ScrollView>
+
+      <Modal
+        visible={postRequestOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!postRequestSubmitting) setPostRequestOpen(false);
+        }}
+      >
+        <Pressable
+          style={postRequestModalStyles.backdrop}
+          onPress={() => {
+            if (!postRequestSubmitting) setPostRequestOpen(false);
+          }}
+        >
+          <Pressable style={postRequestModalStyles.card} onPress={(e) => e.stopPropagation()}>
+            <Text style={postRequestModalStyles.modalTitle}>Post pickup request</Text>
+            <Text style={postRequestModalStyles.modalSub}>
+              Uses your saved home and work. Drivers who are nearby, on a matching commute, or on a posted ride
+              with free seats get an alert on their phone. You do not need to open My Rides to reach them.
+            </Text>
+            <Text style={postRequestModalStyles.fieldLabel}>Direction</Text>
+            <View style={postRequestModalStyles.chipRow}>
+              {(["to_work", "from_work"] as const).map((d) => (
+                <TouchableOpacity
+                  key={d}
+                  style={[
+                    postRequestModalStyles.chip,
+                    postRequestDirection === d && postRequestModalStyles.chipOn,
+                  ]}
+                  onPress={() => setPostRequestDirection(d)}
+                >
+                  <Text
+                    style={[
+                      postRequestModalStyles.chipText,
+                      postRequestDirection === d && postRequestModalStyles.chipTextOn,
+                    ]}
+                  >
+                    {d === "to_work" ? "To work" : "From work"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={postRequestModalStyles.fieldLabel}>When</Text>
+            <View style={postRequestModalStyles.chipRow}>
+              <TouchableOpacity
+                style={[
+                  postRequestModalStyles.chip,
+                  postRequestTiming === "now" && postRequestModalStyles.chipOn,
+                ]}
+                onPress={() => setPostRequestTiming("now")}
+              >
+                <Text
+                  style={[
+                    postRequestModalStyles.chipText,
+                    postRequestTiming === "now" && postRequestModalStyles.chipTextOn,
+                  ]}
+                >
+                  Now
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  postRequestModalStyles.chip,
+                  postRequestTiming === 15 && postRequestModalStyles.chipOn,
+                ]}
+                onPress={() => setPostRequestTiming(15)}
+              >
+                <Text
+                  style={[
+                    postRequestModalStyles.chipText,
+                    postRequestTiming === 15 && postRequestModalStyles.chipTextOn,
+                  ]}
+                >
+                  In 15 min
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={postRequestModalStyles.fieldLabelMuted}>Other times</Text>
+            <View style={postRequestModalStyles.chipRow}>
+              {[30, 45, 60].map((m) => (
+                <TouchableOpacity
+                  key={m}
+                  style={[
+                    postRequestModalStyles.chipSm,
+                    postRequestTiming === m && postRequestModalStyles.chipOn,
+                  ]}
+                  onPress={() => setPostRequestTiming(m as PostPickupTiming)}
+                >
+                  <Text
+                    style={[
+                      postRequestModalStyles.chipText,
+                      postRequestTiming === m && postRequestModalStyles.chipTextOn,
+                    ]}
+                  >
+                    {m} min
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={postRequestModalStyles.modalActions}>
+              <TouchableOpacity
+                style={postRequestModalStyles.cancelBtn}
+                disabled={postRequestSubmitting}
+                onPress={() => setPostRequestOpen(false)}
+              >
+                <Text style={postRequestModalStyles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={postRequestModalStyles.postBtn}
+                disabled={postRequestSubmitting}
+                onPress={async () => {
+                  setPostRequestSubmitting(true);
+                  const isNow = postRequestTiming === "now";
+                  const res = await createCommuteRideRequest({
+                    direction: postRequestDirection,
+                    leaveInMins: isNow ? null : postRequestTiming,
+                    flexibilityMins: isNow ? 10 : 15,
+                  });
+                  setPostRequestSubmitting(false);
+                  if (res.ok) {
+                    void pickupState.reload();
+                    showAlert(
+                      "Request sent",
+                      isNow
+                        ? "Nearby drivers with seats are being notified now. Watch for a banner or sound on their phone."
+                        : "Drivers get advance notice so they can plan. You will see confirmation when someone accepts."
+                    );
+                    setPostRequestOpen(false);
+                    setViewerMapRefetchTick((t) => t + 1);
+                    void reloadMapLayers();
+                  } else {
+                    showAlert("Could not post", res.reason);
+                  }
+                }}
+              >
+                {postRequestSubmitting ? (
+                  <ActivityIndicator color={Colors.textOnPrimary} />
+                ) : (
+                  <Text style={postRequestModalStyles.postBtnText}>Post</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
+
+const postRequestModalStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: Colors.overlay,
+    justifyContent: "center",
+    padding: Spacing.lg,
+  },
+  card: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  modalTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  modalSub: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+    marginBottom: Spacing.md,
+  },
+  fieldLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.xs,
+  },
+  fieldLabelMuted: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
+    color: Colors.textTertiary,
+    marginBottom: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  chip: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  chipSm: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  chipOn: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  chipText: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    fontWeight: FontWeight.medium,
+  },
+  chipTextOn: {
+    color: Colors.primaryDark,
+  },
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  cancelBtn: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  cancelText: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    fontWeight: FontWeight.medium,
+  },
+  postBtn: {
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: BorderRadius.md,
+    minWidth: 100,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  postBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textOnPrimary,
+  },
+});
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
@@ -869,6 +1369,67 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.md,
     paddingBottom: Spacing["5xl"],
+  },
+  pickupBanner: {
+    marginHorizontal: Spacing.xl,
+    marginBottom: Spacing.lg,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    ...Shadow.sm,
+  },
+  pickupBannerRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.md,
+  },
+  pickupBannerTitle: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+  },
+  pickupBannerBody: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    marginTop: Spacing.xs,
+    lineHeight: 20,
+  },
+  pickupBannerMeta: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    marginTop: Spacing.sm,
+    fontWeight: FontWeight.medium,
+  },
+  pickupBannerCountdown: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.accent,
+    marginTop: Spacing.sm,
+    lineHeight: 18,
+  },
+  pickupCancelBtn: {
+    marginTop: Spacing.md,
+    alignSelf: "flex-start",
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+  },
+  pickupCancelBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.error,
+  },
+  pickupRidesLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: Spacing.sm,
+  },
+  pickupRidesLinkText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primary,
   },
   statsSection: {
     marginBottom: Spacing["2xl"],
@@ -1243,12 +1804,12 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     textAlign: "center",
   },
-  mapSectionHint: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    lineHeight: 20,
+  mapCorridorHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    lineHeight: 18,
     marginBottom: Spacing.sm,
-    marginTop: 0,
+    fontWeight: FontWeight.semibold,
   },
   howItWorks: {
     backgroundColor: Colors.surface,

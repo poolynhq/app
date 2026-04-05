@@ -5,6 +5,26 @@
 import { useMemo } from "react";
 import { View, Text, StyleSheet, Platform, ActivityIndicator } from "react-native";
 import { WebView } from "react-native-webview";
+import type { MapLayerEmphasis } from "@/lib/mapLayerEmphasis";
+import {
+  DISCOVER_MAP_CLUSTER_RADIUS_PX,
+  DISCOVER_MAP_HEATMAP_RADIUS_PX,
+  DISCOVER_MAP_PEER_LINE_WIDTH,
+  DISCOVER_MAP_PIN_HOME_RADIUS,
+  DISCOVER_MAP_PIN_STROKE_WIDTH,
+  DISCOVER_MAP_PIN_WORK_RADIUS,
+  DISCOVER_MAP_STYLE_URL,
+  DISCOVER_MAP_SUPPLY_CLUSTER_RADIUS,
+  DISCOVER_MAP_SUPPLY_DOT_RADIUS,
+  DISCOVER_MAP_VIEWER_ALT_WIDTH,
+  DISCOVER_MAP_VIEWER_PRIMARY_WIDTH,
+  DISCOVER_PEER_RIDE_ROUTE,
+  DISCOVER_VIEWER_ROUTE_ALT0,
+  DISCOVER_VIEWER_ROUTE_ALT1,
+  DISCOVER_VIEWER_ROUTE_ALT2,
+  DISCOVER_VIEWER_ROUTE_ALT_FALLBACK,
+  DISCOVER_VIEWER_ROUTE_PRIMARY,
+} from "@/constants/discoverMapStyle";
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -12,8 +32,12 @@ interface DiscoverMapLayersProps {
   demandGeoJson: GeoJSON.FeatureCollection;
   supplyGeoJson: GeoJSON.FeatureCollection;
   routeGeoJson: GeoJSON.FeatureCollection;
-  /** Your saved home / work (the API intentionally excludes you from aggregate layers). */
-  viewerGeoJson?: GeoJSON.FeatureCollection;
+  /** Home / work pins (same as Profile → Commute). */
+  viewerPinsGeoJson?: GeoJSON.FeatureCollection;
+  /** Stored driving route + Mapbox alternates (no straight crow line). */
+  viewerMyRoutesGeoJson?: GeoJSON.FeatureCollection;
+  /** When driving, boost demand heat; when riding, boost driver dots. */
+  layerEmphasis?: MapLayerEmphasis;
   title?: string;
   /** Map viewport height in px (default 280). */
   mapHeight?: number;
@@ -21,9 +45,10 @@ interface DiscoverMapLayersProps {
   fallbackCenter?: [number, number];
   /** When true, show a compact loading bar above the map (RPC in flight). */
   remoteLoading?: boolean;
+  /** Tap an alternate route line (not primary) to promote it to the thick “main” style. */
+  onViewerRouteAlternateTap?: (routeKey: string) => void;
 }
 
-const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const ML_JS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js";
 const ML_CSS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css";
 
@@ -33,14 +58,19 @@ function buildMapHtml(
   demand: GeoJSON.FeatureCollection,
   supply: GeoJSON.FeatureCollection,
   routes: GeoJSON.FeatureCollection,
-  viewer: GeoJSON.FeatureCollection,
-  fallbackCenter: [number, number]
+  viewerPins: GeoJSON.FeatureCollection,
+  viewerRoutes: GeoJSON.FeatureCollection,
+  fallbackCenter: [number, number],
+  emphasis: MapLayerEmphasis
 ): string {
   const demandJson = JSON.stringify(demand);
   const supplyJson = JSON.stringify(supply);
   const routeJson = JSON.stringify(routes);
-  const viewerJson = JSON.stringify(viewer);
+  const viewerPinsJson = JSON.stringify(viewerPins);
+  const viewerRoutesJson = JSON.stringify(viewerRoutes);
   const fb = JSON.stringify(fallbackCenter);
+  const emphJson = JSON.stringify(emphasis);
+  const styleJson = JSON.stringify(DISCOVER_MAP_STYLE_URL);
 
   return `<!DOCTYPE html>
 <html>
@@ -67,8 +97,27 @@ function buildMapHtml(
 var DEMAND = ${demandJson};
 var SUPPLY = ${supplyJson};
 var ROUTES = ${routeJson};
-var VIEWER = ${viewerJson};
+var VIEWER_PINS = ${viewerPinsJson};
+var VIEWER_ROUTES = ${viewerRoutesJson};
 var FALLBACK = ${fb};
+var EMPHASIS = ${emphJson};
+
+function applyLayerEmphasis(map, e) {
+  var heatO = e === 'demand' ? 0.88 : e === 'supply' ? 0.36 : 0.72;
+  var supplyDotO = e === 'supply' ? 0.92 : e === 'demand' ? 0.42 : 0.88;
+  var clusterO = e === 'supply' ? 0.88 : e === 'demand' ? 0.52 : 0.82;
+  map.setPaintProperty('demand-heat', 'heatmap-opacity', heatO);
+  map.setPaintProperty('supply-circles', 'circle-opacity', supplyDotO);
+  map.setPaintProperty('supply-clusters', 'circle-opacity', clusterO);
+}
+
+function bringViewerLayersToFront(map) {
+  ['viewer-my-routes-line', 'viewer-my-routes-line-hit', 'viewer-home', 'viewer-work', 'viewer-home-label', 'viewer-work-label'].forEach(function (id) {
+    if (map.getLayer(id)) {
+      try { map.moveLayer(id); } catch (e) { /* noop */ }
+    }
+  });
+}
 
 function extendPoint(bounds, c) {
   if (Array.isArray(c) && c.length >= 2 && isFinite(c[0]) && isFinite(c[1])) bounds.extend(c);
@@ -83,7 +132,7 @@ function extendFromGeometry(bounds, geom) {
 
 var map = new maplibregl.Map({
   container: 'map',
-  style: '${MAP_STYLE}',
+  style: ${styleJson},
   center: FALLBACK,
   zoom: 11,
   attributionControl: false
@@ -97,7 +146,7 @@ map.on('load', function () {
     id: 'demand-heat', type: 'heatmap', source: 'demand',
     paint: {
       'heatmap-intensity': 1,
-      'heatmap-radius': 30,
+      'heatmap-radius': ${DISCOVER_MAP_HEATMAP_RADIUS_PX},
       'heatmap-opacity': 0.72,
       'heatmap-color': [
         'interpolate', ['linear'], ['heatmap-density'],
@@ -112,17 +161,17 @@ map.on('load', function () {
 
   map.addSource('supply', {
     type: 'geojson', data: SUPPLY,
-    cluster: true, clusterRadius: 42
+    cluster: true, clusterRadius: ${DISCOVER_MAP_CLUSTER_RADIUS_PX}
   });
   map.addLayer({
     id: 'supply-circles', type: 'circle', source: 'supply',
     filter: ['!', ['has', 'point_count']],
-    paint: { 'circle-radius': 7, 'circle-color': '#0B8457', 'circle-opacity': 0.88 }
+    paint: { 'circle-radius': ${DISCOVER_MAP_SUPPLY_DOT_RADIUS}, 'circle-color': '#0B8457', 'circle-opacity': 0.88 }
   });
   map.addLayer({
     id: 'supply-clusters', type: 'circle', source: 'supply',
     filter: ['has', 'point_count'],
-    paint: { 'circle-radius': 17, 'circle-color': '#1A1A2E', 'circle-opacity': 0.82 }
+    paint: { 'circle-radius': ${DISCOVER_MAP_SUPPLY_CLUSTER_RADIUS}, 'circle-color': '#1A1A2E', 'circle-opacity': 0.82 }
   });
   map.addLayer({
     id: 'supply-count', type: 'symbol', source: 'supply',
@@ -135,34 +184,60 @@ map.on('load', function () {
   map.addLayer({
     id: 'route-line', type: 'line', source: 'routes',
     layout: { 'line-join': 'round', 'line-cap': 'round' },
-    paint: { 'line-color': '#2563EB', 'line-width': 4, 'line-opacity': 0.82 }
+    paint: { 'line-color': '${DISCOVER_PEER_RIDE_ROUTE}', 'line-width': ${DISCOVER_MAP_PEER_LINE_WIDTH}, 'line-opacity': 0.82 }
   });
 
-  map.addSource('viewer', { type: 'geojson', data: VIEWER });
+  map.addSource('viewer-routes', { type: 'geojson', data: VIEWER_ROUTES });
+  map.addSource('viewer-pins', { type: 'geojson', data: VIEWER_PINS });
   map.addLayer({
-    id: 'viewer-home', type: 'circle', source: 'viewer',
+    id: 'viewer-my-routes-line', type: 'line', source: 'viewer-routes',
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: {
+      'line-color': [
+        'match', ['get', 'route_key'],
+        'primary', '${DISCOVER_VIEWER_ROUTE_PRIMARY}',
+        'alt_0', '${DISCOVER_VIEWER_ROUTE_ALT0}',
+        'alt_1', '${DISCOVER_VIEWER_ROUTE_ALT1}',
+        'alt_2', '${DISCOVER_VIEWER_ROUTE_ALT2}',
+        '${DISCOVER_VIEWER_ROUTE_ALT_FALLBACK}'
+      ],
+      'line-width': ['match', ['get', 'route_key'], 'primary', ${DISCOVER_MAP_VIEWER_PRIMARY_WIDTH}, ${DISCOVER_MAP_VIEWER_ALT_WIDTH}],
+      'line-opacity': 0.92
+    }
+  });
+  map.addLayer({
+    id: 'viewer-my-routes-line-hit', type: 'line', source: 'viewer-routes',
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: {
+      'line-color': '#000000',
+      'line-width': 22,
+      'line-opacity': 0
+    }
+  });
+  map.addLayer({
+    id: 'viewer-home', type: 'circle', source: 'viewer-pins',
     filter: ['==', ['get', 'kind'], 'home'],
     paint: {
-      'circle-radius': 11,
+      'circle-radius': ${DISCOVER_MAP_PIN_HOME_RADIUS},
       'circle-color': '#EA580C',
       'circle-opacity': 0.95,
-      'circle-stroke-width': 3,
+      'circle-stroke-width': ${DISCOVER_MAP_PIN_STROKE_WIDTH},
       'circle-stroke-color': '#FFFFFF'
     }
   });
   map.addLayer({
-    id: 'viewer-work', type: 'circle', source: 'viewer',
+    id: 'viewer-work', type: 'circle', source: 'viewer-pins',
     filter: ['==', ['get', 'kind'], 'work'],
     paint: {
-      'circle-radius': 10,
+      'circle-radius': ${DISCOVER_MAP_PIN_WORK_RADIUS},
       'circle-color': '#1D4ED8',
       'circle-opacity': 0.95,
-      'circle-stroke-width': 3,
+      'circle-stroke-width': ${DISCOVER_MAP_PIN_STROKE_WIDTH},
       'circle-stroke-color': '#FFFFFF'
     }
   });
   map.addLayer({
-    id: 'viewer-home-label', type: 'symbol', source: 'viewer',
+    id: 'viewer-home-label', type: 'symbol', source: 'viewer-pins',
     filter: ['==', ['get', 'kind'], 'home'],
     layout: {
       'text-field': 'Home',
@@ -174,7 +249,7 @@ map.on('load', function () {
     paint: { 'text-color': '#9A3412', 'text-halo-color': '#FFFFFF', 'text-halo-width': 1.5 }
   });
   map.addLayer({
-    id: 'viewer-work-label', type: 'symbol', source: 'viewer',
+    id: 'viewer-work-label', type: 'symbol', source: 'viewer-pins',
     filter: ['==', ['get', 'kind'], 'work'],
     layout: {
       'text-field': 'Work',
@@ -186,8 +261,11 @@ map.on('load', function () {
     paint: { 'text-color': '#1E40AF', 'text-halo-color': '#FFFFFF', 'text-halo-width': 1.5 }
   });
 
+  applyLayerEmphasis(map, EMPHASIS);
+  bringViewerLayersToFront(map);
+
   var bounds = new maplibregl.LngLatBounds();
-  [DEMAND, SUPPLY, VIEWER].forEach(function (fc) {
+  [DEMAND, SUPPLY, VIEWER_PINS, VIEWER_ROUTES].forEach(function (fc) {
     fc.features.forEach(function (f) { extendFromGeometry(bounds, f.geometry); });
   });
   ROUTES.features.forEach(function (f) { extendFromGeometry(bounds, f.geometry); });
@@ -200,15 +278,28 @@ map.on('load', function () {
   }
 
   var hasPeerData = DEMAND.features.length + SUPPLY.features.length + ROUTES.features.length > 0;
-  var hasViewerPins = VIEWER.features.length > 0;
+  var hasViewerPins = VIEWER_PINS.features.length > 0;
+  var hasViewerRoutes = VIEWER_ROUTES.features.length > 0;
   var emptyEl = document.getElementById('empty');
   if (!hasPeerData && !hasViewerPins) {
-    emptyEl.textContent = 'No commute pins yet. Add home & work under Profile → Commute, or switch to Nearby commuters. Orange heat = others’ demand; green = drivers; blue lines = posted ride routes.';
+    emptyEl.textContent = 'No commute pins yet. Add home & work under Profile → Commute, or switch to Any commuter. Orange heat = others’ demand; green = drivers; solid blue lines = others’ posted trips (not your alternates).';
     emptyEl.style.display = 'block';
-  } else if (!hasPeerData && hasViewerPins) {
-    emptyEl.textContent = 'Your home (orange ring) and work (blue) are shown. Orange heat will fill in as colleagues save commutes, post rides, or requests in this scope.';
+  } else if (!hasPeerData && (hasViewerPins || hasViewerRoutes)) {
+    emptyEl.textContent = 'Your route: dark green = primary; teal / amber / purple = your optional paths when Mapbox is on. Tap an alternate line to make it your main route. Work pin is blue — not a line. Separate solid blue lines = others’ posted trips. Heat = demand in scope.';
     emptyEl.style.display = 'block';
   }
+
+  function postRouteTap(routeKey) {
+    if (!routeKey || routeKey === 'primary') return;
+    if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'viewer_route_tap', route_key: routeKey }));
+    }
+  }
+  map.on('click', 'viewer-my-routes-line-hit', function (e) {
+    var f = e.features && e.features[0];
+    if (!f || !f.properties) return;
+    postRouteTap(f.properties.route_key);
+  });
 });
 </script>
 </body>
@@ -219,11 +310,14 @@ export function DiscoverMapLayers({
   demandGeoJson,
   supplyGeoJson,
   routeGeoJson,
-  viewerGeoJson = EMPTY_FC,
+  viewerPinsGeoJson = EMPTY_FC,
+  viewerMyRoutesGeoJson = EMPTY_FC,
+  layerEmphasis = "neutral",
   title = "Commute map",
   mapHeight = 280,
   fallbackCenter = DEFAULT_CENTER,
   remoteLoading = false,
+  onViewerRouteAlternateTap,
 }: DiscoverMapLayersProps) {
   const html = useMemo(
     () =>
@@ -231,13 +325,32 @@ export function DiscoverMapLayers({
         demandGeoJson,
         supplyGeoJson,
         routeGeoJson,
-        viewerGeoJson,
-        fallbackCenter
+        viewerPinsGeoJson,
+        viewerMyRoutesGeoJson,
+        fallbackCenter,
+        layerEmphasis
       ),
-    [demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson, fallbackCenter]
+    [
+      demandGeoJson,
+      supplyGeoJson,
+      routeGeoJson,
+      viewerPinsGeoJson,
+      viewerMyRoutesGeoJson,
+      fallbackCenter,
+      layerEmphasis,
+    ]
   );
 
-  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]},${viewerGeoJson.features.length}`;
+  const viewerGeometryKey = useMemo(() => {
+    const pins = viewerPinsGeoJson.features.map((f) => JSON.stringify(f.geometry)).join("|");
+    const routes = viewerMyRoutesGeoJson.features.map((f) => JSON.stringify(f.geometry)).join("|");
+    const routeKeys = viewerMyRoutesGeoJson.features
+      .map((f) => String((f.properties as { route_key?: string } | null)?.route_key ?? ""))
+      .join("|");
+    return `${pins}||${routes}||${routeKeys}`;
+  }, [viewerPinsGeoJson, viewerMyRoutesGeoJson]);
+
+  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]},${viewerGeometryKey},${layerEmphasis}`;
 
   return (
     <View style={styles.container}>
@@ -266,6 +379,17 @@ export function DiscoverMapLayers({
           nestedScrollEnabled
           setSupportMultipleWindows={false}
           startInLoadingState
+          onMessage={(e) => {
+            if (!onViewerRouteAlternateTap) return;
+            try {
+              const msg = JSON.parse(e.nativeEvent.data) as { type?: string; route_key?: string };
+              if (msg.type === "viewer_route_tap" && msg.route_key && msg.route_key !== "primary") {
+                onViewerRouteAlternateTap(msg.route_key);
+              }
+            } catch {
+              /* ignore */
+            }
+          }}
           renderLoading={() => (
             <View style={[styles.loading, { height: mapHeight }]}>
               <ActivityIndicator color="#0B8457" />
@@ -275,6 +399,14 @@ export function DiscoverMapLayers({
         />
       </View>
       <View style={styles.legend}>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendLinePrimary]} />
+          <Text style={styles.legendText}>Your main route</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendLineAlt]} />
+          <Text style={styles.legendText}>Your alternates (teal…)</Text>
+        </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendDot, { backgroundColor: "#EA580C" }]} />
           <Text style={styles.legendText}>Your home</Text>
@@ -293,7 +425,7 @@ export function DiscoverMapLayers({
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendLine]} />
-          <Text style={styles.legendText}>Ride routes</Text>
+          <Text style={styles.legendText}>Others’ trip lines</Text>
         </View>
       </View>
       {Platform.OS === "android" ? (
@@ -387,7 +519,19 @@ const styles = StyleSheet.create({
     width: 14,
     height: 3,
     borderRadius: 2,
-    backgroundColor: "#2563EB",
+    backgroundColor: DISCOVER_PEER_RIDE_ROUTE,
+  },
+  legendLinePrimary: {
+    width: 14,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: DISCOVER_VIEWER_ROUTE_PRIMARY,
+  },
+  legendLineAlt: {
+    width: 14,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: DISCOVER_VIEWER_ROUTE_ALT0,
   },
   legendText: {
     fontSize: 11,

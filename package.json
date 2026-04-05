@@ -12,10 +12,13 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "db:types": "npx supabase gen types typescript --project-id $SUPABASE_PROJECT_ID > src/types/database.ts",
+    "db:reset": "supabase db reset",
     "lint": "expo lint",
     "seed:test-users": "node scripts/create-test-users.mjs"
   },
   "dependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
+    "@expo-google-fonts/space-grotesk": "^0.4.1",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.49.1",
@@ -24,12 +27,14 @@
     "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.8",
+    "expo-device": "~8.0.10",
     "expo-font": "~14.0.11",
     "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.10",
     "expo-linear-gradient": "~15.0.8",
     "expo-linking": "~8.0.11",
     "expo-location": "~19.0.8",
+    "expo-notifications": "~0.32.16",
     "expo-router": "~6.0.23",
     "expo-secure-store": "~15.0.0",
     "expo-splash-screen": "~31.0.13",
@@ -50,6 +55,7 @@
     "@types/react": "~19.1.0",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~10.0.0",
+    "supabase": "^2.84.10",
     "typescript": "~5.9.2"
   }
 }

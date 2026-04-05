@@ -336,6 +336,11 @@ export default function Profile() {
                 label: "Workplace network",
                 route: "/(tabs)/profile/workplace-network",
               },
+              {
+                icon: "git-network-outline" as const,
+                label: "Route groups",
+                route: "/(tabs)/profile/route-groups",
+              },
             ]
           : []),
         { icon: "people-outline" as const, label: "Emergency contacts", route: "/(tabs)/profile/emergency-contacts" },

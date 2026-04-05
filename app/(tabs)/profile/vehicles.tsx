@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -14,9 +14,22 @@ import { showAlert } from "@/lib/platformAlert";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { Vehicle } from "@/types/database";
+import { VehicleSelectModal } from "@/components/VehicleSelectModal";
+import {
+  OTHER_MAKE_LABEL,
+  VEHICLE_MAKES_SORTED,
+  VEHICLE_MODELS_BY_MAKE,
+} from "@/constants/vehicleCatalog";
 import {
   Colors, Spacing, BorderRadius, FontSize, FontWeight, Shadow,
 } from "@/constants/theme";
+
+type ListModalConfig = {
+  title: string;
+  options: string[];
+  selected: string;
+  onPick: (value: string) => void;
+};
 
 type FormState = {
   make: string;
@@ -35,8 +48,17 @@ export default function VehiclesScreen() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [customMake, setCustomMake] = useState("");
+  const [customModel, setCustomModel] = useState("");
+  const [listModal, setListModal] = useState<ListModalConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Partial<FormState>>({});
+
+  const makeOptions = useMemo(() => [...VEHICLE_MAKES_SORTED, OTHER_MAKE_LABEL], []);
+  const modelOptions = useMemo(() => {
+    if (!form.make || form.make === OTHER_MAKE_LABEL) return [];
+    return VEHICLE_MODELS_BY_MAKE[form.make] ?? [];
+  }, [form.make]);
 
   const load = useCallback(async () => {
     if (!profile?.id) return;
@@ -56,21 +78,49 @@ export default function VehiclesScreen() {
   function openAdd() {
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setCustomMake("");
+    setCustomModel("");
+    setListModal(null);
     setErrors({});
     setShowForm(true);
   }
 
   function openEdit(v: Vehicle) {
     setEditingId(v.id);
-    setForm({ make: v.make, model: v.model, colour: v.colour ?? "", plate: v.plate ?? "", seats: String(v.seats) });
+    const makeT = v.make.trim();
+    const inCatalog = VEHICLE_MAKES_SORTED.includes(makeT);
+    if (inCatalog) {
+      setForm({
+        make: makeT,
+        model: v.model.trim(),
+        colour: v.colour ?? "",
+        plate: v.plate ?? "",
+        seats: String(v.seats),
+      });
+      setCustomMake("");
+      setCustomModel("");
+    } else {
+      setForm({
+        make: OTHER_MAKE_LABEL,
+        model: "",
+        colour: v.colour ?? "",
+        plate: v.plate ?? "",
+        seats: String(v.seats),
+      });
+      setCustomMake(makeT);
+      setCustomModel(v.model.trim());
+    }
+    setListModal(null);
     setErrors({});
     setShowForm(true);
   }
 
   function validate(): boolean {
     const e: Partial<FormState> = {};
-    if (!form.make.trim()) e.make = "Make is required";
-    if (!form.model.trim()) e.model = "Model is required";
+    const resolvedMake = form.make === OTHER_MAKE_LABEL ? customMake.trim() : form.make.trim();
+    const resolvedModel = form.make === OTHER_MAKE_LABEL ? customModel.trim() : form.model.trim();
+    if (!resolvedMake) e.make = "Make is required";
+    if (!resolvedModel) e.model = "Model is required";
     const s = parseInt(form.seats, 10);
     if (isNaN(s) || s < 1 || s > 9) e.seats = "Seats must be 1–9";
     setErrors(e);
@@ -80,9 +130,11 @@ export default function VehiclesScreen() {
   async function handleSave() {
     if (!profile?.id || !validate()) return;
     setSaving(true);
+    const resolvedMake = form.make === OTHER_MAKE_LABEL ? customMake.trim() : form.make.trim();
+    const resolvedModel = form.make === OTHER_MAKE_LABEL ? customModel.trim() : form.model.trim();
     const payload = {
-      make: form.make.trim(),
-      model: form.model.trim(),
+      make: resolvedMake,
+      model: resolvedModel,
       colour: form.colour.trim() || null,
       plate: form.plate.trim().toUpperCase() || null,
       seats: parseInt(form.seats, 10),
@@ -156,23 +208,97 @@ export default function VehiclesScreen() {
                 <Text style={styles.formTitle}>{editingId ? "Edit vehicle" : "Add vehicle"}</Text>
 
                 <Field label="Make *" error={errors.make}>
-                  <TextInput
-                    style={[styles.input, errors.make && styles.inputError]}
-                    value={form.make}
-                    onChangeText={(t) => { setForm((f) => ({ ...f, make: t })); setErrors((e) => ({ ...e, make: undefined })); }}
-                    placeholder="e.g. Toyota"
-                    placeholderTextColor={Colors.textTertiary}
-                  />
+                  <TouchableOpacity
+                    style={[styles.select, errors.make && styles.inputError]}
+                    onPress={() =>
+                      setListModal({
+                        title: "Select make",
+                        options: makeOptions,
+                        selected: form.make,
+                        onPick: (v) => {
+                          setForm((f) => ({ ...f, make: v, model: "" }));
+                          setCustomMake("");
+                          setCustomModel("");
+                          setErrors((er) => ({ ...er, make: undefined }));
+                        },
+                      })
+                    }
+                    activeOpacity={0.75}
+                  >
+                    <Text
+                      style={form.make ? styles.selectValue : styles.selectPlaceholder}
+                      numberOfLines={1}
+                    >
+                      {form.make || "Select make"}
+                    </Text>
+                    <Ionicons name="chevron-down" size={20} color={Colors.textTertiary} />
+                  </TouchableOpacity>
                 </Field>
-                <Field label="Model *" error={errors.model}>
-                  <TextInput
-                    style={[styles.input, errors.model && styles.inputError]}
-                    value={form.model}
-                    onChangeText={(t) => { setForm((f) => ({ ...f, model: t })); setErrors((e) => ({ ...e, model: undefined })); }}
-                    placeholder="e.g. Camry"
-                    placeholderTextColor={Colors.textTertiary}
-                  />
-                </Field>
+
+                {form.make === OTHER_MAKE_LABEL ? (
+                  <View style={styles.customRow}>
+                    <View style={{ flex: 1 }}>
+                      <Field label="Make (custom) *" error={errors.make}>
+                        <TextInput
+                          style={[styles.input, errors.make && styles.inputError]}
+                          value={customMake}
+                          onChangeText={(t) => {
+                            setCustomMake(t);
+                            setErrors((er) => ({ ...er, make: undefined }));
+                          }}
+                          placeholder="e.g. Morgan"
+                          placeholderTextColor={Colors.textTertiary}
+                        />
+                      </Field>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Field label="Model (custom) *" error={errors.model}>
+                        <TextInput
+                          style={[styles.input, errors.model && styles.inputError]}
+                          value={customModel}
+                          onChangeText={(t) => {
+                            setCustomModel(t);
+                            setErrors((er) => ({ ...er, model: undefined }));
+                          }}
+                          placeholder="e.g. Plus 4"
+                          placeholderTextColor={Colors.textTertiary}
+                        />
+                      </Field>
+                    </View>
+                  </View>
+                ) : (
+                  <Field label="Model *" error={errors.model}>
+                    <TouchableOpacity
+                      style={[
+                        styles.select,
+                        errors.model && styles.inputError,
+                        !form.make && styles.selectDisabled,
+                      ]}
+                      disabled={!form.make}
+                      onPress={() => {
+                        if (!form.make || modelOptions.length === 0) return;
+                        setListModal({
+                          title: `Models: ${form.make}`,
+                          options: modelOptions,
+                          selected: form.model,
+                          onPick: (v) => {
+                            setForm((f) => ({ ...f, model: v }));
+                            setErrors((er) => ({ ...er, model: undefined }));
+                          },
+                        });
+                      }}
+                      activeOpacity={0.75}
+                    >
+                      <Text
+                        style={form.model ? styles.selectValue : styles.selectPlaceholder}
+                        numberOfLines={1}
+                      >
+                        {!form.make ? "Select make first" : form.model || "Select model"}
+                      </Text>
+                      <Ionicons name="chevron-down" size={20} color={Colors.textTertiary} />
+                    </TouchableOpacity>
+                  </Field>
+                )}
                 <Field label="Colour">
                   <TextInput
                     style={styles.input}
@@ -228,6 +354,15 @@ export default function VehiclesScreen() {
           </>
         )}
       </ScrollView>
+
+      <VehicleSelectModal
+        visible={listModal != null}
+        title={listModal?.title ?? ""}
+        options={listModal?.options ?? []}
+        selectedValue={listModal?.selected ?? ""}
+        onClose={() => setListModal(null)}
+        onSelect={(v) => listModal?.onPick(v)}
+      />
     </SafeAreaView>
   );
 }
@@ -261,6 +396,22 @@ const styles = StyleSheet.create({
   actionBtn: { width: 36, height: 36, borderRadius: BorderRadius.sm, backgroundColor: Colors.background, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: Colors.border },
   form: { backgroundColor: Colors.surface, borderRadius: BorderRadius.xl, padding: Spacing.xl, marginTop: Spacing.md, borderWidth: 1, borderColor: Colors.border, ...Shadow.sm },
   formTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.text, marginBottom: Spacing.xl },
+  select: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Colors.inputBackground,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.md,
+    minHeight: 48,
+    ...Shadow.sm,
+  },
+  selectDisabled: { opacity: 0.5 },
+  selectPlaceholder: { fontSize: FontSize.base, color: Colors.textTertiary, flex: 1 },
+  selectValue: { fontSize: FontSize.base, color: Colors.text, flex: 1 },
+  customRow: { flexDirection: "row", gap: Spacing.sm },
   input: { backgroundColor: Colors.inputBackground, borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.sm, paddingHorizontal: Spacing.md, height: 48, fontSize: FontSize.base, color: Colors.text },
   inputError: { borderColor: Colors.error },
   seatsRow: { flexDirection: "row", gap: Spacing.sm, flexWrap: "wrap" },

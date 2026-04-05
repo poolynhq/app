@@ -55,7 +55,7 @@ export default function OnboardingComplete() {
       <Text style={styles.title}>You&apos;re in, {firstName}</Text>
       <Text style={styles.body}>
         People going your way are already on Poolyn. Start with your trusted
-        network, then expand to nearby commuters anytime.
+        network, then expand to any commuter anytime.
       </Text>
 
       <View style={styles.modeRow}>
@@ -90,7 +90,7 @@ export default function OnboardingComplete() {
               profile?.visibility_mode === "nearby" && styles.modeChipTextActive,
             ]}
           >
-            Nearby Commuters
+            Any commuter
           </Text>
         </TouchableOpacity>
       </View>

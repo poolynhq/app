@@ -10,6 +10,7 @@ import { Session, AuthError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types/database";
 import { getRolePalette } from "@/constants/theme";
+import { usePushNotificationsAndRideAlerts } from "@/hooks/usePushNotificationsAndRideAlerts";
 
 interface AuthState {
   session: Session | null;
@@ -50,6 +51,11 @@ interface AuthContextValue extends AuthState {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+function PushNotificationBootstrap({ userId }: { userId: string | null }) {
+  usePushNotificationsAndRideAlerts(userId);
+  return null;
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [commuterSetupFromAdmin, setCommuterSetupFromAdmin] = useState(false);
@@ -307,6 +313,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         refreshProfile,
       }}
     >
+      <PushNotificationBootstrap userId={state.profile?.id ?? null} />
       {children}
     </AuthContext.Provider>
   );

@@ -135,7 +135,7 @@ function InfoModal({
 
 export default function RoleSelect() {
   const router = useRouter();
-  const { profile } = useAuth();
+  const { profile, session } = useAuth();
   const [selected, setSelected] = useState<UserRole>("both");
   const [tooltipRole, setTooltipRole] = useState<RoleDef | null>(null);
   const [loading, setLoading] = useState(false);
@@ -146,11 +146,12 @@ export default function RoleSelect() {
   async function handleContinue() {
     setLoading(true);
 
-    if (profile?.id) {
+    const userId = profile?.id ?? session?.user?.id ?? null;
+    if (userId) {
       const { error } = await supabase
         .from("users")
         .update({ role: selected })
-        .eq("id", profile.id);
+        .eq("id", userId);
 
       if (error) {
         setLoading(false);

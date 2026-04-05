@@ -41,15 +41,15 @@ export const Colors = {
 
 export const Spacing = {
   xs: 4,
-  sm: 8,
-  md: 12,
-  base: 16,
-  lg: 20,
-  xl: 24,
-  "2xl": 32,
-  "3xl": 40,
-  "4xl": 48,
-  "5xl": 64,
+  sm: 7,
+  md: 10,
+  base: 14,
+  lg: 18,
+  xl: 21,
+  "2xl": 28,
+  "3xl": 36,
+  "4xl": 44,
+  "5xl": 56,
 } as const;
 
 export const BorderRadius = {
@@ -61,14 +61,14 @@ export const BorderRadius = {
 } as const;
 
 export const FontSize = {
-  xs: 12,
-  sm: 14,
-  base: 16,
-  lg: 18,
-  xl: 20,
-  "2xl": 24,
-  "3xl": 30,
-  "4xl": 36,
+  xs: 11,
+  sm: 13,
+  base: 15,
+  lg: 17,
+  xl: 19,
+  "2xl": 22,
+  "3xl": 28,
+  "4xl": 32,
 } as const;
 
 export const FontWeight = {

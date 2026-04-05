@@ -4,7 +4,11 @@ import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Colors } from "@/constants/theme";
-import { View, ActivityIndicator, StyleSheet } from "react-native";
+import { View, ActivityIndicator, StyleSheet, LogBox } from "react-native";
+
+if (__DEV__) {
+  LogBox.ignoreLogs([/expo-notifications: Android Push notifications/]);
+}
 
 SplashScreen.preventAutoHideAsync();
 

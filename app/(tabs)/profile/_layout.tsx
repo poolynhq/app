@@ -24,6 +24,7 @@ export default function ProfileLayout() {
       <Stack.Screen name="notifications" options={{ title: "Notifications" }} />
       <Stack.Screen name="activity" options={{ title: "Activity" }} />
       <Stack.Screen name="workplace-network" options={{ title: "Workplace network" }} />
+      <Stack.Screen name="route-groups" options={{ title: "Route groups" }} />
       <Stack.Screen name="transfer-workplace-admin" options={{ title: "Transfer admin" }} />
       <Stack.Screen name="emergency-contacts" options={{ title: "Emergency Contacts" }} />
       <Stack.Screen name="help-faq" options={{ title: "Help & FAQ" }} />

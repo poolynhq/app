@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -15,7 +16,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { showAlert } from "@/lib/platformAlert";
@@ -29,7 +30,19 @@ import { canViewerActAsDriver } from "@/lib/commuteMatching";
 import { useDiscoverMapLayers } from "@/hooks/useDiscoverMapLayers";
 import { DiscoverMapLayers } from "@/components/maps/DiscoverMapLayers";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
-import { buildViewerCommuteMapFeatures } from "@/lib/viewerCommuteMapMarkers";
+import { useDiscoverViewerLayers } from "@/hooks/useDiscoverViewerLayers";
+import { mapLayerEmphasisForProfile } from "@/lib/mapLayerEmphasis";
+import {
+  countPickupDemandByCorridorDisjoint,
+  filterPointsToViewerCorridors,
+  filterRouteLinesToViewerCorridors,
+  formatDisjointCorridorPickupSummary,
+} from "@/lib/discoverRouteDemand";
+import { viewerMyRoutesDisplayCollection } from "@/lib/viewerRoutePrimarySwap";
+import {
+  DiscoverMapLegend,
+  type DiscoverMapLegendLens,
+} from "@/components/maps/DiscoverMapLegend";
 import {
   Colors,
   Spacing,
@@ -70,7 +83,9 @@ function filterDriverCards(
 
 export default function Discover() {
   const router = useRouter();
-  const { profile, refreshProfile } = useAuth();
+  const { scrollTo } = useLocalSearchParams<{ scrollTo?: string | string[] }>();
+  const scrollToParam = Array.isArray(scrollTo) ? scrollTo[0] : scrollTo;
+  const { profile, refreshProfile, activeMode } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
   const rideOpportunitiesOffset = useRef(0);
 
@@ -86,6 +101,8 @@ export default function Discover() {
   const [outerRiderWarningOpen, setOuterRiderWarningOpen] = useState(false);
   const [minReliability, setMinReliability] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [viewerMapRefetchTick, setViewerMapRefetchTick] = useState(0);
+  const [promotedViewerRouteKey, setPromotedViewerRouteKey] = useState<string | null>(null);
 
   const {
     demandPoints,
@@ -97,6 +114,23 @@ export default function Discover() {
     hasMapData,
   } = useDiscoverMapLayers(profile ?? null);
 
+  const {
+    viewerPinsGeoJson,
+    viewerMyRoutesGeoJson,
+    routeCorridors,
+    routesLoading,
+  } = useDiscoverViewerLayers(profile ?? null, viewerMapRefetchTick);
+
+  useFocusEffect(
+    useCallback(() => {
+      void (async () => {
+        await refreshProfile();
+        reloadMapLayers();
+        setViewerMapRefetchTick((t) => t + 1);
+      })();
+    }, [refreshProfile, reloadMapLayers])
+  );
+
   const mapFallbackCenter = useMemo((): [number, number] => {
     if (!profile) return [138.6, -34.85];
     const home = parseGeoPoint(profile.home_location as unknown);
@@ -106,29 +140,77 @@ export default function Discover() {
     return [138.6, -34.85];
   }, [profile]);
 
-  const viewerMapFeatures = useMemo(
-    () => buildViewerCommuteMapFeatures(profile ?? null),
-    [profile]
+  const mapLayerEmphasis = useMemo(
+    () => mapLayerEmphasisForProfile(profile ?? null, activeMode ?? null),
+    [profile, activeMode]
   );
 
-  const mapLensHint = useMemo(() => {
-    if (!profile) return "";
-    const mode = profile.active_mode;
-    const asDriver =
-      profile.role === "driver" || (profile.role === "both" && mode === "driver");
-    const asPassenger =
-      profile.role === "passenger" || (profile.role === "both" && mode === "passenger");
-    if (asDriver && !asPassenger) {
-      return "Driving lens: green dots are other drivers’ start points; blue lines are their posted routes. Orange heat is passenger-side demand (homes + requests)—useful when you’re offering seats.";
+  const mapDemandPoints = useMemo(
+    () => filterPointsToViewerCorridors(demandPoints, routeCorridors),
+    [demandPoints, routeCorridors]
+  );
+  const mapSupplyPoints = useMemo(
+    () => filterPointsToViewerCorridors(supplyPoints, routeCorridors),
+    [supplyPoints, routeCorridors]
+  );
+  const mapRouteLines = useMemo(
+    () => filterRouteLinesToViewerCorridors(routeLines, routeCorridors),
+    [routeLines, routeCorridors]
+  );
+
+  const hasFilteredMapData = useMemo(
+    () =>
+      mapDemandPoints.features.length > 0 ||
+      mapSupplyPoints.features.length > 0 ||
+      mapRouteLines.features.length > 0,
+    [mapDemandPoints, mapSupplyPoints, mapRouteLines]
+  );
+
+  const corridorFilterActive = routeCorridors.length > 0;
+
+  const viewerRouteBaselineKey = useMemo(
+    () =>
+      viewerMyRoutesGeoJson.features
+        .map((f) => String((f.properties as { route_key?: string } | null)?.route_key ?? ""))
+        .join("|"),
+    [viewerMyRoutesGeoJson]
+  );
+
+  useEffect(() => {
+    setPromotedViewerRouteKey(null);
+  }, [viewerRouteBaselineKey]);
+
+  const discoverViewerRoutesDisplayed = useMemo(
+    () => viewerMyRoutesDisplayCollection(viewerMyRoutesGeoJson, promotedViewerRouteKey),
+    [viewerMyRoutesGeoJson, promotedViewerRouteKey]
+  );
+
+  const hasViewerRouteAlternates = useMemo(
+    () =>
+      viewerMyRoutesGeoJson.features.some((f) =>
+        String((f.properties as { route_key?: string } | null)?.route_key ?? "").startsWith("alt_")
+      ),
+    [viewerMyRoutesGeoJson]
+  );
+
+  const mapLegendLens = useMemo((): DiscoverMapLegendLens => {
+    if (!profile) return "overview";
+    const mode = activeMode;
+    if (profile.role === "both" && mode === null) return "flex_none";
+    if (profile.role === "passenger" || (profile.role === "both" && mode === "passenger")) {
+      return "passenger";
     }
-    if (asPassenger && !asDriver) {
-      return "Riding lens: warm heat shows where others need pickups; green is drivers on record. Your orange/blue pins are your own commute—everyone else is aggregated without you in the counts.";
+    if (profile.role === "driver" || (profile.role === "both" && mode === "driver")) {
+      return "driver";
     }
-    if (profile.role === "both" && mode === null) {
-      return "Pick Driving or Riding in Home (flex mode) to tailor this hint. Your home and work always show as orange and blue pins.";
-    }
-    return "Your home (orange) and work (blue) are always shown. Other layers come from colleagues’ saved commutes, pending requests, and scheduled rides in your current scope.";
-  }, [profile]);
+    return "overview";
+  }, [profile, activeMode]);
+
+  const routeCorridorDemandLine = useMemo(() => {
+    if (mapLayerEmphasis !== "demand" || routeCorridors.length === 0) return "";
+    const r = countPickupDemandByCorridorDisjoint(mapDemandPoints, routeCorridors);
+    return formatDisjointCorridorPickupSummary(r);
+  }, [mapLayerEmphasis, mapDemandPoints, routeCorridors]);
 
   const filteredPassenger = useMemo(
     () => filterPassengerCards(rideOpportunities, search, minReliability),
@@ -204,7 +286,9 @@ export default function Discover() {
   async function onRefresh() {
     setRefreshing(true);
     try {
+      await refreshProfile();
       reloadMapLayers();
+      setViewerMapRefetchTick((t) => t + 1);
       await loadInsights();
       await loadRideCards();
       await loadDriverRideCards();
@@ -231,10 +315,18 @@ export default function Discover() {
     if (!error) await refreshProfile();
   }
 
-  function scrollToRideOpportunities() {
+  const scrollToRideOpportunities = useCallback(() => {
     const y = Math.max(0, rideOpportunitiesOffset.current - 24);
     scrollRef.current?.scrollTo({ y, animated: true });
-  }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (scrollToParam !== "opportunities") return;
+      const t = setTimeout(() => scrollToRideOpportunities(), 600);
+      return () => clearTimeout(t);
+    }, [scrollToParam, scrollToRideOpportunities])
+  );
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -251,7 +343,7 @@ export default function Discover() {
         <View style={styles.header}>
           <Text style={styles.title}>Discover</Text>
           <Text style={styles.subtitle}>
-            Map, route overlap, and seats you can reserve — without leaving this screen.
+            Map, route overlap, and seats you can reserve, without leaving this screen.
           </Text>
           <View style={styles.visibilityRow}>
             <TouchableOpacity
@@ -283,7 +375,7 @@ export default function Discover() {
                   profile?.visibility_mode === "nearby" && styles.visibilityTextActive,
                 ]}
               >
-                Nearby commuters
+                Any commuter
               </Text>
             </TouchableOpacity>
           </View>
@@ -309,22 +401,48 @@ export default function Discover() {
               <Text style={styles.mapErrorText}>{mapLayersError}</Text>
             </View>
           ) : null}
-          {mapLensHint ? <Text style={styles.mapLensHint}>{mapLensHint}</Text> : null}
+          {profile ? (
+            <DiscoverMapLegend
+              lens={mapLegendLens}
+              corridorBandFilter={corridorFilterActive}
+              scopeNetwork={profile.visibility_mode !== "nearby"}
+            />
+          ) : null}
+          {routeCorridorDemandLine ? (
+            <Text style={styles.mapCorridorHint}>{routeCorridorDemandLine}</Text>
+          ) : null}
           <DiscoverMapLayers
-            demandGeoJson={demandPoints}
-            supplyGeoJson={supplyPoints}
-            routeGeoJson={routeLines}
-            viewerGeoJson={viewerMapFeatures}
+            demandGeoJson={mapDemandPoints}
+            supplyGeoJson={mapSupplyPoints}
+            routeGeoJson={mapRouteLines}
+            viewerPinsGeoJson={viewerPinsGeoJson}
+            viewerMyRoutesGeoJson={discoverViewerRoutesDisplayed}
+            layerEmphasis={mapLayerEmphasis}
             title="Network activity"
             mapHeight={Platform.OS === "web" ? 320 : 340}
             fallbackCenter={mapFallbackCenter}
-            remoteLoading={mapLayersLoading}
+            remoteLoading={mapLayersLoading || routesLoading}
+            onViewerRouteAlternateTap={
+              hasViewerRouteAlternates ? (key) => setPromotedViewerRouteKey(key) : undefined
+            }
           />
+          {!mapLayersLoading &&
+          !mapLayersError &&
+          corridorFilterActive &&
+          hasMapData &&
+          !hasFilteredMapData ? (
+            <Text style={styles.mapFootnote}>
+              No demand or drivers along your saved commute band in this map scope. Colleagues may
+              be on other corridors, or finish Profile → Commute so routes align. Widen scope with
+              “Any commuter” to see the full network (unfiltered).
+            </Text>
+          ) : null}
           {!hasMapData && !mapLayersLoading && !mapLayersError ? (
             <Text style={styles.mapFootnote}>
               The server only plots other people’s commutes, requests, and rides—so heat can stay
-              light until your network has data. Your pins still show if home/work are saved. Try
-              Nearby commuters or ask teammates to finish Profile → Commute.
+              light until your network has data. Your driving route and pins show when Commute is
+              saved (route from Profile → Commute). Try Any commuter or ask teammates to finish
+              Profile → Commute.
             </Text>
           ) : null}
         </View>
@@ -335,16 +453,26 @@ export default function Discover() {
           <View style={styles.snapshotCard}>
             <Text style={styles.snapshotBig}>{matchCount}</Text>
             <Text style={styles.snapshotLabel}>
-              peers with geometry overlap (org / network context)
+              peers with geometry overlap (org / network)
             </Text>
+            {matchCount === 0 && orgCount > 0 ? (
+              <Text style={styles.snapshotHint}>
+                {orgCount} colleague{orgCount === 1 ? "" : "s"} saved a commute route. Finish Profile → Commute
+                so your route can overlap with theirs.
+              </Text>
+            ) : null}
             <View style={styles.snapshotRow}>
               <View style={styles.snapshotStat}>
+                <Text style={styles.snapshotStatVal}>{matchCount}</Text>
+                <Text style={styles.snapshotStatLab}>Overlap</Text>
+              </View>
+              <View style={styles.snapshotStat}>
                 <Text style={styles.snapshotStatVal}>{orgCount}</Text>
-                <Text style={styles.snapshotStatLab}>Org context</Text>
+                <Text style={styles.snapshotStatLab}>Org · saved routes</Text>
               </View>
               <View style={styles.snapshotStat}>
                 <Text style={styles.snapshotStatVal}>{nearbyCount}</Text>
-                <Text style={styles.snapshotStatLab}>Nearby hint</Text>
+                <Text style={styles.snapshotStatLab}>Wider pool</Text>
               </View>
             </View>
           </View>
@@ -383,8 +511,8 @@ export default function Discover() {
           <View style={styles.trustNote}>
             <Ionicons name="shield-checkmark-outline" size={18} color={Colors.primary} />
             <Text style={styles.trustText}>
-              Nearby mode widens the map. Trust scores on cards still apply — verify identity before
-              you travel.
+              Any commuter includes people along your commute corridor, not only your org. Trust
+              scores on cards still apply — verify identity before you travel.
             </Text>
           </View>
         )}
@@ -667,11 +795,12 @@ const styles = StyleSheet.create({
     color: Colors.error,
     lineHeight: 20,
   },
-  mapLensHint: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    lineHeight: 20,
+  mapCorridorHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    lineHeight: 18,
     marginBottom: Spacing.sm,
+    fontWeight: FontWeight.semibold,
   },
   mapFootnote: {
     fontSize: FontSize.xs,
@@ -689,7 +818,7 @@ const styles = StyleSheet.create({
     ...Shadow.sm,
   },
   snapshotBig: {
-    fontSize: 40,
+    fontSize: 32,
     fontWeight: FontWeight.bold,
     color: Colors.primary,
     letterSpacing: -1,
@@ -701,12 +830,21 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: Spacing.md,
   },
+  snapshotHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    marginBottom: Spacing.sm,
+  },
   snapshotRow: {
     flexDirection: "row",
-    gap: Spacing.lg,
+    flexWrap: "wrap",
+    gap: Spacing.sm,
   },
   snapshotStat: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: 96,
     backgroundColor: Colors.background,
     borderRadius: BorderRadius.md,
     padding: Spacing.md,

@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { WebView } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
+import { DISCOVER_MAP_STYLE_URL } from "@/constants/discoverMapStyle";
 
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ?? "";
 
@@ -35,11 +36,8 @@ async function reverseGeocode(lat: number, lng: number): Promise<string> {
   }
 }
 
-// OpenFreeMap: free, no API key, native MapLibre GL JS support.
-// Mapbox styles use a proprietary "name" property that MapLibre GL JS v4 rejects.
-const FREE_MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
-
 function buildMapHtml(lat: number, lng: number): string {
+  const styleJson = JSON.stringify(DISCOVER_MAP_STYLE_URL);
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -66,7 +64,7 @@ function buildMapHtml(lat: number, lng: number): string {
   <script>
     var map = new maplibregl.Map({
       container: 'map',
-      style: '${FREE_MAP_STYLE}',
+      style: ${styleJson},
       center: [${lng}, ${lat}],
       zoom: 13
     });

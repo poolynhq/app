@@ -1,6 +1,59 @@
 /**
+ * PostGIS EWKB / WKB hex (some PostgREST + geography combos return this instead of WKT).
+ * Parses only Point (optionally with SRID flag); returns null for other types.
+ */
+function parseHexEwkbPoint(raw: string): { lat: number; lng: number } | null {
+  let hex = raw.trim();
+  if (hex.startsWith("\\x") || hex.startsWith("0x")) hex = hex.slice(2);
+  if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length < 42) return null;
+
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+
+  let o = 0;
+  const le = bytes[o++] === 1;
+
+  const readU32 = (): number => {
+    if (o + 4 > bytes.length) return 0;
+    const a = bytes[o]!;
+    const b = bytes[o + 1]!;
+    const c = bytes[o + 2]!;
+    const d = bytes[o + 3]!;
+    o += 4;
+    return le
+      ? (a | (b << 8) | (c << 16) | (d << 24)) >>> 0
+      : ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+  };
+
+  const readF64 = (): number => {
+    if (o + 8 > bytes.length) return NaN;
+    const ab = new ArrayBuffer(8);
+    const view = new DataView(ab);
+    for (let i = 0; i < 8; i++) {
+      view.setUint8(i, bytes[o + i]!);
+    }
+    o += 8;
+    return le ? view.getFloat64(0, true) : view.getFloat64(0, false);
+  };
+
+  let type = readU32();
+  const SRID_FLAG = 0x20000000;
+  if (type & SRID_FLAG) {
+    type ^= SRID_FLAG;
+    readU32();
+  }
+  if (type !== 1) return null;
+  const x = readF64();
+  const y = readF64();
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { lng: x, lat: y };
+}
+
+/**
  * Parse PostGIS geography(Point) values from Supabase/PostgREST.
- * May arrive as WKT string, GeoJSON object, or JSON string.
+ * May arrive as WKT string, hex EWKB, GeoJSON object, or JSON string.
  */
 export function parseGeoPoint(value: unknown): { lat: number; lng: number } | null {
   if (value == null) return null;
@@ -15,6 +68,8 @@ export function parseGeoPoint(value: unknown): { lat: number; lng: number } | nu
 
   if (typeof value === "string") {
     const trimmed = value.trim();
+    const hexPt = parseHexEwkbPoint(trimmed);
+    if (hexPt) return hexPt;
     // EWKT from some PostGIS clients: SRID=4326;POINT(lng lat)
     const ewkt =
       /SRID=\d+;\s*POINT\s*(?:Z\s*)?\(\s*([-\d.]+)\s+([-\d.]+)(?:\s+[-\d.]+)?/i.exec(

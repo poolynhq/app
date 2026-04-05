@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { DISCOVER_MAP_STYLE_URL } from "@/constants/discoverMapStyle";
 
 // Props defined locally — do NOT import from the native file.
 // Metro's dependency resolver runs before TypeScript stripping, so even
@@ -21,10 +22,6 @@ export interface MapPinPickerModalProps {
 }
 
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ?? "";
-
-// OpenFreeMap: free, no API key, native MapLibre GL JS support.
-// Mapbox styles trigger "unknown property name" in MapLibre GL JS v4 (stricter validation).
-const FREE_MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
 async function reverseGeocode(lat: number, lng: number): Promise<string> {
   try {
@@ -100,7 +97,7 @@ export function MapPinPickerModal({
 
       const map = new ml.Map({
         container: containerRef.current,
-        style: FREE_MAP_STYLE,
+        style: DISCOVER_MAP_STYLE_URL,
         center: [initialLng, initialLat],
         zoom: 13,
       });

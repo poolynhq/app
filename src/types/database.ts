@@ -163,6 +163,52 @@ export interface Database {
         };
       };
 
+      org_route_groups: {
+        Row: {
+          id: string;
+          org_id: string;
+          name: string;
+          description: string | null;
+          created_by: string | null;
+          archived: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          name: string;
+          description?: string | null;
+          created_by?: string | null;
+          archived?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          name?: string;
+          description?: string | null;
+          created_by?: string | null;
+          archived?: boolean;
+          updated_at?: string;
+        };
+      };
+
+      org_route_group_members: {
+        Row: {
+          group_id: string;
+          user_id: string;
+          joined_at: string;
+        };
+        Insert: {
+          group_id: string;
+          user_id: string;
+          joined_at?: string;
+        };
+        Update: {
+          joined_at?: string;
+        };
+      };
+
       platform_super_admins: {
         Row: {
           user_id: string;
@@ -322,6 +368,34 @@ export interface Database {
           vehicle_class?: string;
           photo_url?: string | null;
           active?: boolean;
+        };
+      };
+
+      waitlist_signups: {
+        Row: {
+          id: string;
+          email: string;
+          full_name: string | null;
+          metro_area: string | null;
+          intent: string | null;
+          source: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          email: string;
+          full_name?: string | null;
+          metro_area?: string | null;
+          intent?: string | null;
+          source?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          email?: string;
+          full_name?: string | null;
+          metro_area?: string | null;
+          intent?: string | null;
+          source?: string | null;
         };
       };
 
@@ -559,6 +633,7 @@ export interface Database {
           matched_ride_id: string | null;
           notes: string | null;
           created_at: string;
+          expires_at: string;
         };
         Insert: {
           id?: string;
@@ -572,6 +647,7 @@ export interface Database {
           matched_ride_id?: string | null;
           notes?: string | null;
           created_at?: string;
+          expires_at?: string;
         };
         Update: {
           origin?: GeoPoint;
@@ -582,6 +658,7 @@ export interface Database {
           status?: RideRequestStatus;
           matched_ride_id?: string | null;
           notes?: string | null;
+          expires_at?: string;
         };
       };
 
@@ -890,6 +967,25 @@ export interface Database {
         };
       };
 
+      user_push_tokens: {
+        Row: {
+          id: string;
+          user_id: string;
+          expo_push_token: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          expo_push_token: string;
+          updated_at?: string;
+        };
+        Update: {
+          expo_push_token?: string;
+          updated_at?: string;
+        };
+      };
+
       badges: {
         Row: {
           id: string;
@@ -1123,6 +1219,10 @@ export interface Database {
         Args: { p_user_id: string; p_scope?: string };
         Returns: Json;
       };
+      get_my_commute_route_geojson: {
+        Args: { p_direction?: string };
+        Returns: Json | null;
+      };
       prefilter_commute_match_pairs: {
         Args: { p_viewer_id: string; p_include_local_pool?: boolean };
         Returns: {
@@ -1302,6 +1402,28 @@ export interface Database {
         Args: Record<string, never>;
         Returns: Json;
       };
+      create_commute_ride_request: {
+        Args: {
+          p_direction?: string;
+          p_leave_in_mins?: number | null;
+          p_desired_depart_at?: string | null;
+          p_flexibility_mins?: number;
+          p_notes?: string | null;
+        };
+        Returns: Json;
+      };
+      accept_ride_request_as_driver: {
+        Args: { p_request_id: string };
+        Returns: Json;
+      };
+      expire_pending_ride_requests: {
+        Args: Record<string, never>;
+        Returns: null;
+      };
+      get_discover_route_snapshot: {
+        Args: { p_user_id: string };
+        Returns: Json;
+      };
     };
 
     Enums: Record<string, never>;
@@ -1313,6 +1435,8 @@ export interface Database {
 type Tables = Database["public"]["Tables"];
 
 export type Organisation = Tables["organisations"]["Row"];
+export type OrgRouteGroup = Tables["org_route_groups"]["Row"];
+export type OrgRouteGroupMember = Tables["org_route_group_members"]["Row"];
 export type User = Tables["users"]["Row"];
 export type Vehicle = Tables["vehicles"]["Row"];
 export type DriverPreference = Tables["driver_preferences"]["Row"];

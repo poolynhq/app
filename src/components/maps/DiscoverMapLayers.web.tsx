@@ -1,21 +1,63 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
+import type { MapLayerEmphasis } from "@/lib/mapLayerEmphasis";
+import {
+  DISCOVER_MAP_CLUSTER_RADIUS_PX,
+  DISCOVER_MAP_HEATMAP_RADIUS_PX,
+  DISCOVER_MAP_PEER_LINE_WIDTH,
+  DISCOVER_MAP_PIN_HOME_RADIUS,
+  DISCOVER_MAP_PIN_STROKE_WIDTH,
+  DISCOVER_MAP_PIN_WORK_RADIUS,
+  DISCOVER_MAP_STYLE_URL,
+  DISCOVER_MAP_SUPPLY_CLUSTER_RADIUS,
+  DISCOVER_MAP_SUPPLY_DOT_RADIUS,
+  DISCOVER_MAP_VIEWER_ALT_WIDTH,
+  DISCOVER_MAP_VIEWER_PRIMARY_WIDTH,
+  DISCOVER_PEER_RIDE_ROUTE,
+  DISCOVER_VIEWER_ROUTE_ALT0,
+  DISCOVER_VIEWER_ROUTE_ALT1,
+  DISCOVER_VIEWER_ROUTE_ALT2,
+  DISCOVER_VIEWER_ROUTE_ALT_FALLBACK,
+  DISCOVER_VIEWER_ROUTE_PRIMARY,
+} from "@/constants/discoverMapStyle";
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
+type MapLayerBundle = {
+  demandGeoJson: GeoJSON.FeatureCollection;
+  supplyGeoJson: GeoJSON.FeatureCollection;
+  routeGeoJson: GeoJSON.FeatureCollection;
+  viewerPinsGeoJson: GeoJSON.FeatureCollection;
+  viewerMyRoutesGeoJson: GeoJSON.FeatureCollection;
+  fallbackCenter: [number, number];
+  layerEmphasis: MapLayerEmphasis;
+};
+
+function applyLayerEmphasis(map: any, e: MapLayerEmphasis) {
+  if (!map.getLayer("demand-heat")) return;
+  const heatO = e === "demand" ? 0.88 : e === "supply" ? 0.36 : 0.72;
+  const supplyDotO = e === "supply" ? 0.92 : e === "demand" ? 0.42 : 0.88;
+  const clusterO = e === "supply" ? 0.88 : e === "demand" ? 0.52 : 0.82;
+  map.setPaintProperty("demand-heat", "heatmap-opacity", heatO);
+  map.setPaintProperty("supply-circles", "circle-opacity", supplyDotO);
+  map.setPaintProperty("supply-clusters", "circle-opacity", clusterO);
+}
 
 interface DiscoverMapLayersProps {
   demandGeoJson: GeoJSON.FeatureCollection;
   supplyGeoJson: GeoJSON.FeatureCollection;
   routeGeoJson: GeoJSON.FeatureCollection;
-  viewerGeoJson?: GeoJSON.FeatureCollection;
+  viewerPinsGeoJson?: GeoJSON.FeatureCollection;
+  viewerMyRoutesGeoJson?: GeoJSON.FeatureCollection;
+  layerEmphasis?: MapLayerEmphasis;
   title?: string;
   mapHeight?: number;
   /** [lng, lat] when there is no data to fit */
   fallbackCenter?: [number, number];
   remoteLoading?: boolean;
+  onViewerRouteAlternateTap?: (routeKey: string) => void;
 }
 
-const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const ML_CSS_ID = "maplibre-css-discover";
 const ML_SCRIPT_SRC = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js";
 
@@ -75,26 +117,74 @@ function collectBounds(
 
 const DEFAULT_CENTER: [number, number] = [138.6, -34.85];
 
+const VIEWER_LAYER_IDS = [
+  "viewer-my-routes-line",
+  "viewer-my-routes-line-hit",
+  "viewer-home",
+  "viewer-work",
+  "viewer-home-label",
+  "viewer-work-label",
+] as const;
+
+/** Liberty / some basemap stacks paint custom layers under symbols; move viewer to the top. */
+function bringViewerLayersToFront(map: any) {
+  for (const id of VIEWER_LAYER_IDS) {
+    if (map.getLayer(id)) {
+      try {
+        map.moveLayer(id);
+      } catch {
+        /* noop */
+      }
+    }
+  }
+}
+
 export function DiscoverMapLayers({
   demandGeoJson,
   supplyGeoJson,
   routeGeoJson,
-  viewerGeoJson = EMPTY_FC,
+  viewerPinsGeoJson = EMPTY_FC,
+  viewerMyRoutesGeoJson = EMPTY_FC,
+  layerEmphasis = "neutral",
   title = "Commute map",
   mapHeight = 240,
   fallbackCenter = DEFAULT_CENTER,
   remoteLoading = false,
+  onViewerRouteAlternateTap,
 }: DiscoverMapLayersProps) {
   const containerRef = useRef<any>(null);
   const mapRef = useRef<any>(null);
+  const routeTapRef = useRef(onViewerRouteAlternateTap);
+  routeTapRef.current = onViewerRouteAlternateTap;
+  const latestRef = useRef<MapLayerBundle>({
+    demandGeoJson,
+    supplyGeoJson,
+    routeGeoJson,
+    viewerPinsGeoJson,
+    viewerMyRoutesGeoJson,
+    fallbackCenter,
+    layerEmphasis,
+  });
+  latestRef.current = {
+    demandGeoJson,
+    supplyGeoJson,
+    routeGeoJson,
+    viewerPinsGeoJson,
+    viewerMyRoutesGeoJson,
+    fallbackCenter,
+    layerEmphasis,
+  };
+
   const [loading, setLoading] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
   const [error, setError] = useState(false);
 
   const hasPeerData =
     demandGeoJson.features.length > 0 ||
     supplyGeoJson.features.length > 0 ||
     routeGeoJson.features.length > 0;
-  const hasViewerPins = viewerGeoJson.features.length > 0;
+  const hasViewerPins = viewerPinsGeoJson.features.length > 0;
+  const hasViewerRoutes = viewerMyRoutesGeoJson.features.length > 0;
 
   // Initialise map once on mount
   useEffect(() => {
@@ -113,10 +203,11 @@ export function DiscoverMapLayers({
       const ml = (window as any).maplibregl;
       if (!ml) { setError(true); return; }
 
+      const L = latestRef.current;
       const map = new ml.Map({
         container: containerRef.current,
-        style: MAP_STYLE,
-        center: fallbackCenter,
+        style: DISCOVER_MAP_STYLE_URL,
+        center: L.fallbackCenter,
         zoom: 11,
         attributionControl: false,
       });
@@ -127,15 +218,17 @@ export function DiscoverMapLayers({
       map.on("load", () => {
         if (!mounted) return;
 
+        const p = latestRef.current;
+
         // ── Demand heatmap (pickup origins) ─────────────────────────────────
-        map.addSource("demand", { type: "geojson", data: demandGeoJson });
+        map.addSource("demand", { type: "geojson", data: p.demandGeoJson });
         map.addLayer({
           id: "demand-heat",
           type: "heatmap",
           source: "demand",
           paint: {
             "heatmap-intensity": 1,
-            "heatmap-radius": 30,
+            "heatmap-radius": DISCOVER_MAP_HEATMAP_RADIUS_PX,
             "heatmap-opacity": 0.72,
             "heatmap-color": [
               "interpolate", ["linear"], ["heatmap-density"],
@@ -151,23 +244,31 @@ export function DiscoverMapLayers({
         // ── Supply clusters (driver origins) ────────────────────────────────
         map.addSource("supply", {
           type: "geojson",
-          data: supplyGeoJson,
+          data: p.supplyGeoJson,
           cluster: true,
-          clusterRadius: 40,
+          clusterRadius: DISCOVER_MAP_CLUSTER_RADIUS_PX,
         });
         map.addLayer({
           id: "supply-circles",
           type: "circle",
           source: "supply",
           filter: ["!", ["has", "point_count"]],
-          paint: { "circle-radius": 6, "circle-color": "#0B8457", "circle-opacity": 0.85 },
+          paint: {
+            "circle-radius": DISCOVER_MAP_SUPPLY_DOT_RADIUS,
+            "circle-color": "#0B8457",
+            "circle-opacity": 0.85,
+          },
         });
         map.addLayer({
           id: "supply-clusters",
           type: "circle",
           source: "supply",
           filter: ["has", "point_count"],
-          paint: { "circle-radius": 16, "circle-color": "#1A1A2E", "circle-opacity": 0.8 },
+          paint: {
+            "circle-radius": DISCOVER_MAP_SUPPLY_CLUSTER_RADIUS,
+            "circle-color": "#1A1A2E",
+            "circle-opacity": 0.8,
+          },
         });
         map.addLayer({
           id: "supply-count",
@@ -179,46 +280,91 @@ export function DiscoverMapLayers({
         });
 
         // ── Route lines ──────────────────────────────────────────────────────
-        map.addSource("routes", { type: "geojson", data: routeGeoJson });
+        map.addSource("routes", { type: "geojson", data: p.routeGeoJson });
         map.addLayer({
           id: "route-line",
           type: "line",
           source: "routes",
           layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": "#2563EB", "line-width": 4, "line-opacity": 0.82 },
+          paint: {
+            "line-color": DISCOVER_PEER_RIDE_ROUTE,
+            "line-width": DISCOVER_MAP_PEER_LINE_WIDTH,
+            "line-opacity": 0.82,
+          },
         });
 
-        map.addSource("viewer", { type: "geojson", data: viewerGeoJson });
+        map.addSource("viewer-routes", { type: "geojson", data: p.viewerMyRoutesGeoJson });
+        map.addSource("viewer-pins", { type: "geojson", data: p.viewerPinsGeoJson });
+        map.addLayer({
+          id: "viewer-my-routes-line",
+          type: "line",
+          source: "viewer-routes",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": [
+              "match",
+              ["get", "route_key"],
+              "primary",
+              DISCOVER_VIEWER_ROUTE_PRIMARY,
+              "alt_0",
+              DISCOVER_VIEWER_ROUTE_ALT0,
+              "alt_1",
+              DISCOVER_VIEWER_ROUTE_ALT1,
+              "alt_2",
+              DISCOVER_VIEWER_ROUTE_ALT2,
+              DISCOVER_VIEWER_ROUTE_ALT_FALLBACK,
+            ],
+            "line-width": [
+              "match",
+              ["get", "route_key"],
+              "primary",
+              DISCOVER_MAP_VIEWER_PRIMARY_WIDTH,
+              DISCOVER_MAP_VIEWER_ALT_WIDTH,
+            ],
+            "line-opacity": 0.92,
+          },
+        });
+        map.addLayer({
+          id: "viewer-my-routes-line-hit",
+          type: "line",
+          source: "viewer-routes",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": "#000000",
+            "line-width": 22,
+            "line-opacity": 0,
+          },
+        });
         map.addLayer({
           id: "viewer-home",
           type: "circle",
-          source: "viewer",
+          source: "viewer-pins",
           filter: ["==", ["get", "kind"], "home"],
           paint: {
-            "circle-radius": 11,
+            "circle-radius": DISCOVER_MAP_PIN_HOME_RADIUS,
             "circle-color": "#EA580C",
             "circle-opacity": 0.95,
-            "circle-stroke-width": 3,
+            "circle-stroke-width": DISCOVER_MAP_PIN_STROKE_WIDTH,
             "circle-stroke-color": "#FFFFFF",
           },
         });
         map.addLayer({
           id: "viewer-work",
           type: "circle",
-          source: "viewer",
+          source: "viewer-pins",
           filter: ["==", ["get", "kind"], "work"],
           paint: {
-            "circle-radius": 10,
+            "circle-radius": DISCOVER_MAP_PIN_WORK_RADIUS,
             "circle-color": "#1D4ED8",
             "circle-opacity": 0.95,
-            "circle-stroke-width": 3,
+            "circle-stroke-width": DISCOVER_MAP_PIN_STROKE_WIDTH,
             "circle-stroke-color": "#FFFFFF",
           },
         });
         map.addLayer({
           id: "viewer-home-label",
           type: "symbol",
-          source: "viewer",
+          source: "viewer-pins",
           filter: ["==", ["get", "kind"], "home"],
           layout: {
             "text-field": "Home",
@@ -232,7 +378,7 @@ export function DiscoverMapLayers({
         map.addLayer({
           id: "viewer-work-label",
           type: "symbol",
-          source: "viewer",
+          source: "viewer-pins",
           filter: ["==", ["get", "kind"], "work"],
           layout: {
             "text-field": "Work",
@@ -244,11 +390,28 @@ export function DiscoverMapLayers({
           paint: { "text-color": "#1E40AF", "text-halo-color": "#FFFFFF", "text-halo-width": 1.5 },
         });
 
-        const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson]);
-        if (bounds) map.fitBounds(bounds, { padding: 56, maxZoom: 13, duration: 600 });
-        else map.flyTo({ center: fallbackCenter, zoom: 11, duration: 0 });
+        applyLayerEmphasis(map, p.layerEmphasis);
+        bringViewerLayersToFront(map);
 
-        if (mounted) setLoading(false);
+        const bounds = collectBounds([
+          p.demandGeoJson,
+          p.supplyGeoJson,
+          p.routeGeoJson,
+          p.viewerPinsGeoJson,
+          p.viewerMyRoutesGeoJson,
+        ]);
+        if (bounds) map.fitBounds(bounds, { padding: 56, maxZoom: 13, duration: 600 });
+        else map.flyTo({ center: p.fallbackCenter, zoom: 11, duration: 0 });
+
+        map.once("idle", () => {
+          if (!mounted) return;
+          bringViewerLayersToFront(map);
+        });
+
+        if (mounted) {
+          setLoading(false);
+          setMapReady(true);
+        }
       });
 
       map.on("error", () => {
@@ -259,36 +422,75 @@ export function DiscoverMapLayers({
     return () => {
       mounted = false;
       clearTimeout(timer);
+      setMapReady(false);
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
       }
     };
-    // Single map instance; GeoJSON updates in the following effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Single map instance; initial `load` reads `latestRef` (not mount props). Updates: effect below.
   }, []);
 
-  // Update data sources reactively when props change
+  // Push latest GeoJSON after the map + sources exist (avoids stale mount closure / loading race).
   useEffect(() => {
+    if (!mapReady) return;
     const map = mapRef.current;
-    if (!map || loading) return;
+    if (!map?.getSource?.("demand")) return;
 
-    const demandSrc = map.getSource("demand");
-    if (demandSrc) demandSrc.setData(demandGeoJson);
+    const p = latestRef.current;
+    try {
+      (map.getSource("demand") as any).setData(p.demandGeoJson);
+      (map.getSource("supply") as any).setData(p.supplyGeoJson);
+      (map.getSource("routes") as any).setData(p.routeGeoJson);
+      const vRoutes = map.getSource("viewer-routes");
+      const vPins = map.getSource("viewer-pins");
+      if (vRoutes) (vRoutes as any).setData(p.viewerMyRoutesGeoJson);
+      if (vPins) (vPins as any).setData(p.viewerPinsGeoJson);
+      applyLayerEmphasis(map, p.layerEmphasis);
+      bringViewerLayersToFront(map);
 
-    const supplySrc = map.getSource("supply");
-    if (supplySrc) supplySrc.setData(supplyGeoJson);
+      const bounds = collectBounds([
+        p.demandGeoJson,
+        p.supplyGeoJson,
+        p.routeGeoJson,
+        p.viewerPinsGeoJson,
+        p.viewerMyRoutesGeoJson,
+      ]);
+      if (bounds) map.fitBounds(bounds, { padding: 56, maxZoom: 13, duration: 400 });
+      else map.flyTo({ center: p.fallbackCenter, zoom: 11, duration: 400 });
+    } catch {
+      /* ignore transient MapLibre errors during style swap */
+    }
+  }, [
+    mapReady,
+    demandGeoJson,
+    supplyGeoJson,
+    routeGeoJson,
+    viewerPinsGeoJson,
+    viewerMyRoutesGeoJson,
+    fallbackCenter,
+    layerEmphasis,
+  ]);
 
-    const routeSrc = map.getSource("routes");
-    if (routeSrc) routeSrc.setData(routeGeoJson);
-
-    const viewerSrc = map.getSource("viewer");
-    if (viewerSrc) viewerSrc.setData(viewerGeoJson);
-
-    const bounds = collectBounds([demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson]);
-    if (bounds) map.fitBounds(bounds, { padding: 56, maxZoom: 13, duration: 400 });
-    else map.flyTo({ center: fallbackCenter, zoom: 11, duration: 400 });
-  }, [demandGeoJson, supplyGeoJson, routeGeoJson, viewerGeoJson, loading, fallbackCenter]);
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map?.on) return;
+    const layerId = "viewer-my-routes-line-hit";
+    const handler = (e: { features?: GeoJSON.Feature[] }) => {
+      const f = e.features?.[0];
+      const key = (f?.properties as { route_key?: string } | undefined)?.route_key;
+      if (key && key !== "primary") routeTapRef.current?.(key);
+    };
+    map.on("click", layerId, handler);
+    return () => {
+      try {
+        map.off("click", layerId, handler);
+      } catch {
+        /* noop */
+      }
+    };
+  }, [mapReady]);
 
   if (error) {
     return (
@@ -319,16 +521,18 @@ export function DiscoverMapLayers({
       {!loading && !hasPeerData && !hasViewerPins && (
         <View style={styles.emptyOverlay}>
           <Text style={styles.emptyText}>
-            No commute pins yet. Add home and work under Profile → Commute. Orange heat = others’
-            demand; green = drivers; blue lines = posted ride routes.
+            No commute pins yet. Add home and work under Profile → Commute, or switch to Any commuter.
+            Orange heat = others’ demand; green = drivers; solid blue = others’ posted trips (not your
+            alternates).
           </Text>
         </View>
       )}
-      {!loading && !hasPeerData && hasViewerPins && (
+      {!loading && !hasPeerData && (hasViewerPins || hasViewerRoutes) && (
         <View style={styles.emptyOverlay}>
           <Text style={styles.emptyText}>
-            Your home (orange) and work (blue) are shown. Heat fills in as others save commutes or
-            post rides in this scope.
+            Your route: dark green = primary; teal / amber / purple = optional paths when Mapbox is on.
+            Tap an alternate line to make it your main route. Work pin is blue. Solid blue lines = others’
+            posted trips. Heat = demand in this scope.
           </Text>
         </View>
       )}

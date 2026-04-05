@@ -17,7 +17,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { MapPinPickerModal } from "@/components/maps/MapPinPickerModal";
-import { upsertCommuteRouteToWork } from "@/lib/commuteRouteStorage";
+import {
+  upsertCommuteRouteToWork,
+  upsertStraightLineCommuteRoute,
+} from "@/lib/commuteRouteStorage";
 import {
   buildStaticCommuteMapUrl,
   fetchRouteInfo,
@@ -193,7 +196,7 @@ export default function LocationSetup() {
   const params = useLocalSearchParams<{ fromProfile?: string | string[] }>();
   const fromProfileRaw = Array.isArray(params.fromProfile) ? params.fromProfile[0] : params.fromProfile;
   const fromProfile = fromProfileRaw === "1" || fromProfileRaw === "true";
-  const { profile, refreshProfile } = useAuth();
+  const { profile, refreshProfile, session } = useAuth();
   const seededFromProfile = useRef(false);
 
   const [homeAddress, setHomeAddress] = useState("");
@@ -422,42 +425,59 @@ export default function LocationSetup() {
 
     setLoading(true);
 
-    if (profile?.id) {
-      const updates: Record<string, unknown> = {
-        work_location_label: workLabel.trim() || workAddress.trim(),
-      };
-      // PostGIS geography(Point) expects WKT: POINT(longitude latitude)
-      if (homePin) {
-        updates.home_location = `POINT(${homePin.lng} ${homePin.lat})`;
-      }
-      if (workPin) {
-        updates.work_location = `POINT(${workPin.lng} ${workPin.lat})`;
-      }
-      const { error } = await supabase
-        .from("users")
-        .update(updates)
-        .eq("id", profile.id);
+    const userId = profile?.id ?? session?.user?.id ?? null;
+    if (!userId) {
+      setLoading(false);
+      showAlert(
+        "Account not ready",
+        "We could not confirm your sign-in yet. Go back to Home, pull to refresh, then try again."
+      );
+      return;
+    }
 
-      if (error && error.code !== "PGRST204") {
-        setLoading(false);
-        showAlert("Something went wrong", "Could not save your locations. Please try again.");
-        return;
-      }
+    const updates: Record<string, unknown> = {
+      work_location_label: workLabel.trim() || workAddress.trim(),
+    };
+    if (homePin) {
+      updates.home_location = `POINT(${homePin.lng} ${homePin.lat})`;
+    }
+    if (workPin) {
+      updates.work_location = `POINT(${workPin.lng} ${workPin.lat})`;
+    }
+    const { error: saveErr } = await supabase.from("users").update(updates).eq("id", userId);
 
-      const routeRes = await upsertCommuteRouteToWork(profile.id, homePin!, workPin!);
-      if (!routeRes.ok) {
+    if (saveErr) {
+      setLoading(false);
+      showAlert(
+        "Could not save locations",
+        saveErr.message ||
+          "The server rejected this update. If you recently changed the database, reload the API schema in Supabase."
+      );
+      return;
+    }
+
+    const routeRes = await upsertCommuteRouteToWork(userId, homePin!, workPin!);
+    if (!routeRes.ok) {
+      const fb = await upsertStraightLineCommuteRoute(userId, homePin!, workPin!);
+      if (!fb.ok) {
         setLoading(false);
-        const hint = routeRes.error
-          ? `${routeRes.error}\n\nAdjust your home and work locations if needed, then try again.`
-          : "We could not build a driving route between your pins. Adjust your home and work locations and try again.";
-        showAlert("Commute route required", hint);
+        await refreshProfile();
+        showAlert(
+          "Locations saved",
+          `Your pins were saved, but we could not store a route line (${routeRes.error ?? fb.error}). You can retry from Profile → Commute.`
+        );
+        if (fromProfile) {
+          router.replace("/(tabs)/profile/commute-locations");
+        } else {
+          router.push("/(onboarding)/schedule");
+        }
         return;
       }
     }
 
+    await refreshProfile();
     setLoading(false);
     if (fromProfile) {
-      await refreshProfile();
       router.replace("/(tabs)/profile/commute-locations");
       return;
     }

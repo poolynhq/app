@@ -33,24 +33,24 @@ INSERT INTO public.users (id, org_id, email, full_name, phone_number, role, org_
    'sarah.chen@meridiantech.com', 'Sarah Chen', '+61412345001',
    'both', 'admin', 'enterprise',
    ST_MakePoint(144.9631, -37.8136)::geography,   -- CBD
-   ST_MakePoint(145.0190, -37.8240)::geography,   -- Richmond office
-   'Meridian Tech HQ', 12, 150, 3, true, true, true),
+   ST_MakePoint(144.9631, -37.8136)::geography,   -- Melbourne CBD hub (same as sample home here)
+   'Meridian Tech — Melbourne CBD', 12, 150, 3, true, true, true),
 
   ('b1000000-0000-0000-0000-000000000002',
    'a1000000-0000-0000-0000-000000000001',
    'james.wilson@meridiantech.com', 'James Wilson', '+61412345002',
    'driver', 'member', 'enterprise',
    ST_MakePoint(145.0350, -37.7550)::geography,   -- Kew
-   ST_MakePoint(145.0190, -37.8240)::geography,   -- Richmond office
-   'Meridian Tech HQ', 10, 80, 5, true, true, true),
+   ST_MakePoint(144.9631, -37.8136)::geography,   -- Melbourne CBD hub
+   'Meridian Tech — Melbourne CBD', 10, 80, 5, true, true, true),
 
   ('b1000000-0000-0000-0000-000000000003',
    'a1000000-0000-0000-0000-000000000001',
    'priya.sharma@meridiantech.com', 'Priya Sharma', '+61412345003',
    'passenger', 'member', 'enterprise',
    ST_MakePoint(145.0000, -37.7800)::geography,   -- Hawthorn
-   ST_MakePoint(145.0190, -37.8240)::geography,   -- Richmond office
-   'Meridian Tech HQ', 15, 30, 3, false, true, true),
+   ST_MakePoint(144.9631, -37.8136)::geography,   -- Melbourne CBD hub
+   'Meridian Tech — Melbourne CBD', 15, 30, 3, false, true, true),
 
   -- Greenleaf University
   ('b1000000-0000-0000-0000-000000000004',
@@ -218,3 +218,26 @@ INSERT INTO public.emergency_contacts (user_id, name, phone_number, relationship
   ('b1000000-0000-0000-0000-000000000001', 'David Chen',   '+61412999001', 'Spouse'),
   ('b1000000-0000-0000-0000-000000000003', 'Raj Sharma',   '+61412999003', 'Father'),
   ('b1000000-0000-0000-0000-000000000005', 'Linh Nguyen',  '+61412999005', 'Mother');
+
+
+-- ---------------------------------------------------------
+-- Org route groups (corridors / lines for planning)
+-- ---------------------------------------------------------
+INSERT INTO public.org_route_groups (id, org_id, name, description, created_by) VALUES
+  ('f1000000-0000-4000-8000-000000000001',
+   'a1000000-0000-0000-0000-000000000001',
+   'Eastern corridor',
+   'Eastern suburbs line toward Melbourne CBD',
+   'b1000000-0000-0000-0000-000000000001'),
+  ('f1000000-0000-4000-8000-000000000002',
+   'a1000000-0000-0000-0000-000000000002',
+   'South & Clayton run',
+   'Southern suburbs feeding main campus',
+   'b1000000-0000-0000-0000-000000000004');
+
+INSERT INTO public.org_route_group_members (group_id, user_id) VALUES
+  ('f1000000-0000-4000-8000-000000000001', 'b1000000-0000-0000-0000-000000000001'),
+  ('f1000000-0000-4000-8000-000000000001', 'b1000000-0000-0000-0000-000000000002'),
+  ('f1000000-0000-4000-8000-000000000001', 'b1000000-0000-0000-0000-000000000003'),
+  ('f1000000-0000-4000-8000-000000000002', 'b1000000-0000-0000-0000-000000000004'),
+  ('f1000000-0000-4000-8000-000000000002', 'b1000000-0000-0000-0000-000000000005');

@@ -100,6 +100,9 @@ export default function AdminOverview() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAdminWelcome, setShowAdminWelcome] = useState(false);
+  const [routeGroups, setRouteGroups] = useState<
+    { id: string; name: string; description: string | null; memberCount: number }[]
+  >([]);
 
   const fetchData = useCallback(async () => {
     if (!profile?.org_id) {
@@ -114,7 +117,7 @@ export default function AdminOverview() {
 
       const monthRef = new Date().toISOString().slice(0, 10);
 
-      const [orgRes, membersListRes, dashRes] = await Promise.all([
+      const [orgRes, membersListRes, dashRes, routeGroupsRes] = await Promise.all([
         supabase
           .from("organisations")
           .select("*")
@@ -128,10 +131,36 @@ export default function AdminOverview() {
           .eq("org_id", profile.org_id)
           .order("full_name"),
         supabase.rpc("poolyn_org_admin_dashboard_stats", { p_org_id: profile.org_id }),
+        supabase
+          .from("org_route_groups")
+          .select("id, name, description, org_route_group_members(count)")
+          .eq("org_id", profile.org_id)
+          .eq("archived", false)
+          .order("name"),
       ]);
 
       if (orgRes.error) throw orgRes.error;
       if (membersListRes.error) throw membersListRes.error;
+
+      if (routeGroupsRes.error) {
+        if (__DEV__) console.warn("[admin overview] org_route_groups", routeGroupsRes.error.message);
+        setRouteGroups([]);
+      } else {
+        const rgRows = (routeGroupsRes.data ?? []) as Array<{
+          id: string;
+          name: string;
+          description: string | null;
+          org_route_group_members?: { count: number }[];
+        }>;
+        setRouteGroups(
+          rgRows.map((g) => ({
+            id: g.id,
+            name: g.name,
+            description: g.description,
+            memberCount: g.org_route_group_members?.[0]?.count ?? 0,
+          }))
+        );
+      }
 
       const memberRows = membersListRes.data ?? [];
       if (__DEV__ && dashRes.error) {
@@ -582,6 +611,29 @@ export default function AdminOverview() {
           <Text style={styles.analyticsItem}>Total rides: {totalRides}</Text>
           <Text style={styles.analyticsItem}>CO₂ saved: {co2Saved} kg</Text>
           <Text style={styles.analyticsItem}>Peak commute time: {peakHour}</Text>
+        </View>
+
+        <SectionHeader eyebrow="Route planning" title="Org route groups" />
+        <View style={styles.healthCard}>
+          {routeGroups.length === 0 ? (
+            <Text style={styles.healthBody}>
+              No route groups yet. Members can create named corridors (for example feeder areas) from
+              Profile → Route groups so you can see where interest clusters.
+            </Text>
+          ) : (
+            <>
+              <Text style={styles.healthMuted}>
+                Parent-defined corridors for planning. Member counts help show coverage across your
+                network.
+              </Text>
+              {routeGroups.map((g) => (
+                <Text key={g.id} style={[styles.healthBody, { marginTop: Spacing.sm }]}>
+                  {g.name}: {g.memberCount} member{g.memberCount === 1 ? "" : "s"}
+                  {g.description ? ` — ${g.description}` : ""}
+                </Text>
+              ))}
+            </>
+          )}
         </View>
 
         <SectionHeader eyebrow="Live signals" title="Network health" />
