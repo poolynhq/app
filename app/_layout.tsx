@@ -1,10 +1,20 @@
 import { useEffect } from "react";
-import { Slot, useGlobalSearchParams, useRouter, useSegments } from "expo-router";
+import {
+  Slot,
+  useGlobalSearchParams,
+  usePathname,
+  useRouter,
+  useSegments,
+} from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Colors } from "@/constants/theme";
-import { View, ActivityIndicator, StyleSheet, LogBox } from "react-native";
+import {
+  isAccountSignupBlockedOnWeb,
+  MARKETING_BLOCKED_AUTH_SEGMENTS,
+} from "@/lib/marketingWebRestrictions";
+import { View, ActivityIndicator, StyleSheet, LogBox, Platform } from "react-native";
 
 if (__DEV__) {
   LogBox.ignoreLogs([/expo-notifications: Android Push notifications/]);
@@ -22,6 +32,7 @@ function NavigationGuard() {
     commuterSetupFromAdmin,
   } = useAuth();
   const segments = useSegments();
+  const pathname = usePathname();
   const searchParams = useGlobalSearchParams<{
     next?: string | string[];
     fromProfile?: string | string[];
@@ -55,6 +66,13 @@ function NavigationGuard() {
     const inPasswordReset = inAuthGroup && segments.at(1) === "reset-password";
     const inOnboardingGroup = segments[0] === "(onboarding)";
     const inPublicGroup = segments[0] === "(public)";
+    // Static web: segments sometimes omit the (public) group for `/` — pathname is reliable.
+    const webPath =
+      Platform.OS === "web"
+        ? (pathname.replace(/\/$/, "") || "/")
+        : "";
+    const onPublicWebMarketing =
+      Platform.OS === "web" && (webPath === "/" || webPath === "/terms");
     const inBusinessSetup = inAuthGroup && segments.at(1) === "business-sign-up";
     const nextParam = Array.isArray(searchParams.next)
       ? searchParams.next[0]
@@ -62,7 +80,24 @@ function NavigationGuard() {
     const wantsBusinessSetup = nextParam === "business-sign-up";
 
     if (!session) {
-      if (!inAuthGroup && !inPublicGroup) router.replace("/(auth)/sign-in");
+      // Web/static: segments can be unset before hydration; `/` may never expose `(public)` in segments.
+      if (!segments[0] && !onPublicWebMarketing) return;
+
+      const authChild = segments.at(1);
+      if (
+        Platform.OS === "web" &&
+        inAuthGroup &&
+        authChild &&
+        MARKETING_BLOCKED_AUTH_SEGMENTS.has(authChild) &&
+        isAccountSignupBlockedOnWeb()
+      ) {
+        router.replace("/");
+        return;
+      }
+
+      if (!inAuthGroup && !inPublicGroup && !onPublicWebMarketing) {
+        router.replace("/(auth)/sign-in");
+      }
     } else if (inPasswordReset) {
       return;
     } else if (session && !isAdmin && segments[0] === "(admin)") {
@@ -96,6 +131,7 @@ function NavigationGuard() {
     isPlatformSuperAdmin,
     commuterSetupFromAdmin,
     segments,
+    pathname,
     searchParams.next,
     searchParams.fromProfile,
     router,

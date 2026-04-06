@@ -31,6 +31,7 @@ import { LandingFont } from "@/constants/landingTypography";
 import { CommunityHubAnimation } from "@/components/landing/CommunityHubAnimation";
 import { LandingIcon } from "@/components/landing/LandingIcon";
 import { WaitlistModal } from "@/components/landing/WaitlistModal";
+import { useAccountSignupBlockedOnWeb } from "@/lib/marketingWebRestrictions";
 import type { WaitlistIntent } from "@/lib/waitlistSignup";
 
 type SectionKey = "how" | "features" | "impact" | "community" | "orgs";
@@ -53,6 +54,7 @@ export default function MarketingLanding() {
   const [waitlistIntent, setWaitlistIntent] = useState<WaitlistIntent | undefined>(
     undefined
   );
+  const signupBlockedOnWeb = useAccountSignupBlockedOnWeb();
 
   function mark(key: SectionKey, e: LayoutChangeEvent) {
     setYs((p) => ({ ...p, [key]: e.nativeEvent.layout.y }));
@@ -378,11 +380,19 @@ export default function MarketingLanding() {
               >
                 <Text style={styles.secondaryOutlineText}>Join as an organization</Text>
               </Pressable>
-              <Link href="/(auth)/business-sign-up" asChild>
-                <Pressable style={styles.textLinkWrap}>
-                  <Text style={styles.textLink}>Already setting up a network? Enterprise signup →</Text>
-                </Pressable>
-              </Link>
+              {!signupBlockedOnWeb ? (
+                <Link href="/(auth)/business-sign-up" asChild>
+                  <Pressable style={styles.textLinkWrap}>
+                    <Text style={styles.textLink}>
+                      Already setting up a network? Enterprise signup →
+                    </Text>
+                  </Pressable>
+                </Link>
+              ) : (
+                <Text style={styles.textLinkMuted}>
+                  Enterprise onboarding opens with your invite — join the waitlist to hear first.
+                </Text>
+              )}
             </View>
             <View style={styles.dashCard}>
               <View style={styles.dashAccent} />
@@ -1016,6 +1026,13 @@ const styles = StyleSheet.create({
     fontFamily: LandingFont.bodySemi,
     color: Landing.tealDark,
     fontSize: FontSize.sm,
+  },
+  textLinkMuted: {
+    fontFamily: LandingFont.body,
+    color: Landing.muted,
+    fontSize: FontSize.sm,
+    marginTop: Spacing.lg,
+    lineHeight: 20,
   },
 
   dashCard: {

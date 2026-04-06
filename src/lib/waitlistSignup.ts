@@ -1,4 +1,6 @@
+import { waitlistWorkEmailRejectReason } from "@/constants/consumerEmailDomains";
 import { supabase } from "@/lib/supabase";
+import type { PostgrestError } from "@supabase/supabase-js";
 
 export type WaitlistIntent = "individual" | "organization" | "unsure";
 
@@ -17,6 +19,18 @@ function normalizeEmail(email: string) {
 
 export async function submitWaitlistSignup(payload: WaitlistPayload) {
   const email = normalizeEmail(payload.email);
+  const workEmailErr = waitlistWorkEmailRejectReason(email);
+  if (workEmailErr) {
+    return {
+      data: null,
+      error: {
+        message: workEmailErr,
+        details: "",
+        hint: "",
+        code: "work_email_required",
+      } satisfies Pick<PostgrestError, "message" | "details" | "hint" | "code">,
+    };
+  }
   const row = {
     email,
     full_name: payload.fullName?.trim() || null,
@@ -25,5 +39,18 @@ export async function submitWaitlistSignup(payload: WaitlistPayload) {
       payload.intent && payload.intent !== "unsure" ? payload.intent : null,
     source: payload.source ?? "landing",
   };
-  return supabase.from("waitlist_signups").insert(row);
+  try {
+    return await supabase.from("waitlist_signups").insert(row);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      data: null,
+      error: {
+        message: `Could not reach the server: ${message}`,
+        details: "",
+        hint: "",
+        code: "client_network",
+      } satisfies Pick<PostgrestError, "message" | "details" | "hint" | "code">,
+    };
+  }
 }

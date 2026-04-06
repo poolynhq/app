@@ -124,7 +124,7 @@ export default function JoinOrg() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.topRow}>
-          <Link href="/(auth)/" asChild>
+          <Link href="/(auth)/start" asChild>
             <TouchableOpacity style={styles.backButton} activeOpacity={0.7}>
               <Ionicons name="arrow-back" size={24} color={Colors.text} />
             </TouchableOpacity>

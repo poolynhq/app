@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Keyboard,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,6 +22,10 @@ import {
 import { Landing } from "@/constants/landingTheme";
 import { LandingFont } from "@/constants/landingTypography";
 import { filterMetroAreas } from "@/constants/waitlistMetroAreas";
+import {
+  formatWaitlistSignupError,
+  logWaitlistSignupFailure,
+} from "@/lib/waitlistSignupErrors";
 import {
   submitWaitlistSignup,
   type WaitlistIntent,
@@ -54,6 +59,8 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
   const [done, setDone] = useState(false);
   const [metroFocused, setMetroFocused] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  /** Web-only honeypot; if filled, treat as bot and show success without inserting. */
+  const [honeypot, setHoneypot] = useState("");
   const blurMetroTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -80,6 +87,7 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
     setDone(false);
     setMetroFocused(false);
     setSuggestions([]);
+    setHoneypot("");
   }
 
   function handleClose() {
@@ -110,6 +118,10 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
 
   async function onSubmit() {
     setError(null);
+    if (Platform.OS === "web" && honeypot.trim() !== "") {
+      setDone(true);
+      return;
+    }
     if (!basicEmailOk(email)) {
       setError("Please enter a valid email address.");
       return;
@@ -124,10 +136,16 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
     });
     setLoading(false);
     if (insertError) {
+      logWaitlistSignupFailure({
+        code: insertError.code,
+        message: insertError.message,
+        details: insertError.details ?? null,
+        hint: insertError.hint ?? null,
+      });
       if (insertError.code === "23505") {
         setError("That email is already on the list. We'll be in touch.");
       } else {
-        setError(insertError.message || "Something went wrong. Try again.");
+        setError(formatWaitlistSignupError(insertError));
       }
       return;
     }
@@ -175,6 +193,21 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
             ) : (
               <>
                 <Text style={[styles.label, styles.labelFirst]}>Work email</Text>
+                <Text style={styles.hint}>
+                  Use your company address; personal inboxes (Gmail, Outlook,
+                  iCloud, etc.) cannot join the waitlist.
+                </Text>
+                {Platform.OS === "web" ? (
+                  <TextInput
+                    value={honeypot}
+                    onChangeText={setHoneypot}
+                    style={styles.honeypot}
+                    autoComplete="off"
+                    importantForAccessibility="no"
+                    accessibilityElementsHidden
+                    tabIndex={-1}
+                  />
+                ) : null}
                 <TextInput
                   style={styles.input}
                   placeholder="you@company.com"
@@ -315,6 +348,14 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
   labelFirst: { marginTop: 0 },
+  honeypot: {
+    position: "absolute",
+    opacity: 0,
+    height: 1,
+    width: 1,
+    overflow: "hidden",
+    zIndex: -1,
+  },
   hint: {
     fontFamily: LandingFont.body,
     fontSize: FontSize.xs,

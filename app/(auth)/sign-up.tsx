@@ -216,7 +216,7 @@ export default function SignUp() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
-          <Link href="/(auth)/" asChild>
+          <Link href="/(auth)/start" asChild>
             <TouchableOpacity style={styles.backButton}>
               <Ionicons
                 name="arrow-back"

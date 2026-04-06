@@ -229,7 +229,7 @@ export default function SignIn() {
 
           <View style={styles.footer}>
             <Text style={styles.footerText}>Don&apos;t have an account? </Text>
-            <Link href="/(auth)/" asChild>
+            <Link href="/(auth)/start" asChild>
               <TouchableOpacity>
                 <Text style={styles.footerLink}>Create one</Text>
               </TouchableOpacity>

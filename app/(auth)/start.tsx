@@ -16,6 +16,7 @@ import {
   Shadow,
 } from "@/constants/theme";
 
+/** Unauthenticated entry for “Start a network” / “Join or explore” (URL: /start). */
 export default function AccountTypeSelection() {
   return (
     <ScrollView
