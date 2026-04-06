@@ -148,7 +148,7 @@ export default function InviteManagement() {
           }}
           onContinueAsIndividual={async () => {
             await refreshProfile();
-            router.replace("/(tabs)");
+            router.replace("/(tabs)/home");
           }}
         />
       </SafeAreaView>

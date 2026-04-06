@@ -30,6 +30,7 @@ import {
 import { LandingFont } from "@/constants/landingTypography";
 import { CommunityHubAnimation } from "@/components/landing/CommunityHubAnimation";
 import { LandingIcon } from "@/components/landing/LandingIcon";
+import { WaitlistExitIntentModal } from "@/components/landing/WaitlistExitIntentModal";
 import { WaitlistModal } from "@/components/landing/WaitlistModal";
 import { useAccountSignupBlockedOnWeb } from "@/lib/marketingWebRestrictions";
 import type { WaitlistIntent } from "@/lib/waitlistSignup";
@@ -73,7 +74,17 @@ export default function MarketingLanding() {
   }
 
   const contentPad = isWide ? 56 : 24;
-  const maxPage = isWide ? { maxWidth: 1140, width: "100%" as const } : {};
+  // Web: max-width column must be centered; otherwise it stays left with empty space on the right.
+  const webContentLayout =
+    Platform.OS === "web"
+      ? isWide
+        ? ({
+            maxWidth: 1140,
+            width: "100%",
+            alignSelf: "center",
+          } as const)
+        : ({ width: "100%" } as const)
+      : null;
 
   return (
     <>
@@ -82,7 +93,7 @@ export default function MarketingLanding() {
         style={styles.page}
         contentContainerStyle={[
           styles.pageContent,
-          Platform.OS === "web" && maxPage,
+          webContentLayout,
         ]}
       >
         {/* Hero (nav overlays image) */}
@@ -441,6 +452,13 @@ export default function MarketingLanding() {
         </View>
       </ScrollView>
 
+      <WaitlistExitIntentModal
+        waitlistModalOpen={waitlistOpen}
+        onJoinWaitlist={() => {
+          setWaitlistIntent(undefined);
+          setWaitlistOpen(true);
+        }}
+      />
       <WaitlistModal
         visible={waitlistOpen}
         onClose={() => setWaitlistOpen(false)}
@@ -585,7 +603,14 @@ function DashRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: Landing.pageBg },
+  page: {
+    flex: 1,
+    backgroundColor: Landing.pageBg,
+    ...Platform.select({
+      web: { width: "100%", minHeight: "100%" } as object,
+      default: {},
+    }),
+  },
   pageContent: { paddingBottom: Spacing["5xl"] },
   heroNav: {
     position: "absolute",
@@ -1036,15 +1061,16 @@ const styles = StyleSheet.create({
   },
 
   dashCard: {
-    flex: 1,
+    flexGrow: 0,
+    flexShrink: 0,
     backgroundColor: Landing.white,
     borderRadius: BorderRadius.xl,
     paddingHorizontal: Spacing.xl,
-    paddingBottom: Spacing.xl,
+    paddingBottom: Spacing.md,
     paddingTop: 0,
     overflow: "hidden",
     maxWidth: 360,
-    alignSelf: "stretch",
+    alignSelf: "flex-start",
     borderWidth: 1,
     borderColor: Landing.tealLine,
     ...Platform.select({
@@ -1056,19 +1082,19 @@ const styles = StyleSheet.create({
     height: 4,
     width: "100%",
     backgroundColor: Landing.orange,
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   dashTitle: {
     fontFamily: LandingFont.displayBold,
     fontSize: FontSize.lg,
     color: Landing.ink,
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
     letterSpacing: Platform.OS === "web" ? -0.35 : -0.1,
   },
   dashRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
   },
@@ -1087,7 +1113,7 @@ const styles = StyleSheet.create({
     fontFamily: LandingFont.body,
     fontSize: FontSize.xs,
     color: Landing.subtle,
-    marginTop: Spacing.lg,
+    marginTop: Spacing.sm,
     lineHeight: 18,
   },
 

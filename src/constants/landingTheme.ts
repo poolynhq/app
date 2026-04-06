@@ -92,14 +92,11 @@ export const Landing = {
 } as const;
 
 export const LandingGradients = {
-  /**
-   * Hero photo tint. Slightly lighter than before so more of the photo shows through.
-   * Revert hero haze: set these three alphas back to 0.94, 0.82, 0.55 (forestDeep, forest, forestInk).
-   */
+  /** Hero photo tint (forest haze over the road image). */
   heroPhotoOverlay: [
-    rgba(LandingBrand.forestDeep, 0.88),
-    rgba(LandingBrand.forest, 0.70),
-    rgba(LandingBrand.forestInk, 0.44),
+    rgba(LandingBrand.forestDeep, 0.94),
+    rgba(LandingBrand.forest, 0.82),
+    rgba(LandingBrand.forestInk, 0.55),
   ] as readonly [string, string, string],
   impactBand: [
     LandingBrand.forestDeep,

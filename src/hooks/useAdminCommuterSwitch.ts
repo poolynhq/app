@@ -14,6 +14,6 @@ export function useAdminCommuterSwitch() {
       router.push("/(onboarding)/");
       return;
     }
-    router.push("/(tabs)/");
+    router.push("/(tabs)/home");
   }, [profile?.onboarding_completed, router, startCommuterSetupFromAdmin]);
 }

@@ -26,6 +26,7 @@ import {
   formatWaitlistSignupError,
   logWaitlistSignupFailure,
 } from "@/lib/waitlistSignupErrors";
+import { markWaitlistJoinedInSession } from "@/lib/waitlistSessionFlags";
 import {
   submitWaitlistSignup,
   type WaitlistIntent,
@@ -143,12 +144,14 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
         hint: insertError.hint ?? null,
       });
       if (insertError.code === "23505") {
+        markWaitlistJoinedInSession();
         setError("That email is already on the list. We'll be in touch.");
       } else {
         setError(formatWaitlistSignupError(insertError));
       }
       return;
     }
+    markWaitlistJoinedInSession();
     setDone(true);
   }
 

@@ -181,7 +181,7 @@ export default function ResetPasswordScreen() {
           <Text style={styles.successBody}>You can continue with your account.</Text>
           <TouchableOpacity
             style={styles.button}
-            onPress={() => router.replace("/(tabs)/")}
+            onPress={() => router.replace("/(tabs)/home")}
             activeOpacity={0.85}
           >
             <Text style={styles.buttonText}>Continue</Text>

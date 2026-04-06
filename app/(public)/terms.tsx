@@ -11,7 +11,7 @@ import {
 export default function TermsPage() {
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
-      <Link href="/(public)/" style={styles.backLink}>← Back to Poolyn</Link>
+      <Link href="/" style={styles.backLink}>← Back to Poolyn</Link>
       <Text style={styles.title}>Terms & Conditions</Text>
       <Text style={styles.updated}>Last updated: 2026-03-30</Text>
 

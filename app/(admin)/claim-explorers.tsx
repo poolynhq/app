@@ -129,7 +129,7 @@ export default function ClaimExplorersScreen() {
           }}
           onContinueAsIndividual={async () => {
             await refreshProfile();
-            router.replace("/(tabs)");
+            router.replace("/(tabs)/home");
           }}
         />
       </SafeAreaView>

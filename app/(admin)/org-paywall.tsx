@@ -60,7 +60,7 @@ export default function OrgPaywallRoute() {
           }}
           onContinueAsIndividual={async () => {
             await refreshProfile();
-            router.replace("/(tabs)");
+            router.replace("/(tabs)/home");
           }}
         />
       </View>

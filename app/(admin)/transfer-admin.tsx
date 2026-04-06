@@ -165,7 +165,7 @@ export default function TransferAdminScreen() {
       "Admin transferred",
       "They are now the organisation admin. Use the commuter app from the tabs, or sign in again if you need the admin console later."
     );
-    router.replace("/(tabs)/");
+    router.replace("/(tabs)/home");
   }
 
   function renderItem({ item }: { item: MemberRow }) {

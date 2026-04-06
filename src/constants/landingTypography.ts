@@ -1,6 +1,6 @@
 /**
  * Marketing landing: Inter (body) + Plus Jakarta Sans (headlines), per design mock.
- * Loaded in app/(public)/_layout.tsx via useFonts.
+ * Loaded in app/index.tsx and app/(public)/_layout.tsx via useFonts.
  */
 export const LandingFont = {
   body: "Inter_400Regular",

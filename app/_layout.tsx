@@ -22,6 +22,17 @@ if (__DEV__) {
 
 SplashScreen.preventAutoHideAsync();
 
+/** Real browser path on web (expo-router pathname can lag behind on static export). */
+function getWebResolvedPath(): string {
+  if (Platform.OS !== "web" || typeof window === "undefined") return "";
+  let p = window.location.pathname || "/";
+  if (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  if (/\/index\.html$/i.test(p)) {
+    p = p.replace(/\/index\.html$/i, "") || "/";
+  }
+  return p || "/";
+}
+
 function NavigationGuard() {
   const {
     session,
@@ -57,7 +68,7 @@ function NavigationGuard() {
         return;
       }
       if (!isPlatformSuperAdmin) {
-        router.replace("/(tabs)/");
+        router.replace("/(tabs)/home");
       }
       return;
     }
@@ -66,10 +77,9 @@ function NavigationGuard() {
     const inPasswordReset = inAuthGroup && segments.at(1) === "reset-password";
     const inOnboardingGroup = segments[0] === "(onboarding)";
     const inPublicGroup = segments[0] === "(public)";
-    // Static web: segments sometimes omit the (public) group for `/` — pathname is reliable.
     const webPath =
       Platform.OS === "web"
-        ? (pathname.replace(/\/$/, "") || "/")
+        ? getWebResolvedPath() || (pathname.replace(/\/$/, "") || "/")
         : "";
     const onPublicWebMarketing =
       Platform.OS === "web" && (webPath === "/" || webPath === "/terms");
@@ -101,7 +111,7 @@ function NavigationGuard() {
     } else if (inPasswordReset) {
       return;
     } else if (session && !isAdmin && segments[0] === "(admin)") {
-      router.replace("/(tabs)/");
+      router.replace("/(tabs)/home");
     } else if (isAdmin) {
       if (inAuthGroup) {
         router.replace("/(admin)/");
@@ -120,7 +130,7 @@ function NavigationGuard() {
       if (!inOnboardingGroup && !inPublicGroup) router.replace("/(onboarding)/");
     } else {
       if (inAuthGroup || (inOnboardingGroup && !onboardingLocationFromProfile)) {
-        router.replace("/(tabs)/");
+        router.replace("/(tabs)/home");
       }
     }
   }, [

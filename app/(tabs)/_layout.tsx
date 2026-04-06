@@ -12,7 +12,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Colors, FontSize, FontWeight, BorderRadius, Shadow, Spacing } from "@/constants/theme";
 
 const tabs: { name: string; title: string }[] = [
-  { name: "index", title: "Home" },
+  { name: "home", title: "Home" },
   { name: "rides", title: "My Rides" },
   { name: "messages", title: "Messages" },
   { name: "profile", title: "Profile" },
