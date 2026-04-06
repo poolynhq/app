@@ -16,7 +16,8 @@ import { showAlert } from "@/lib/platformAlert";
 import { supabase } from "@/lib/supabase";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
 import { haversineKm } from "@/lib/geoDistance";
-import { openDrivingDirectionsTo } from "@/lib/navigationUrls";
+import { presentDrivingNavigationPicker } from "@/lib/navigationUrls";
+import { RideRouteStepsModal } from "@/components/rides/RideRouteStepsModal";
 import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
 import { listMyUpcomingRidesAsPassenger, type PassengerUpcomingRide } from "@/lib/passengerRides";
 import { listMyUpcomingRidesAsDriver, type DriverUpcomingRide } from "@/lib/driverRides";
@@ -58,6 +59,75 @@ function formatDepart(iso: string) {
   } catch {
     return iso;
   }
+}
+
+function ActiveRideCard({
+  rideId,
+  origin,
+  destination,
+  title,
+  meta,
+  sub,
+}: {
+  rideId: string;
+  origin: unknown;
+  destination: unknown;
+  title: string;
+  meta: string;
+  sub: string;
+}) {
+  const router = useRouter();
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const pickup = parseGeoPoint(origin);
+
+  return (
+    <View style={styles.upcomingRideCard}>
+      <Text style={styles.upcomingRideTitle}>{title}</Text>
+      <Text style={styles.upcomingRideMeta}>{meta}</Text>
+      <Text style={styles.upcomingRideSub}>{sub}</Text>
+      <View style={styles.rideActionsRow}>
+        <TouchableOpacity
+          style={styles.rideActionBtn}
+          activeOpacity={0.8}
+          onPress={() => router.push(`/(tabs)/messages/${rideId}`)}
+          accessibilityRole="button"
+          accessibilityLabel="Open ride messages"
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={18} color={Colors.primary} />
+          <Text style={styles.rideActionText}>Message</Text>
+        </TouchableOpacity>
+        {pickup ? (
+          <TouchableOpacity
+            style={styles.rideActionBtn}
+            activeOpacity={0.8}
+            onPress={() => presentDrivingNavigationPicker(pickup.lat, pickup.lng)}
+            accessibilityRole="button"
+            accessibilityLabel="Turn-by-turn navigation to pickup"
+          >
+            <Ionicons name="navigate-outline" size={18} color={Colors.primary} />
+            <Text style={styles.rideActionText}>Navigate</Text>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          style={styles.rideActionBtn}
+          activeOpacity={0.8}
+          onPress={() => setStepsOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="View route steps"
+        >
+          <Ionicons name="list-outline" size={18} color={Colors.primary} />
+          <Text style={styles.rideActionText}>Steps</Text>
+        </TouchableOpacity>
+      </View>
+      <RideRouteStepsModal
+        visible={stepsOpen}
+        onClose={() => setStepsOpen(false)}
+        origin={origin}
+        destination={destination}
+        title="Full route (pickup to drop-off)"
+      />
+    </View>
+  );
 }
 
 export default function MyRides() {
@@ -167,7 +237,7 @@ export default function MyRides() {
           [
             {
               text: "Navigate to pickup",
-              onPress: () => openDrivingDirectionsTo(pt.lat, pt.lng),
+              onPress: () => presentDrivingNavigationPicker(pt.lat, pt.lng),
             },
             { text: "Later", style: "cancel" },
           ]
@@ -290,14 +360,17 @@ export default function MyRides() {
               <View style={styles.myRequestsBlock}>
                 <Text style={styles.blockTitle}>Your upcoming rides</Text>
                 {passengerUpcoming.map((ride) => (
-                  <View key={ride.rideId} style={styles.upcomingRideCard}>
-                    <Text style={styles.upcomingRideTitle}>
-                      {ride.driverName?.trim() || "Driver"} ·{" "}
-                      {ride.direction === "from_work" ? "From work" : "To work"}
-                    </Text>
-                    <Text style={styles.upcomingRideMeta}>{formatDepart(ride.departAt)}</Text>
-                    <Text style={styles.upcomingRideSub}>Pickup is highlighted on your Home map.</Text>
-                  </View>
+                  <ActiveRideCard
+                    key={ride.rideId}
+                    rideId={ride.rideId}
+                    origin={ride.origin}
+                    destination={ride.destination}
+                    title={`${ride.driverName?.trim() || "Driver"} · ${
+                      ride.direction === "from_work" ? "From work" : "To work"
+                    }`}
+                    meta={formatDepart(ride.departAt)}
+                    sub="Pickup is highlighted on your Home map."
+                  />
                 ))}
               </View>
             ) : null}
@@ -306,16 +379,17 @@ export default function MyRides() {
               <View style={styles.myRequestsBlock}>
                 <Text style={styles.blockTitle}>Your upcoming drives</Text>
                 {driverUpcoming.map((ride) => (
-                  <View key={ride.rideId} style={styles.upcomingRideCard}>
-                    <Text style={styles.upcomingRideTitle}>
-                      You are driving · {ride.direction === "from_work" ? "From work" : "To work"}
-                    </Text>
-                    <Text style={styles.upcomingRideMeta}>{formatDepart(ride.departAt)}</Text>
-                    <Text style={styles.upcomingRideSub}>
-                      Use the navigate prompt after accepting a pickup request, or open maps to your pickup from
-                      here when you are ready.
-                    </Text>
-                  </View>
+                  <ActiveRideCard
+                    key={ride.rideId}
+                    rideId={ride.rideId}
+                    origin={ride.origin}
+                    destination={ride.destination}
+                    title={`You are driving · ${
+                      ride.direction === "from_work" ? "From work" : "To work"
+                    }`}
+                    meta={formatDepart(ride.departAt)}
+                    sub="Navigate to pickup, message your passengers, or preview the full route as steps."
+                  />
                 ))}
               </View>
             ) : null}
@@ -544,6 +618,28 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
     marginTop: Spacing.xs,
     lineHeight: 16,
+  },
+  rideActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  rideActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  rideActionText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primaryDark,
   },
   emptyInline: {
     alignItems: "center",

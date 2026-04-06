@@ -520,21 +520,38 @@ export default function Dashboard() {
             isCommunityOrg && styles.heroCommunity,
           ]}
         >
-          <View style={styles.headerRow}>
-            <View style={{ flex: 1 }}>
+          <View style={styles.heroTopBand}>
+            <TouchableOpacity
+              style={styles.heroAvatarBtn}
+              activeOpacity={0.82}
+              onPress={() => router.push("/(tabs)/profile")}
+              accessibilityRole="button"
+              accessibilityLabel="Profile"
+              accessibilityHint="Opens your profile and settings"
+            >
+              {profile?.avatar_url ? (
+                <Image source={{ uri: profile.avatar_url }} style={styles.heroAvatarImg} />
+              ) : (
+                <View style={styles.heroAvatarPlaceholder}>
+                  <Ionicons name="person" size={24} color={Colors.textSecondary} />
+                </View>
+              )}
+            </TouchableOpacity>
+
+            <View style={styles.heroTextBlock}>
               <Text
                 style={[
-                  styles.greeting,
+                  styles.heroGreetingCaps,
                   !hasOrg && styles.heroGreetingExplorer,
                   isEnterpriseOrg && styles.heroGreetingEnterprise,
                   isCommunityOrg && styles.heroGreetingCommunity,
                 ]}
               >
-                {getGreeting()},
+                {getGreeting().toUpperCase()}
               </Text>
               <Text
                 style={[
-                  styles.name,
+                  styles.heroNameDisplay,
                   !hasOrg && styles.heroNameExplorer,
                   isEnterpriseOrg && styles.heroNameEnterprise,
                   isCommunityOrg && styles.heroNameCommunity,
@@ -542,104 +559,87 @@ export default function Dashboard() {
               >
                 {firstName}
               </Text>
+              {!hasOrg ? (
+                <Text style={styles.heroOrgLineExplorer} numberOfLines={1}>
+                  Independent explorer
+                </Text>
+              ) : isEnterpriseOrg ? (
+                <View style={styles.heroOrgLineRow}>
+                  <Text style={styles.heroOrgLineNameEnt} numberOfLines={1}>
+                    {org!.name}
+                  </Text>
+                  <Text style={styles.heroOrgLineKindEnt} numberOfLines={1}>
+                    {" "}
+                    · Workplace
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.heroOrgLineRow}>
+                  <Text style={styles.heroOrgLineNameCom} numberOfLines={1}>
+                    {org!.name}
+                  </Text>
+                  <Text style={styles.heroOrgLineKindCom} numberOfLines={1}>
+                    {" "}
+                    · Community
+                  </Text>
+                </View>
+              )}
             </View>
-            <TouchableOpacity
-              style={styles.bellBtnHero}
-              activeOpacity={0.75}
-              onPress={() => router.push("/(tabs)/profile/activity")}
-              accessibilityRole="button"
-              accessibilityLabel="Activity and messages"
-            >
-              <Ionicons name="notifications-outline" size={22} color={Colors.text} />
-            </TouchableOpacity>
-          </View>
 
-          {!hasOrg ? (
-            <View style={styles.heroContextRow}>
-              <View style={styles.heroContextLeft}>
-                <View style={styles.heroBadgeIconWrap}>
-                  <Ionicons name="compass-outline" size={20} color="#C2410C" />
-                </View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.heroContextTitle}>Independent explorer</Text>
-                  <Text style={styles.heroContextHint} numberOfLines={2}>
-                    Tap the info button for how workplace networks work.
-                  </Text>
-                </View>
-              </View>
+            <View style={styles.heroRightActions}>
               <TouchableOpacity
-                style={styles.heroInfoBtn}
-                onPress={showExplorerInfo}
-                hitSlop={10}
+                style={styles.heroIconBtn}
+                activeOpacity={0.75}
+                onPress={() => router.push("/(tabs)/rides")}
                 accessibilityRole="button"
-                accessibilityLabel="About independent commuting"
+                accessibilityLabel="My rides"
               >
-                <Ionicons name="information-circle-outline" size={26} color="#9A3412" />
+                <Ionicons name="car-outline" size={21} color={Colors.text} />
               </TouchableOpacity>
-            </View>
-          ) : isEnterpriseOrg ? (
-            <View style={styles.heroContextRow}>
-              <View style={styles.heroContextLeft}>
-                <View style={styles.heroOrgLogoWrap}>
-                  {orgLogoPublicUrl ? (
-                    <Image source={{ uri: orgLogoPublicUrl }} style={styles.heroOrgLogo} />
-                  ) : (
-                    <View style={styles.heroOrgLogoPlaceholder}>
-                      <Ionicons name="business" size={22} color={Colors.primaryDark} />
-                    </View>
-                  )}
-                </View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.heroOrgNameEnterprise} numberOfLines={2}>
-                    {org!.name}
-                  </Text>
-                  <Text style={styles.heroOrgSubEnterprise} numberOfLines={1}>
-                    Workplace network
-                  </Text>
-                </View>
-              </View>
               <TouchableOpacity
-                style={styles.heroInfoBtn}
-                onPress={showWorkplaceInfo}
-                hitSlop={10}
+                style={styles.heroIconBtn}
+                activeOpacity={0.75}
+                onPress={() => router.push("/(tabs)/profile/activity")}
                 accessibilityRole="button"
-                accessibilityLabel="Workplace details"
+                accessibilityLabel="Activity and messages"
               >
-                <Ionicons name="information-circle-outline" size={26} color={Colors.primaryDark} />
+                <Ionicons name="notifications-outline" size={21} color={Colors.text} />
               </TouchableOpacity>
+              {!hasOrg ? (
+                <Pressable
+                  style={({ pressed }) => [styles.heroLogoPressable, pressed && styles.heroLogoPressablePressed]}
+                  onPress={showExplorerInfo}
+                  accessibilityRole="button"
+                  accessibilityLabel="About independent commuting"
+                >
+                  <View style={styles.heroBadgeIconWrap}>
+                    <Ionicons name="compass-outline" size={20} color="#C2410C" />
+                  </View>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={({ pressed }) => [styles.heroLogoPressable, pressed && styles.heroLogoPressablePressed]}
+                  onPress={isEnterpriseOrg ? showWorkplaceInfo : showCommunityNetworkInfo}
+                  accessibilityRole="button"
+                  accessibilityLabel={isEnterpriseOrg ? "Workplace details" : "Network details"}
+                >
+                  <View style={styles.heroOrgLogoWrap}>
+                    {orgLogoPublicUrl ? (
+                      <Image source={{ uri: orgLogoPublicUrl }} style={styles.heroOrgLogo} />
+                    ) : isEnterpriseOrg ? (
+                      <View style={styles.heroOrgLogoPlaceholder}>
+                        <Ionicons name="business" size={22} color={Colors.primaryDark} />
+                      </View>
+                    ) : (
+                      <View style={[styles.heroOrgLogoPlaceholder, styles.heroOrgLogoPlaceholderCommunity]}>
+                        <Ionicons name="people-outline" size={22} color={Colors.info} />
+                      </View>
+                    )}
+                  </View>
+                </Pressable>
+              )}
             </View>
-          ) : (
-            <View style={styles.heroContextRow}>
-              <View style={styles.heroContextLeft}>
-                <View style={styles.heroOrgLogoWrap}>
-                  {orgLogoPublicUrl ? (
-                    <Image source={{ uri: orgLogoPublicUrl }} style={styles.heroOrgLogo} />
-                  ) : (
-                    <View style={[styles.heroOrgLogoPlaceholder, styles.heroOrgLogoPlaceholderCommunity]}>
-                      <Ionicons name="people-outline" size={22} color={Colors.info} />
-                    </View>
-                  )}
-                </View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.heroOrgNameCommunity} numberOfLines={2}>
-                    {org!.name}
-                  </Text>
-                  <Text style={styles.heroOrgSubCommunity} numberOfLines={1}>
-                    Community network
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={styles.heroInfoBtn}
-                onPress={showCommunityNetworkInfo}
-                hitSlop={10}
-                accessibilityRole="button"
-                accessibilityLabel="Network details"
-              >
-                <Ionicons name="information-circle-outline" size={26} color={Colors.info} />
-              </TouchableOpacity>
-            </View>
-          )}
+          </View>
         </View>
 
         {passengerPickupEnabled &&
@@ -1539,10 +1539,9 @@ const styles = StyleSheet.create({
   },
   heroHeader: {
     marginHorizontal: -Spacing.xl,
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.xl,
-    marginBottom: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+    marginBottom: Spacing.lg,
     borderBottomLeftRadius: BorderRadius.xl,
     borderBottomRightRadius: BorderRadius.xl,
     borderWidth: 1,
@@ -1560,67 +1559,125 @@ const styles = StyleSheet.create({
     backgroundColor: "#EFF6FF",
     borderColor: "#BFDBFE",
   },
-  headerRow: {
+  heroTopBand: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: Spacing.xs,
+    gap: Spacing.md,
   },
-  greeting: { fontSize: FontSize.base, color: Colors.textSecondary },
+  heroAvatarBtn: {
+    flexShrink: 0,
+  },
+  heroAvatarImg: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: Colors.surface,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.95)",
+  },
+  heroAvatarPlaceholder: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: "rgba(255,255,255,0.88)",
+    borderWidth: 1.5,
+    borderColor: "rgba(0,0,0,0.06)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  heroTextBlock: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "center",
+  },
+  heroGreetingCaps: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 10,
+    letterSpacing: 1.6,
+    color: Colors.textSecondary,
+    marginBottom: 2,
+  },
   heroGreetingExplorer: { color: "#A16207" },
   heroGreetingEnterprise: { color: "#166534" },
   heroGreetingCommunity: { color: "#475569" },
-  name: {
-    fontSize: FontSize["2xl"],
-    fontWeight: FontWeight.bold,
+  heroNameDisplay: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 22,
+    letterSpacing: -0.4,
+    lineHeight: 28,
     color: Colors.text,
-    letterSpacing: -0.3,
   },
   heroNameExplorer: { color: "#7C2D12" },
   heroNameEnterprise: { color: "#14532D" },
   heroNameCommunity: { color: "#0F172A" },
-  bellBtnHero: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.92)",
+  heroOrgLineExplorer: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    color: "#9A3412",
+    marginTop: 2,
+  },
+  heroOrgLineRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    flexWrap: "nowrap",
+    marginTop: 2,
+    minWidth: 0,
+  },
+  heroOrgLineNameEnt: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+    color: "#14532D",
+    flexShrink: 1,
+  },
+  heroOrgLineKindEnt: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    color: "#166534",
+    flexShrink: 0,
+  },
+  heroOrgLineNameCom: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+    color: "#0F172A",
+    flexShrink: 1,
+  },
+  heroOrgLineKindCom: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    color: "#2563EB",
+    flexShrink: 0,
+  },
+  heroRightActions: {
+    flexShrink: 0,
+    alignItems: "flex-end",
+    gap: 8,
+  },
+  heroIconBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "rgba(255,255,255,0.94)",
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.06)",
+    borderColor: "rgba(0,0,0,0.05)",
   },
-  heroContextRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: Spacing.md,
-    gap: Spacing.sm,
+  heroLogoPressable: {
+    borderRadius: BorderRadius.md + 2,
   },
-  heroContextLeft: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.md,
-    minWidth: 0,
+  heroLogoPressablePressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.97 }],
   },
   heroBadgeIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "#FFEDD5",
     borderWidth: 1,
     borderColor: "#FDBA74",
     justifyContent: "center",
     alignItems: "center",
-  },
-  heroContextTitle: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold,
-    color: "#9A3412",
-  },
-  heroContextHint: {
-    fontSize: FontSize.xs,
-    color: "#A16207",
-    marginTop: 2,
-    lineHeight: 16,
   },
   heroOrgLogoWrap: {
     width: 48,
@@ -1640,34 +1697,6 @@ const styles = StyleSheet.create({
   },
   heroOrgLogoPlaceholderCommunity: {
     backgroundColor: "#DBEAFE",
-  },
-  heroOrgNameEnterprise: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: "#14532D",
-    letterSpacing: -0.2,
-  },
-  heroOrgSubEnterprise: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
-    color: "#166534",
-    marginTop: 2,
-  },
-  heroOrgNameCommunity: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: "#0F172A",
-    letterSpacing: -0.2,
-  },
-  heroOrgSubCommunity: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
-    color: "#2563EB",
-    marginTop: 2,
-  },
-  heroInfoBtn: {
-    padding: Spacing.xs,
-    borderRadius: BorderRadius.full,
   },
   roleWrap: {
     marginBottom: 0,

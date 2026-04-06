@@ -39,7 +39,7 @@ export const NOTIFICATION_PREFERENCE_CATALOG: NotificationPreferenceDef[] = [
     id: "messages",
     icon: "chatbubble-outline",
     title: "Messages",
-    subtitle: "When a co-commuter sends you a message",
+    subtitle: "Ride chat and message-related alerts from co-commuters",
     defaultEnabled: true,
   },
   {

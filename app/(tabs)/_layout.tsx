@@ -1,35 +1,21 @@
 import { View, TouchableOpacity, Text, StyleSheet } from "react-native";
 import { Tabs, useRouter } from "expo-router";
+import { useFonts } from "expo-font";
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+} from "@expo-google-fonts/inter";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
 import { Colors, FontSize, FontWeight, BorderRadius, Shadow, Spacing } from "@/constants/theme";
 
-type TabIcon = keyof typeof Ionicons.glyphMap;
-
-const tabs: {
-  name: string;
-  title: string;
-  icon: TabIcon;
-  iconFocused: TabIcon;
-}[] = [
-  {
-    name: "index",
-    title: "Home",
-    icon: "home-outline",
-    iconFocused: "home",
-  },
-  {
-    name: "rides",
-    title: "My Rides",
-    icon: "car-outline",
-    iconFocused: "car",
-  },
-  {
-    name: "profile",
-    title: "Profile",
-    icon: "person-outline",
-    iconFocused: "person",
-  },
+const tabs: { name: string; title: string }[] = [
+  { name: "index", title: "Home" },
+  { name: "rides", title: "My Rides" },
+  { name: "messages", title: "Messages" },
+  { name: "profile", title: "Profile" },
 ];
 
 function AdminReturnToDashboard() {
@@ -51,53 +37,44 @@ function AdminReturnToDashboard() {
 }
 
 export default function TabsLayout() {
+  const [fontsLoaded] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+  });
+
+  if (!fontsLoaded) {
+    return <View style={styles.fontBoot} />;
+  }
+
   return (
     <View style={{ flex: 1 }}>
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: Colors.primary,
-        tabBarInactiveTintColor: Colors.textTertiary,
-        tabBarLabelStyle: {
-          fontSize: FontSize.xs,
-          fontWeight: FontWeight.medium,
-        },
-        tabBarStyle: {
-          backgroundColor: Colors.surface,
-          borderTopColor: Colors.borderLight,
-          height: 88,
-          paddingTop: 8,
-          paddingBottom: 28,
-        },
-      }}
-    >
-      {tabs.map((tab) => (
-        <Tabs.Screen
-          key={tab.name}
-          name={tab.name}
-          options={{
-            title: tab.title,
-            tabBarIcon: ({ focused, color, size }) => (
-              <Ionicons
-                name={focused ? tab.iconFocused : tab.icon}
-                size={size}
-                color={color}
-              />
-            ),
-          }}
-        />
-      ))}
-    </Tabs>
-    <AdminReturnToDashboard />
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarStyle: { display: "none", height: 0 },
+          tabBarItemStyle: { height: 0, width: 0 },
+        }}
+      >
+        {tabs.map((tab) => (
+          <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.title }} />
+        ))}
+      </Tabs>
+      <AdminReturnToDashboard />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fontBoot: {
+    flex: 1,
+    backgroundColor: Colors.surface,
+  },
   adminFab: {
     position: "absolute",
     right: Spacing.base,
-    bottom: 92,
+    bottom: 24,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,

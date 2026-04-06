@@ -125,7 +125,7 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
     setLoading(false);
     if (insertError) {
       if (insertError.code === "23505") {
-        setError("That email is already on the list — we'll be in touch.");
+        setError("That email is already on the list. We'll be in touch.");
       } else {
         setError(insertError.message || "Something went wrong. Try again.");
       }

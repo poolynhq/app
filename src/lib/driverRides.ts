@@ -5,12 +5,14 @@ export type DriverUpcomingRide = {
   departAt: string;
   status: string;
   direction: string;
+  origin: unknown;
+  destination: unknown;
 };
 
 export async function listMyUpcomingRidesAsDriver(driverId: string): Promise<DriverUpcomingRide[]> {
   const { data, error } = await supabase
     .from("rides")
-    .select("id, depart_at, status, direction")
+    .select("id, depart_at, status, direction, origin, destination")
     .eq("driver_id", driverId)
     .in("status", ["scheduled", "active"])
     .order("depart_at", { ascending: true });
@@ -22,5 +24,7 @@ export async function listMyUpcomingRidesAsDriver(driverId: string): Promise<Dri
     departAt: r.depart_at,
     status: r.status,
     direction: r.direction,
+    origin: r.origin,
+    destination: r.destination,
   }));
 }

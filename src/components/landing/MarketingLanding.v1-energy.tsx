@@ -25,7 +25,7 @@ import {
   Landing,
   LandingGradients,
   LandingWebShadow,
-} from "@/constants/landingTheme";
+} from "@/constants/landingTheme.v1-energy";
 import { LandingFont } from "@/constants/landingTypography";
 import { LandingIcon } from "@/components/landing/LandingIcon";
 import { WaitlistModal } from "@/components/landing/WaitlistModal";
@@ -740,7 +740,7 @@ const styles = StyleSheet.create({
   logoMark: {
     width: 36,
     height: 36,
-    borderRadius: 12,
+    borderRadius: 10,
     backgroundColor: Landing.forest,
     alignItems: "center",
     justifyContent: "center",
@@ -801,11 +801,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.45)",
+    borderColor: "rgba(255,255,255,0.35)",
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: BorderRadius.full,
-    backgroundColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(0,0,0,0.15)",
   },
   badgeText: {
     fontFamily: LandingFont.bodySemi,
@@ -849,7 +849,7 @@ const styles = StyleSheet.create({
     backgroundColor: Landing.teal,
     paddingHorizontal: 24,
     paddingVertical: 15,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     ...Platform.select({
       web: { boxShadow: LandingWebShadow.heroPrimary } as object,
       default: {},
@@ -865,8 +865,8 @@ const styles = StyleSheet.create({
     borderColor: Landing.ghostBorder,
     paddingHorizontal: 24,
     paddingVertical: 15,
-    borderRadius: BorderRadius.xl,
-    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: BorderRadius.lg,
+    backgroundColor: "rgba(0,0,0,0.12)",
   },
   heroGhostText: {
     fontFamily: LandingFont.bodySemi,
@@ -986,7 +986,7 @@ const styles = StyleSheet.create({
     minWidth: Platform.OS === "web" ? 260 : undefined,
     flexGrow: 1,
     backgroundColor: Landing.white,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     padding: Spacing.xl,
     borderWidth: 1,
     borderColor: Landing.tealLine,
@@ -1056,7 +1056,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     alignItems: "center",
     backgroundColor: Landing.white,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     padding: Spacing.xl,
     borderWidth: 1,
     borderColor: Landing.tealLine,
@@ -1103,8 +1103,8 @@ const styles = StyleSheet.create({
     width: Platform.OS === "web" ? "31%" : "100%",
     minWidth: Platform.OS === "web" ? 240 : undefined,
     flexGrow: 1,
-    backgroundColor: "rgba(255,255,255,0.1)",
-    borderRadius: BorderRadius.xl,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: BorderRadius.lg,
     padding: Spacing.xl,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
@@ -1134,7 +1134,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     backgroundColor: Landing.pageBg,
     padding: Spacing.lg,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
   },
   commMiniTitle: {
     fontFamily: LandingFont.displaySemi,
@@ -1232,7 +1232,7 @@ const styles = StyleSheet.create({
     borderColor: Landing.tealDark,
     paddingHorizontal: 20,
     paddingVertical: 12,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     backgroundColor: Landing.outlineTint,
   },
   secondaryOutlineText: {
@@ -1331,7 +1331,7 @@ const styles = StyleSheet.create({
     backgroundColor: Landing.teal,
     paddingHorizontal: 32,
     paddingVertical: 15,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     ...Platform.select({
       web: { boxShadow: LandingWebShadow.finalCta } as object,
       default: {},

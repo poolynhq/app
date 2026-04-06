@@ -71,7 +71,7 @@ function toneStyle(tone: LandingIconTone): {
       return {
         bg: Landing.onForestIconBg,
         border: undefined,
-        color: Landing.tealBright,
+        color: Landing.tealVivid,
       };
     default:
       return {

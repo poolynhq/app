@@ -13,7 +13,6 @@ export default function ProfileLayout() {
         },
         headerTintColor: Colors.primary,
         headerShadowVisible: false,
-        headerBackTitleVisible: false,
       }}
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />
