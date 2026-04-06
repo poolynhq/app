@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Keyboard,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -26,6 +25,7 @@ import {
   formatWaitlistSignupError,
   logWaitlistSignupFailure,
 } from "@/lib/waitlistSignupErrors";
+import { waitlistWorkEmailRejectReason } from "@/constants/consumerEmailDomains";
 import { markWaitlistJoinedInSession } from "@/lib/waitlistSessionFlags";
 import {
   submitWaitlistSignup,
@@ -58,10 +58,10 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  /** Shown on success screen (normalized); avoids empty display after reset timing issues. */
+  const [confirmedEmail, setConfirmedEmail] = useState("");
   const [metroFocused, setMetroFocused] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  /** Web-only honeypot; if filled, treat as bot and show success without inserting. */
-  const [honeypot, setHoneypot] = useState("");
   const blurMetroTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -86,9 +86,9 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
     setLoading(false);
     setError(null);
     setDone(false);
+    setConfirmedEmail("");
     setMetroFocused(false);
     setSuggestions([]);
-    setHoneypot("");
   }
 
   function handleClose() {
@@ -119,12 +119,13 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
 
   async function onSubmit() {
     setError(null);
-    if (Platform.OS === "web" && honeypot.trim() !== "") {
-      setDone(true);
-      return;
-    }
     if (!basicEmailOk(email)) {
       setError("Please enter a valid email address.");
+      return;
+    }
+    const workErr = waitlistWorkEmailRejectReason(email);
+    if (workErr) {
+      setError(workErr);
       return;
     }
     setLoading(true);
@@ -152,6 +153,7 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
       return;
     }
     markWaitlistJoinedInSession();
+    setConfirmedEmail(email.trim().toLowerCase());
     setDone(true);
   }
 
@@ -186,10 +188,13 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
               <View style={styles.successBlock}>
                 <Ionicons name="checkmark-circle" size={48} color={Colors.primary} />
                 <Text style={styles.successTitle}>You&apos;re on the list</Text>
-                <Text style={styles.successBody}>
-                  We&apos;ll email you when Poolyn opens up. Welcome aboard.
+                <Text style={styles.successEmail} selectable>
+                  {confirmedEmail}
                 </Text>
-                <Pressable style={styles.primaryBtn} onPress={handleClose}>
+                <Text style={styles.successBody}>
+                  We&apos;ll email this address when Poolyn opens up. Welcome aboard.
+                </Text>
+                <Pressable style={styles.successCloseBtn} onPress={handleClose}>
                   <Text style={styles.primaryBtnText}>Close</Text>
                 </Pressable>
               </View>
@@ -200,17 +205,6 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
                   Use your company address; personal inboxes (Gmail, Outlook,
                   iCloud, etc.) cannot join the waitlist.
                 </Text>
-                {Platform.OS === "web" ? (
-                  <TextInput
-                    value={honeypot}
-                    onChangeText={setHoneypot}
-                    style={styles.honeypot}
-                    autoComplete="off"
-                    importantForAccessibility="no"
-                    accessibilityElementsHidden
-                    tabIndex={-1}
-                  />
-                ) : null}
                 <TextInput
                   style={styles.input}
                   placeholder="you@company.com"
@@ -351,14 +345,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
   labelFirst: { marginTop: 0 },
-  honeypot: {
-    position: "absolute",
-    opacity: 0,
-    height: 1,
-    width: 1,
-    overflow: "hidden",
-    zIndex: -1,
-  },
   hint: {
     fontFamily: LandingFont.body,
     fontSize: FontSize.xs,
@@ -442,13 +428,25 @@ const styles = StyleSheet.create({
     color: Landing.white,
     fontSize: FontSize.base,
   },
-  successBlock: { alignItems: "center", paddingVertical: Spacing.xl },
+  successBlock: {
+    alignItems: "center",
+    paddingVertical: Spacing.xl,
+    width: "100%",
+  },
   successTitle: {
     fontFamily: LandingFont.displayBold,
     fontSize: FontSize.xl,
     color: Landing.ink,
     marginTop: Spacing.md,
     letterSpacing: -0.3,
+  },
+  successEmail: {
+    fontFamily: LandingFont.bodySemi,
+    fontSize: FontSize.base,
+    color: Landing.forest,
+    textAlign: "center",
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.md,
   },
   successBody: {
     fontFamily: LandingFont.body,
@@ -458,5 +456,17 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
     lineHeight: 24,
     paddingHorizontal: Spacing.sm,
+  },
+  successCloseBtn: {
+    marginTop: Spacing.xl,
+    backgroundColor: Landing.forest,
+    borderRadius: BorderRadius.lg,
+    paddingVertical: 15,
+    paddingHorizontal: Spacing["2xl"],
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "stretch",
+    width: "100%",
+    minHeight: 48,
   },
 });
