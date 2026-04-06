@@ -8,7 +8,8 @@ export type LandingIconTone =
   | "surface"
   | "surfaceOutline"
   | "onDark"
-  | "onForest";
+  | "onForest"
+  | "mintTile";
 
 type Props = {
   name: IonName;
@@ -65,13 +66,19 @@ function toneStyle(tone: LandingIconTone): {
       return {
         bg: Landing.onDarkFill,
         border: Landing.onDarkBorder,
-        color: Landing.tealOnDark,
+        color: Landing.orange,
       };
     case "onForest":
       return {
         bg: Landing.onForestIconBg,
         border: undefined,
-        color: Landing.tealVivid,
+        color: Landing.white,
+      };
+    case "mintTile":
+      return {
+        bg: Landing.mintSurface,
+        border: undefined,
+        color: Landing.forest,
       };
     default:
       return {

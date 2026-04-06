@@ -265,7 +265,7 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
                   disabled={loading}
                 >
                   {loading ? (
-                    <ActivityIndicator color={Landing.forestDeep} />
+                    <ActivityIndicator color={Landing.white} />
                   ) : (
                     <Text style={styles.primaryBtnText}>Join the waitlist</Text>
                   )}
@@ -328,14 +328,14 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadius.md,
+    borderColor: Landing.tealLine,
+    borderRadius: BorderRadius.lg,
     paddingHorizontal: Spacing.base,
     paddingVertical: 14,
     fontSize: FontSize.base,
     fontFamily: LandingFont.body,
     color: Landing.ink,
-    backgroundColor: Colors.inputBackground,
+    backgroundColor: Landing.mintInput,
   },
   suggestionsBox: {
     marginTop: 4,
@@ -387,7 +387,7 @@ const styles = StyleSheet.create({
   },
   primaryBtn: {
     marginTop: Spacing.xl,
-    backgroundColor: Landing.teal,
+    backgroundColor: Landing.forest,
     borderRadius: BorderRadius.lg,
     paddingVertical: 15,
     alignItems: "center",
@@ -395,7 +395,7 @@ const styles = StyleSheet.create({
   primaryBtnDisabled: { opacity: 0.7 },
   primaryBtnText: {
     fontFamily: LandingFont.displaySemi,
-    color: Landing.forestDeep,
+    color: Landing.white,
     fontSize: FontSize.base,
   },
   successBlock: { alignItems: "center", paddingVertical: Spacing.xl },

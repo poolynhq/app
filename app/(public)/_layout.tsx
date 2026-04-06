@@ -8,10 +8,10 @@ import {
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
 import {
-  SpaceGrotesk_500Medium,
-  SpaceGrotesk_600SemiBold,
-  SpaceGrotesk_700Bold,
-} from "@expo-google-fonts/space-grotesk";
+  PlusJakartaSans_500Medium,
+  PlusJakartaSans_600SemiBold,
+  PlusJakartaSans_700Bold,
+} from "@expo-google-fonts/plus-jakarta-sans";
 import { Landing } from "@/constants/landingTheme";
 
 export default function PublicLayout() {
@@ -20,9 +20,9 @@ export default function PublicLayout() {
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
-    SpaceGrotesk_500Medium,
-    SpaceGrotesk_600SemiBold,
-    SpaceGrotesk_700Bold,
+    PlusJakartaSans_500Medium,
+    PlusJakartaSans_600SemiBold,
+    PlusJakartaSans_700Bold,
   });
 
   if (!loaded) {

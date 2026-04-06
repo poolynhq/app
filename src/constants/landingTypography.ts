@@ -1,5 +1,5 @@
 /**
- * Lovable stack: Inter (body) + Space Grotesk (headings).
+ * Marketing landing: Inter (body) + Plus Jakarta Sans (headlines), per design mock.
  * Loaded in app/(public)/_layout.tsx via useFonts.
  */
 export const LandingFont = {
@@ -7,7 +7,7 @@ export const LandingFont = {
   bodyMedium: "Inter_500Medium",
   bodySemi: "Inter_600SemiBold",
   bodyBold: "Inter_700Bold",
-  displayMedium: "SpaceGrotesk_500Medium",
-  displaySemi: "SpaceGrotesk_600SemiBold",
-  displayBold: "SpaceGrotesk_700Bold",
+  displayMedium: "PlusJakartaSans_500Medium",
+  displaySemi: "PlusJakartaSans_600SemiBold",
+  displayBold: "PlusJakartaSans_700Bold",
 } as const;
