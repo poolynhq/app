@@ -22,8 +22,8 @@ if (__DEV__) {
 
 SplashScreen.preventAutoHideAsync();
 
-/** Real browser path on web (expo-router pathname can lag behind on static export). */
-function getWebResolvedPath(): string {
+/** Canonical path from the address bar (source of truth on web static export). */
+function getBrowserPathname(): string {
   if (Platform.OS !== "web" || typeof window === "undefined") return "";
   let p = window.location.pathname || "/";
   if (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
@@ -31,6 +31,11 @@ function getWebResolvedPath(): string {
     p = p.replace(/\/index\.html$/i, "") || "/";
   }
   return p || "/";
+}
+
+function normalizeRouterPath(path: string): string {
+  const p = (path || "/").replace(/\/$/, "") || "/";
+  return p;
 }
 
 function NavigationGuard() {
@@ -77,12 +82,14 @@ function NavigationGuard() {
     const inPasswordReset = inAuthGroup && segments.at(1) === "reset-password";
     const inOnboardingGroup = segments[0] === "(onboarding)";
     const inPublicGroup = segments[0] === "(public)";
-    const webPath =
-      Platform.OS === "web"
-        ? getWebResolvedPath() || (pathname.replace(/\/$/, "") || "/")
-        : "";
+    const browserPath = getBrowserPathname();
+    const routerPath = normalizeRouterPath(pathname);
     const onPublicWebMarketing =
-      Platform.OS === "web" && (webPath === "/" || webPath === "/terms");
+      Platform.OS === "web" &&
+      (browserPath === "/" ||
+        browserPath === "/terms" ||
+        routerPath === "/" ||
+        routerPath === "/terms");
     const inBusinessSetup = inAuthGroup && segments.at(1) === "business-sign-up";
     const nextParam = Array.isArray(searchParams.next)
       ? searchParams.next[0]
@@ -90,7 +97,36 @@ function NavigationGuard() {
     const wantsBusinessSetup = nextParam === "business-sign-up";
 
     if (!session) {
-      // Web/static: segments can be unset before hydration; `/` may never expose `(public)` in segments.
+      /*
+       * Web marketing: `app/index.tsx` often yields segments like ["index"], not "(public)".
+       * expo-router pathname can also hydrate as /sign-in while the address bar is still /.
+       * Never send anonymous visitors on / or /terms to sign-in; reconcile router to the URL.
+       */
+      if (Platform.OS === "web") {
+        const bar = browserPath;
+        if (bar === "/" || bar === "/terms") {
+          if (bar === "/" && routerPath !== "/" && routerPath !== "/terms") {
+            router.replace("/");
+            return;
+          }
+          if (bar === "/terms" && routerPath !== "/terms") {
+            router.replace("/(public)/terms");
+            return;
+          }
+          const authChild = segments.at(1);
+          if (
+            inAuthGroup &&
+            authChild &&
+            MARKETING_BLOCKED_AUTH_SEGMENTS.has(authChild) &&
+            isAccountSignupBlockedOnWeb()
+          ) {
+            router.replace("/");
+            return;
+          }
+          return;
+        }
+      }
+
       if (!segments[0] && !onPublicWebMarketing) return;
 
       const authChild = segments.at(1);
