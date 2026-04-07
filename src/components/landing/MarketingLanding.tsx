@@ -1,5 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ImageSourcePropType } from "react-native";
 import {
+  Animated,
+  Easing,
+  Image,
   ImageBackground,
   LayoutChangeEvent,
   Linking,
@@ -38,11 +42,108 @@ import type { WaitlistIntent } from "@/lib/waitlistSignup";
 type SectionKey = "how" | "features" | "impact" | "community" | "orgs";
 
 const heroBackground = require("../../../assets/hero-bg-poolyn.jpg");
+const poolynLogo = require("../../../assets/poolyn_loyo.png");
+const poolynFavicon = require("../../../assets/poolyn_favicon.png");
+
+/** Wordmark width ÷ height (horizontal logo); keeps layout stable if asset is replaced. */
+const POOLYN_LOGO_ASPECT = 3.2;
+
+/** Centered content column on large screens (full-bleed backgrounds stay edge-to-edge). */
+const LANDING_CONTENT_MAX = 1220;
+
+/**
+ * Landing layout knobs — change values here (this file only).
+ *
+ * Footer (car strip ↔ quick links):
+ * - FOOTER_LAYOUT_SWEEP_BAND_PAD_V — padding above/below the moving car row inside the green band
+ * - FOOTER_LAYOUT_INNER_PAD_TOP — space between that band and the “Home · How it works…” row
+ *
+ * Sections (HOW IT WORKS, etc.):
+ * - SECTION_BLOCK_PAD_V — vertical padding for each white/mint block
+ * - SECTION_EYEBROW_MARGIN_BOTTOM — gap under uppercase labels before the big heading
+ *
+ * Community (animation vs copy):
+ * - COMMUNITY_SIDE_BY_SIDE_MIN_WIDTH — only at this width+ do copy + animation sit side-by-side; below = stacked (avoids overlap)
+ */
+const FOOTER_LAYOUT_SWEEP_BAND_PAD_V = 6;
+const FOOTER_LAYOUT_INNER_PAD_TOP = 0;
+const SECTION_BLOCK_PAD_V = 60;
+const SECTION_EYEBROW_MARGIN_BOTTOM = 8;
+const COMMUNITY_SIDE_BY_SIDE_MIN_WIDTH = 1200;
+
+const FOOTER_SWEEP_ICON = 60;
+const FOOTER_SWEEP_DURATION_MS = 17000;
+
+function FooterFaviconSweep({
+  sweepWidth,
+  icon,
+  onPress,
+}: {
+  /** Viewport (or window) width so the car travels edge-to-edge, not only the centered column. */
+  sweepWidth: number;
+  icon: ImageSourcePropType;
+  onPress: () => void;
+}) {
+  const progress = useRef(new Animated.Value(0)).current;
+  const useNativeDriver = Platform.OS !== "web";
+
+  useEffect(() => {
+    if (sweepWidth <= 0) return;
+    progress.setValue(0);
+    const loop = Animated.loop(
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: FOOTER_SWEEP_DURATION_MS,
+        easing: Easing.linear,
+        useNativeDriver,
+      })
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      progress.setValue(0);
+    };
+  }, [sweepWidth, progress, useNativeDriver]);
+
+  const margin = FOOTER_SWEEP_ICON + 4;
+  const translateX = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-margin, sweepWidth + margin],
+  });
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={styles.footerSweepOuter}
+      accessibilityRole="button"
+      accessibilityLabel="Poolyn, scroll to top"
+    >
+      <View style={styles.footerSweepTrack}>
+        {sweepWidth > 0 ? (
+          <Animated.View
+            style={[
+              styles.footerSweepSprite,
+              { transform: [{ translateX }] },
+            ]}
+          >
+            <Image
+              source={icon}
+              style={styles.footerFaviconImg}
+              resizeMode="contain"
+            />
+          </Animated.View>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
 
 export default function MarketingLanding() {
   const { width } = useWindowDimensions();
   const isWide = width >= 880;
   const isMedium = width >= 560;
+  /** Community side-by-side only when there is room; avoids squeezed/overlapping columns. */
+  const isCommunityWide = width >= COMMUNITY_SIDE_BY_SIDE_MIN_WIDTH;
   const scrollRef = useRef<ScrollView>(null);
   const [ys, setYs] = useState<Record<SectionKey, number>>({
     how: 0,
@@ -73,18 +174,36 @@ export default function MarketingLanding() {
     setWaitlistOpen(true);
   }
 
-  const contentPad = isWide ? 56 : 24;
-  // Web: max-width column must be centered; otherwise it stays left with empty space on the right.
-  const webContentLayout =
+  const contentPad = isWide ? 40 : 24;
+  const layoutWidth =
+    Platform.OS === "web" ? Math.min(width, LANDING_CONTENT_MAX) : width;
+
+  const heroLogoSize = useMemo(() => {
+    // Leave room for Sign in + CTA (and center links when wide) so the bar
+    // doesn’t wrap into a tall block that overlaps the hero copy below.
+    const reserveForNav = isWide ? 400 : isMedium ? 248 : 200;
+    const widthCap = isWide ? 220 : 168;
+    const maxW = Math.max(
+      96,
+      Math.min(widthCap, layoutWidth - 2 * contentPad - reserveForNav)
+    );
+    const w = maxW;
+    return { width: Math.round(w), height: Math.round(w / POOLYN_LOGO_ASPECT) };
+  }, [layoutWidth, isWide, isMedium, contentPad]);
+
+  /** Absolute nav doesn’t consume layout height; pad hero copy below wrapped nav. */
+  const heroContentPadTop =
     Platform.OS === "web"
       ? isWide
-        ? ({
-            maxWidth: 1140,
-            width: "100%",
-            alignSelf: "center",
-          } as const)
-        : ({ width: "100%" } as const)
-      : null;
+        ? 120
+        : 172
+      : isWide
+        ? 132
+        : 184;
+
+  // Web: full-width content (no narrow centered column).
+  const webContentLayout =
+    Platform.OS === "web" ? ({ width: "100%", alignSelf: "stretch" } as const) : null;
 
   return (
     <>
@@ -109,104 +228,162 @@ export default function MarketingLanding() {
               end={{ x: 1, y: 0.5 }}
               style={StyleSheet.absoluteFillObject}
             />
-            <View style={[styles.heroNav, { paddingHorizontal: contentPad }]}>
-              <View style={styles.navLeft}>
-                <View style={styles.logoMark} accessibilityLabel="Poolyn">
-                  <Ionicons name="leaf" size={18} color={Landing.white} />
+            <View style={styles.heroNavScrimWrap} pointerEvents="none">
+              <LinearGradient
+                colors={LandingGradients.heroNavScrim}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 1 }}
+                style={StyleSheet.absoluteFillObject}
+              />
+            </View>
+            <View style={styles.heroNavOuter}>
+              <View
+                style={[
+                  styles.landingShell,
+                  styles.heroNavInner,
+                  { paddingHorizontal: contentPad },
+                ]}
+              >
+                <View style={styles.navLeft}>
+                  <Pressable
+                    onPress={() =>
+                      scrollRef.current?.scrollTo({ y: 0, animated: true })
+                    }
+                    style={styles.logoHeroLockup}
+                    accessibilityRole="button"
+                    accessibilityLabel="Poolyn, scroll to top"
+                    hitSlop={8}
+                  >
+                    <Image
+                      source={poolynLogo}
+                      style={[
+                        styles.logoHeroImage,
+                        {
+                          width: heroLogoSize.width,
+                          height: heroLogoSize.height,
+                        },
+                      ]}
+                      resizeMode="contain"
+                    />
+                  </Pressable>
                 </View>
-                <Text style={styles.logoOnHero}>Poolyn</Text>
-              </View>
-              {isMedium ? (
-                <View style={styles.navMid}>
-                  <Pressable onPress={() => jump("how")} hitSlop={6}>
-                    <Text style={styles.navLinkOnHero}>How it works</Text>
-                  </Pressable>
-                  <Pressable onPress={() => jump("features")} hitSlop={6}>
-                    <Text style={styles.navLinkOnHero}>Differentiators</Text>
-                  </Pressable>
-                  <Pressable onPress={() => jump("impact")} hitSlop={6}>
-                    <Text style={styles.navLinkOnHero}>Impact</Text>
-                  </Pressable>
-                  <Pressable onPress={() => jump("community")} hitSlop={6}>
-                    <Text style={styles.navLinkOnHero}>Community</Text>
-                  </Pressable>
-                  <Pressable onPress={() => jump("orgs")} hitSlop={6}>
-                    <Text style={styles.navLinkOnHero}>Organizations</Text>
+                {isMedium ? (
+                  <View style={styles.navMid}>
+                    <Pressable onPress={() => jump("how")} hitSlop={6}>
+                      <Text style={styles.navLinkOnHero}>How it works</Text>
+                    </Pressable>
+                    <Pressable onPress={() => jump("features")} hitSlop={6}>
+                      <Text style={styles.navLinkOnHero}>Differentiators</Text>
+                    </Pressable>
+                    <Pressable onPress={() => jump("impact")} hitSlop={6}>
+                      <Text style={styles.navLinkOnHero}>Impact</Text>
+                    </Pressable>
+                    <Pressable onPress={() => jump("community")} hitSlop={6}>
+                      <Text style={styles.navLinkOnHero}>Community</Text>
+                    </Pressable>
+                    <Pressable onPress={() => jump("orgs")} hitSlop={6}>
+                      <Text style={styles.navLinkOnHero}>Organizations</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+                <View style={styles.navRight}>
+                  <Link href="/(auth)/sign-in" asChild>
+                    <Pressable hitSlop={6}>
+                      <Text style={styles.navLinkMutedOnHero}>Sign in</Text>
+                    </Pressable>
+                  </Link>
+                  <Pressable
+                    style={styles.navCta}
+                    onPress={() => openWaitlist()}
+                  >
+                    <Text style={styles.navCtaText}>Join the waitlist</Text>
                   </Pressable>
                 </View>
-              ) : null}
-              <View style={styles.navRight}>
-                <Link href="/(auth)/sign-in" asChild>
-                  <Pressable hitSlop={6}>
-                    <Text style={styles.navLinkMutedOnHero}>Sign in</Text>
-                  </Pressable>
-                </Link>
-                <Pressable
-                  style={styles.navCta}
-                  onPress={() => openWaitlist()}
-                >
-                  <Text style={styles.navCtaText}>Join the waitlist</Text>
-                </Pressable>
               </View>
             </View>
-            <View style={[styles.heroInner, { paddingHorizontal: contentPad }]}>
-              <View style={styles.badgeRow}>
-                <View style={styles.badge}>
-                  <Ionicons name="shield-checkmark-outline" size={15} color={Landing.white} />
-                  <Text style={styles.badgeText}>Verified professionals</Text>
+            <View style={styles.heroMainStretch}>
+              <View
+                style={[
+                  styles.landingShell,
+                  styles.heroInner,
+                  {
+                    paddingHorizontal: contentPad,
+                    paddingTop: heroContentPadTop,
+                  },
+                ]}
+              >
+                <View style={styles.badgeRow}>
+                  <View style={styles.badge}>
+                    <Ionicons name="shield-checkmark-outline" size={15} color={Landing.white} />
+                    <Text style={styles.badgeText}>Verified professionals</Text>
+                  </View>
+                  <View style={styles.badge}>
+                    <Ionicons name="leaf-outline" size={15} color={Landing.white} />
+                    <Text style={styles.badgeText}>Lower carbon commuting</Text>
+                  </View>
                 </View>
-                <View style={styles.badge}>
-                  <Ionicons name="leaf-outline" size={15} color={Landing.white} />
-                  <Text style={styles.badgeText}>Lower carbon commuting</Text>
+                <Text style={styles.heroKicker}>Smart corporate carpooling</Text>
+                <Text
+                  style={[
+                    styles.heroTitle,
+                    isWide && Platform.OS === "web" && styles.heroTitleLgWeb,
+                  ]}
+                >
+                  Stop driving alone.{"\n"}
+                  <Text style={styles.heroTitleAccent}>Start commuting smarter.</Text>
+                </Text>
+                <Text
+                  style={[
+                    styles.heroSub,
+                    isWide && Platform.OS === "web" && styles.heroSubLgWeb,
+                  ]}
+                >
+                  Poolyn connects verified professionals who share routes and
+                  schedules, cutting costs, congestion, and carbon. Aligned by
+                  route. Synced by schedule.
+                </Text>
+                <View style={styles.heroBtnRow}>
+                  <Pressable
+                    style={styles.heroPrimary}
+                    onPress={() => openWaitlist()}
+                  >
+                    <Text style={styles.heroPrimaryText}>Join the waitlist</Text>
+                    <Ionicons name="arrow-forward" size={18} color={Landing.onOrange} />
+                  </Pressable>
+                  <Pressable
+                    style={styles.heroGhost}
+                    onPress={() => jump("how")}
+                  >
+                    <Text style={styles.heroGhostText}>See how it works</Text>
+                  </Pressable>
                 </View>
-              </View>
-              <Text style={styles.heroKicker}>Smart corporate carpooling</Text>
-              <Text style={styles.heroTitle}>
-                Stop driving alone.{"\n"}
-                <Text style={styles.heroTitleAccent}>Start commuting smarter.</Text>
-              </Text>
-              <Text style={styles.heroSub}>
-                Poolyn connects verified professionals who share routes and
-                schedules, cutting costs, congestion, and carbon. Aligned by
-                route. Synced by schedule.
-              </Text>
-              <View style={styles.heroBtnRow}>
-                <Pressable
-                  style={styles.heroPrimary}
-                  onPress={() => openWaitlist()}
-                >
-                  <Text style={styles.heroPrimaryText}>Join the waitlist</Text>
-                  <Ionicons name="arrow-forward" size={18} color={Landing.onOrange} />
-                </Pressable>
-                <Pressable
-                  style={styles.heroGhost}
-                  onPress={() => jump("how")}
-                >
-                  <Text style={styles.heroGhostText}>See how it works</Text>
-                </Pressable>
-              </View>
-              <View style={[styles.metrics, !isWide && styles.metricsStack]}>
-                <Metric num="40%" label="Less commute cost" />
-                <View style={[styles.metricRule, !isWide && styles.metricRuleH]} />
-                <Metric num="3.2t" label="CO₂ saved / rider / yr" />
-                <View style={[styles.metricRule, !isWide && styles.metricRuleH]} />
-                <Metric num="0" label="Awkward cash splits" />
+                <View style={[styles.metrics, !isWide && styles.metricsStack]}>
+                  <Metric num="40%" label="Less commute cost" />
+                  <View style={[styles.metricRule, !isWide && styles.metricRuleH]} />
+                  <Metric num="3.2t" label="CO₂ saved / rider / yr" />
+                  <View style={[styles.metricRule, !isWide && styles.metricRuleH]} />
+                  <Metric num="0" label="Awkward cash splits" />
+                </View>
               </View>
             </View>
           </ImageBackground>
         </View>
 
         {/* How it works */}
-        <View
-          onLayout={(e) => mark("how", e)}
-          style={[styles.sectionLight, { paddingHorizontal: contentPad }]}
-        >
+        <View onLayout={(e) => mark("how", e)} style={styles.sectionBleedWhite}>
+          <View
+            style={[
+              styles.landingShell,
+              styles.sectionPadV,
+              { paddingHorizontal: contentPad },
+            ]}
+          >
           <Text style={[styles.eyebrow, styles.eyebrowCenter]}>How it works</Text>
           <Text style={[styles.sectionH1, styles.sectionH1CenterText]}>
             Four steps to a{" "}
             <Text style={styles.sectionH1Leaf}>smarter commute</Text>
           </Text>
-          <View style={[styles.stepsRow, !isWide && styles.stepsCol]}>
+          <View style={[styles.stepsRow, !isWide && styles.stepsCol, styles.stepsBelowHead]}>
             <Step
               n="01"
               title="Sign up with your work email"
@@ -235,13 +412,18 @@ export default function MarketingLanding() {
               icon="cash-outline"
             />
           </View>
+          </View>
         </View>
 
         {/* Core differentiators (feature grid) */}
-        <View
-          onLayout={(e) => mark("features", e)}
-          style={[styles.sectionAlt, { paddingHorizontal: contentPad }]}
-        >
+        <View onLayout={(e) => mark("features", e)} style={styles.sectionBleedAlt}>
+          <View
+            style={[
+              styles.landingShell,
+              styles.sectionPadV,
+              { paddingHorizontal: contentPad },
+            ]}
+          >
           <Text style={[styles.eyebrow, styles.eyebrowCenter]}>
             Core differentiators
           </Text>
@@ -285,6 +467,7 @@ export default function MarketingLanding() {
               body="Icebreakers, shared music playlists, and light gamification that make rides human."
             />
           </View>
+          </View>
         </View>
 
         {/* Impact */}
@@ -293,7 +476,7 @@ export default function MarketingLanding() {
             colors={LandingGradients.impactBand}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
-            style={[styles.impactBand, { paddingHorizontal: contentPad }]}
+            style={styles.impactBandBleed}
           >
             {Platform.OS === "web" ? (
               <View
@@ -301,6 +484,13 @@ export default function MarketingLanding() {
                 style={[StyleSheet.absoluteFillObject, landingImpactPatternWeb]}
               />
             ) : null}
+            <View
+              style={[
+                styles.landingShell,
+                styles.sectionPadV,
+                { paddingHorizontal: contentPad },
+              ]}
+            >
             <Text style={styles.eyebrowOnDark}>Why it matters</Text>
             <Text style={styles.impactTitle}>
               Stop wasting money.{" "}
@@ -317,16 +507,32 @@ export default function MarketingLanding() {
               <ImpactItem icon="pin-outline" title="Reduce parking hassle" body="Less circling, less stress at the office." />
               <ImpactItem icon="cash-outline" title="Stop paying for empty seats" body="Fair, transparent splits, no awkward Venmo chains." />
             </View>
+            </View>
           </LinearGradient>
         </View>
 
         {/* Community */}
-        <View
-          onLayout={(e) => mark("community", e)}
-          style={[styles.sectionLight, { paddingHorizontal: contentPad }]}
-        >
-          <View style={[styles.commRow, !isWide && styles.commCol]}>
-            <View style={[styles.commCopy, !isWide && styles.commCopyNarrow]}>
+        <View onLayout={(e) => mark("community", e)} style={styles.sectionBleedWhite}>
+          <View
+            style={[
+              styles.landingShell,
+              styles.sectionPadV,
+              { paddingHorizontal: contentPad },
+            ]}
+          >
+          <View
+            style={[
+              styles.commRow,
+              !isCommunityWide && styles.commCol,
+              !isCommunityWide && styles.commColCommunity,
+            ]}
+          >
+            <View
+              style={[
+                styles.commCopy,
+                !isCommunityWide && styles.commCopyNarrow,
+              ]}
+            >
               <Text style={styles.eyebrow}>Community</Text>
               <Text style={styles.sectionH1}>
                 More than a ride.{" "}
@@ -336,7 +542,7 @@ export default function MarketingLanding() {
                 Poolyn turns your commute into a social experience without forcing
                 small talk.
               </Text>
-              {isWide ? (
+              {isCommunityWide ? (
                 <View style={styles.commMiniGrid}>
                   <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
                   <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
@@ -349,12 +555,15 @@ export default function MarketingLanding() {
               colors={LandingGradients.commArt}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={[styles.commArt, !isWide && styles.commArtStacked]}
+              style={[
+                styles.commArt,
+                !isCommunityWide && styles.commArtStacked,
+              ]}
             >
               <CommunityHubAnimation />
               <Text style={styles.commArtCaption}>Your carpool, elevated</Text>
             </LinearGradient>
-            {!isWide ? (
+            {!isCommunityWide ? (
               <View style={[styles.commMiniGrid, styles.commMiniGridBelowArt]}>
                 <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
                 <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
@@ -363,14 +572,25 @@ export default function MarketingLanding() {
               </View>
             ) : null}
           </View>
+          </View>
         </View>
 
         {/* Organizations */}
-        <View
-          onLayout={(e) => mark("orgs", e)}
-          style={[styles.sectionAlt, { paddingHorizontal: contentPad }]}
-        >
-          <View style={[styles.orgRow, !isWide && styles.commCol]}>
+        <View onLayout={(e) => mark("orgs", e)} style={styles.sectionBleedAlt}>
+          <View
+            style={[
+              styles.landingShell,
+              styles.sectionPadV,
+              { paddingHorizontal: contentPad },
+            ]}
+          >
+          <View
+            style={[
+              styles.orgRow,
+              !isWide && styles.commCol,
+              !isWide && styles.orgColNarrow,
+            ]}
+          >
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrow}>For organizations</Text>
               <Text style={[styles.sectionH1, styles.sectionH1ForestAll]}>
@@ -418,7 +638,18 @@ export default function MarketingLanding() {
                 </Text>
               )}
             </View>
-            <View style={styles.dashCard}>
+            <View
+              style={[
+                styles.orgDashWrap,
+                !isWide && styles.orgDashWrapStacked,
+              ]}
+            >
+            <View
+              style={[
+                styles.dashCard,
+                !isWide && styles.dashCardNarrow,
+              ]}
+            >
               <View style={styles.dashAccent} />
               <View style={styles.dashTitleRow}>
                 <Text style={styles.dashTitle}>ESG commute snapshot</Text>
@@ -460,11 +691,20 @@ export default function MarketingLanding() {
                 data.
               </Text>
             </View>
+            </View>
+          </View>
           </View>
         </View>
 
         {/* Final CTA */}
-        <View style={[styles.finalBandLight, { paddingHorizontal: contentPad }]}>
+        <View style={styles.finalBleed}>
+          <View
+            style={[
+              styles.landingShell,
+              styles.finalBandInner,
+              { paddingHorizontal: contentPad },
+            ]}
+          >
           <Text style={styles.finalTitleLight}>
             Your commute is already shared. You&apos;re just not using it yet.
           </Text>
@@ -478,12 +718,26 @@ export default function MarketingLanding() {
             <Text style={styles.finalCtaSolidText}>Join the waitlist</Text>
             <Ionicons name="arrow-forward" size={18} color={Landing.white} />
           </Pressable>
+          </View>
         </View>
 
-        <View style={[styles.footer, { paddingHorizontal: contentPad }]}>
-          <Text style={styles.footerMuted}>
-            Launching in Melbourne first.
-          </Text>
+        <View style={styles.footerBleed}>
+          <View style={styles.footerSweepBand}>
+            <FooterFaviconSweep
+              sweepWidth={width}
+              icon={poolynFavicon}
+              onPress={() =>
+                scrollRef.current?.scrollTo({ y: 0, animated: true })
+              }
+            />
+          </View>
+          <View
+            style={[
+              styles.landingShell,
+              styles.footerInner,
+              { paddingHorizontal: contentPad },
+            ]}
+          >
           <View style={styles.footerQuickLinks}>
             <Pressable
               onPress={() =>
@@ -564,6 +818,7 @@ export default function MarketingLanding() {
             </Pressable>
           </View>
           <Text style={styles.footerTag}>Poolyn · smarter commuting for modern teams.</Text>
+          </View>
         </View>
       </ScrollView>
 
@@ -731,12 +986,43 @@ const styles = StyleSheet.create({
     }),
   },
   pageContent: { paddingBottom: Spacing["5xl"] },
-  heroNav: {
+  landingShell: {
+    width: "100%",
+    ...Platform.select({
+      web: {
+        maxWidth: LANDING_CONTENT_MAX,
+        alignSelf: "center",
+      } as object,
+      default: {},
+    }),
+  },
+  sectionBleedWhite: {
+    width: "100%",
+    backgroundColor: Landing.white,
+  },
+  sectionBleedAlt: {
+    width: "100%",
+    backgroundColor: Landing.sectionAlt,
+  },
+  sectionPadV: { paddingVertical: SECTION_BLOCK_PAD_V },
+  heroNavScrimWrap: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 132,
+    zIndex: 1,
+  },
+  heroNavOuter: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     zIndex: 10,
+    width: "100%",
+    alignItems: "center",
+  },
+  heroNavInner: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -745,20 +1031,24 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
     flexWrap: "wrap",
   },
-  navLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-  logoMark: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: Landing.forest,
+  heroMainStretch: {
+    width: "100%",
     alignItems: "center",
-    justifyContent: "center",
   },
-  logoOnHero: {
-    fontFamily: LandingFont.displayBold,
-    fontSize: FontSize.xl,
-    color: Landing.white,
-    letterSpacing: Platform.OS === "web" ? -0.45 : -0.2,
+  navLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  logoHeroLockup: {
+    justifyContent: "center",
+    alignItems: "flex-start",
+    flexShrink: 0,
+    maxWidth: "100%",
+  },
+  logoHeroImage: {
+    ...Platform.select({
+      web: {
+        maxWidth: "100%",
+      } as object,
+      default: {},
+    }),
   },
   navMid: {
     flexDirection: "row",
@@ -769,20 +1059,20 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   navLinkOnHero: {
-    fontFamily: LandingFont.bodyMedium,
-    fontSize: FontSize.sm,
-    color: "rgba(255,255,255,0.88)",
+    fontFamily: LandingFont.bodySemi,
+    fontSize: FontSize.lg,
+    color: "rgba(255,255,255,0.94)",
   },
   navLinkMutedOnHero: {
     fontFamily: LandingFont.bodyMedium,
-    fontSize: FontSize.sm,
-    color: "rgba(255,255,255,0.72)",
+    fontSize: FontSize.base,
+    color: "rgba(255,255,255,0.82)",
   },
   navRight: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
   navCta: {
     backgroundColor: Landing.forest,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
     borderRadius: BorderRadius.full,
     ...Platform.select({
       web: { boxShadow: LandingWebShadow.navCta } as object,
@@ -791,14 +1081,14 @@ const styles = StyleSheet.create({
   },
   navCtaText: {
     fontFamily: LandingFont.displaySemi,
-    fontSize: FontSize.sm,
+    fontSize: FontSize.base,
     color: Landing.white,
   },
 
   heroWrap: { minHeight: 580 },
   heroBg: { minHeight: 580, width: "100%", justifyContent: "flex-end" },
   heroBgImage: { resizeMode: "cover" },
-  heroInner: { paddingTop: 96, paddingBottom: 48 },
+  heroInner: { paddingBottom: 48 },
   badgeRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -822,10 +1112,10 @@ const styles = StyleSheet.create({
     color: Landing.white,
   },
   heroKicker: {
-    fontFamily: LandingFont.displaySemi,
-    color: Landing.orangeBright,
-    fontSize: 11,
-    letterSpacing: 1.45,
+    fontFamily: LandingFont.displayBold,
+    color: Landing.orange,
+    fontSize: FontSize.sm,
+    letterSpacing: 1.55,
     textTransform: "uppercase",
     marginBottom: Spacing.md,
   },
@@ -836,6 +1126,11 @@ const styles = StyleSheet.create({
     lineHeight: 46,
     letterSpacing: Platform.OS === "web" ? -1.1 : -0.3,
   },
+  heroTitleLgWeb: {
+    fontSize: 48,
+    lineHeight: 54,
+    letterSpacing: -1.15,
+  },
   heroTitleAccent: { color: Landing.orange },
   heroSub: {
     fontFamily: LandingFont.body,
@@ -844,6 +1139,11 @@ const styles = StyleSheet.create({
     lineHeight: 28,
     marginTop: Spacing.lg,
     maxWidth: 560,
+  },
+  heroSubLgWeb: {
+    fontSize: FontSize.xl,
+    lineHeight: 30,
+    maxWidth: 620,
   },
   heroBtnRow: {
     flexDirection: "row",
@@ -909,24 +1209,22 @@ const styles = StyleSheet.create({
   metricRule: { width: 1, height: 44, backgroundColor: "rgba(255,255,255,0.2)" },
   metricRuleH: { width: "60%", height: 1, alignSelf: "center" },
 
-  sectionLight: { paddingVertical: 72, backgroundColor: Landing.white },
-  sectionAlt: { paddingVertical: 72, backgroundColor: Landing.sectionAlt },
   eyebrow: {
-    fontFamily: LandingFont.displaySemi,
+    fontFamily: LandingFont.displayBold,
     color: Landing.orange,
-    fontSize: 11,
-    letterSpacing: 1.55,
+    fontSize: FontSize.lg,
+    letterSpacing: 1.65,
     textTransform: "uppercase",
-    marginBottom: Spacing.md,
+    marginBottom: SECTION_EYEBROW_MARGIN_BOTTOM,
   },
   eyebrowCenter: { alignSelf: "center", textAlign: "center" },
   eyebrowOnDark: {
-    fontFamily: LandingFont.displaySemi,
-    color: Landing.orange,
-    fontSize: 11,
-    letterSpacing: 1.55,
+    fontFamily: LandingFont.displayBold,
+    color: Landing.orangeBright,
+    fontSize: FontSize.lg,
+    letterSpacing: 1.65,
     textTransform: "uppercase",
-    marginBottom: Spacing.md,
+    marginBottom: SECTION_EYEBROW_MARGIN_BOTTOM,
     textAlign: "center",
     alignSelf: "center",
   },
@@ -956,6 +1254,7 @@ const styles = StyleSheet.create({
 
   stepsRow: { flexDirection: "row", alignItems: "flex-start", gap: Spacing.xl },
   stepsCol: { flexDirection: "column", gap: Spacing["2xl"] },
+  stepsBelowHead: { marginTop: Spacing["3xl"] },
   step: { flex: 1, alignItems: "center", paddingHorizontal: Spacing.xs },
   stepIconWrap: {
     position: "relative",
@@ -1035,7 +1334,11 @@ const styles = StyleSheet.create({
     color: Landing.muted,
     lineHeight: 22,
   },
-  impactBand: { paddingVertical: 72, position: "relative", overflow: "hidden" },
+  impactBandBleed: {
+    width: "100%",
+    position: "relative",
+    overflow: "hidden",
+  },
   impactTitle: {
     fontFamily: LandingFont.displayBold,
     fontSize: 32,
@@ -1082,10 +1385,17 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
 
-  commRow: { flexDirection: "row", gap: 48, alignItems: "stretch" },
+  commRow: { flexDirection: "row", gap: 40, alignItems: "stretch" },
   commCol: { flexDirection: "column", gap: Spacing["2xl"] },
+  /** Extra vertical rhythm when Community is stacked (narrow); reduces art riding up on copy. */
+  commColCommunity: { gap: Spacing["4xl"] },
   commCopy: { flex: 1 },
-  commCopyNarrow: { flex: 0, width: "100%", alignSelf: "stretch" },
+  commCopyNarrow: {
+    flex: 0,
+    width: "100%",
+    alignSelf: "stretch",
+    marginBottom: Spacing.lg,
+  },
   commMiniGrid: { gap: Spacing.lg, marginTop: Spacing.xl },
   commMiniGridBelowArt: { marginTop: 0, width: "100%" },
   commMini: {
@@ -1119,6 +1429,7 @@ const styles = StyleSheet.create({
     borderColor: Landing.tealLine,
     paddingVertical: Spacing["3xl"],
     paddingHorizontal: Spacing.xl,
+    overflow: "hidden",
     ...Platform.select({
       web: { boxShadow: LandingWebShadow.commArt } as object,
       default: {},
@@ -1129,7 +1440,7 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     alignSelf: "stretch",
     width: "100%",
-    minHeight: 300,
+    minHeight: 280,
     maxHeight: 380,
   },
   commArtCaption: {
@@ -1140,7 +1451,19 @@ const styles = StyleSheet.create({
     letterSpacing: 0.15,
   },
 
-  orgRow: { flexDirection: "row", gap: 48, alignItems: "flex-start" },
+  orgRow: { flexDirection: "row", gap: 40, alignItems: "center" },
+  orgColNarrow: { alignItems: "stretch" },
+  orgDashWrap: {
+    justifyContent: "center",
+    alignSelf: "stretch",
+    flexShrink: 0,
+    paddingTop: Spacing.sm,
+  },
+  orgDashWrapStacked: {
+    paddingTop: 0,
+    alignItems: "center",
+    width: "100%",
+  },
   orgBullet: {
     flexDirection: "row",
     gap: Spacing.md,
@@ -1207,7 +1530,6 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     overflow: "hidden",
     maxWidth: 360,
-    alignSelf: "flex-start",
     borderWidth: 1,
     borderColor: Landing.tealLine,
     ...Platform.select({
@@ -1215,6 +1537,7 @@ const styles = StyleSheet.create({
       default: Shadow.lg,
     }),
   },
+  dashCardNarrow: { alignSelf: "center" },
   dashAccent: {
     height: 4,
     width: "100%",
@@ -1333,12 +1656,15 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
-  finalBandLight: {
-    paddingVertical: 72,
-    alignItems: "center",
+  finalBleed: {
+    width: "100%",
     backgroundColor: Landing.white,
     borderTopWidth: 1,
     borderTopColor: Landing.tealLine,
+  },
+  finalBandInner: {
+    paddingVertical: SECTION_BLOCK_PAD_V,
+    alignItems: "center",
   },
   finalTitleLight: {
     fontFamily: LandingFont.displayBold,
@@ -1379,11 +1705,42 @@ const styles = StyleSheet.create({
     fontSize: FontSize.base,
   },
 
-  footer: {
-    paddingTop: Spacing["3xl"],
+  footerBleed: {
+    width: "100%",
+    backgroundColor: Landing.forestDeep,
+  },
+  footerInner: {
+    paddingTop: FOOTER_LAYOUT_INNER_PAD_TOP,
     paddingBottom: Spacing["4xl"],
     alignItems: "center",
-    backgroundColor: Landing.forestDeep,
+  },
+  /** Tight band: car + track vertically centered between footer top and quick links. */
+  footerSweepBand: {
+    width: "100%",
+    paddingVertical: FOOTER_LAYOUT_SWEEP_BAND_PAD_V,
+    justifyContent: "center",
+    alignItems: "stretch",
+  },
+  footerSweepOuter: {
+    width: "100%",
+    alignSelf: "stretch",
+    justifyContent: "center",
+  },
+  footerSweepTrack: {
+    height: FOOTER_SWEEP_ICON + 8,
+    width: "100%",
+    overflow: "hidden",
+    position: "relative",
+    alignSelf: "center",
+  },
+  footerSweepSprite: {
+    position: "absolute",
+    left: 0,
+    top: 6,
+  },
+  footerFaviconImg: {
+    width: FOOTER_SWEEP_ICON,
+    height: FOOTER_SWEEP_ICON,
   },
   footerMuted: {
     fontFamily: LandingFont.body,

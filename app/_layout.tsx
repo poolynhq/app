@@ -14,6 +14,10 @@ import {
   isAccountSignupBlockedOnWeb,
   MARKETING_BLOCKED_AUTH_SEGMENTS,
 } from "@/lib/marketingWebRestrictions";
+import {
+  isPoolynSignupClosed,
+  SIGNUP_CLOSED_AUTH_SEGMENTS,
+} from "@/lib/poolynSignupClosed";
 import { View, ActivityIndicator, StyleSheet, LogBox, Platform } from "react-native";
 
 if (__DEV__) {
@@ -125,6 +129,17 @@ function NavigationGuard() {
           }
           return;
         }
+      }
+
+      const authChildForClosed = segments.at(1);
+      if (
+        isPoolynSignupClosed() &&
+        inAuthGroup &&
+        authChildForClosed &&
+        SIGNUP_CLOSED_AUTH_SEGMENTS.has(authChildForClosed)
+      ) {
+        router.replace("/(auth)/signup-closed");
+        return;
       }
 
       if (!segments[0] && !onPublicWebMarketing) return;

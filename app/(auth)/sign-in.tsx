@@ -13,6 +13,7 @@ import {
 import { Link, router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
+import { isPoolynSignupClosed } from "@/lib/poolynSignupClosed";
 import { supabase } from "@/lib/supabase";
 import {
   Colors,
@@ -75,7 +76,7 @@ export default function SignIn() {
       return;
     }
 
-    if (nextParam === "business-sign-up") {
+    if (nextParam === "business-sign-up" && !isPoolynSignupClosed()) {
       router.replace("/(auth)/business-sign-up");
     }
   }

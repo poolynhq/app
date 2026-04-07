@@ -94,10 +94,15 @@ export const Landing = {
 export const LandingGradients = {
   /** Hero photo tint (forest haze over the road image). */
   heroPhotoOverlay: [
-    rgba(LandingBrand.forestDeep, 0.94),
-    rgba(LandingBrand.forest, 0.82),
-    rgba(LandingBrand.forestInk, 0.55),
+    rgba(LandingBrand.forestDeep, 0.96),
+    rgba(LandingBrand.forest, 0.88),
+    rgba(LandingBrand.forestInk, 0.64),
   ] as readonly [string, string, string],
+  /** Extra darken under the nav only (top → transparent). */
+  heroNavScrim: [
+    "rgba(10, 22, 16, 0.78)",
+    "rgba(10, 22, 16, 0)",
+  ] as readonly [string, string],
   impactBand: [
     LandingBrand.forestDeep,
     LandingBrand.forest,
