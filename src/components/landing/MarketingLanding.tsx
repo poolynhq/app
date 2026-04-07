@@ -326,7 +326,7 @@ export default function MarketingLanding() {
           style={[styles.sectionLight, { paddingHorizontal: contentPad }]}
         >
           <View style={[styles.commRow, !isWide && styles.commCol]}>
-            <View style={styles.commCopy}>
+            <View style={[styles.commCopy, !isWide && styles.commCopyNarrow]}>
               <Text style={styles.eyebrow}>Community</Text>
               <Text style={styles.sectionH1}>
                 More than a ride.{" "}
@@ -336,22 +336,32 @@ export default function MarketingLanding() {
                 Poolyn turns your commute into a social experience without forcing
                 small talk.
               </Text>
-              <View style={styles.commMiniGrid}>
-                <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
-                <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
-                <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
-                <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
-              </View>
+              {isWide ? (
+                <View style={styles.commMiniGrid}>
+                  <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
+                  <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
+                  <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
+                  <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
+                </View>
+              ) : null}
             </View>
             <LinearGradient
               colors={LandingGradients.commArt}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={styles.commArt}
+              style={[styles.commArt, !isWide && styles.commArtStacked]}
             >
               <CommunityHubAnimation />
               <Text style={styles.commArtCaption}>Your carpool, elevated</Text>
             </LinearGradient>
+            {!isWide ? (
+              <View style={[styles.commMiniGrid, styles.commMiniGridBelowArt]}>
+                <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
+                <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
+                <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
+                <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -369,6 +379,9 @@ export default function MarketingLanding() {
               <Text style={styles.sectionLead}>
                 Reduce parking demand, boost morale, and hit sustainability targets
                 with real commute data.
+              </Text>
+              <Text style={styles.orgPricingNote}>
+                Team plans from $49/mo · individuals explore free
               </Text>
               <OrgBullet
                 icon="git-network-outline"
@@ -407,12 +420,44 @@ export default function MarketingLanding() {
             </View>
             <View style={styles.dashCard}>
               <View style={styles.dashAccent} />
-              <Text style={styles.dashTitle}>Network snapshot</Text>
-              <DashRow label="Active riders" value="2,340" />
-              <DashRow label="CO₂ saved this month" value="12.4 t" />
-              <DashRow label="Rides completed" value="8,920" />
+              <View style={styles.dashTitleRow}>
+                <Text style={styles.dashTitle}>ESG commute snapshot</Text>
+                <View style={styles.dashIllustrativePill}>
+                  <Text style={styles.dashIllustrativePillText}>Sample</Text>
+                </View>
+              </View>
+              <Text style={styles.dashSubtitle}>
+                Preview signals teams use for CSR packs and GHG inventories
+              </Text>
+              <View style={styles.dashEsgIconRow}>
+                <Ionicons name="leaf" size={17} color={Landing.tealDark} />
+                <Ionicons name="analytics-outline" size={17} color={Landing.tealDark} />
+                <Ionicons name="document-text-outline" size={17} color={Landing.tealDark} />
+                <Text style={styles.dashEsgIconLabel}>Export · audit trail</Text>
+              </View>
+              <View style={styles.dashMiniChart}>
+                <Text style={styles.dashMiniChartLabel}>
+                  Scope 3 commute — avoided emissions (t CO₂e, MTD)
+                </Text>
+                <View style={styles.dashBars}>
+                  {[16, 24, 20, 36, 32, 40].map((h, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        styles.dashBar,
+                        { height: h, opacity: 0.35 + i * 0.1 },
+                      ]}
+                    />
+                  ))}
+                </View>
+              </View>
+              <DashRow label="Participation (pilot cohort)" value="68%" />
+              <DashRow label="Single-occupancy trips replaced" value="3,420" />
+              <DashRow label="Report alignment" value="GRI 305 · ISO 14064*" />
+              <DashRow label="Data export" value="CSV · PDF summary" />
               <Text style={styles.dashNote}>
-                Illustrative preview: your dashboard when you launch.
+                *Illustrative labels for planning and ESG conversations — not live
+                data.
               </Text>
             </View>
           </View>
@@ -437,11 +482,81 @@ export default function MarketingLanding() {
 
         <View style={[styles.footer, { paddingHorizontal: contentPad }]}>
           <Text style={styles.footerMuted}>
-            Launching in Melbourne first. Individuals explore free · Team plans from $49/mo.
+            Launching in Melbourne first.
           </Text>
+          <View style={styles.footerQuickLinks}>
+            <Pressable
+              onPress={() =>
+                scrollRef.current?.scrollTo({ y: 0, animated: true })
+              }
+              hitSlop={6}
+            >
+              <Text style={styles.footerLink}>Home</Text>
+            </Pressable>
+            <Text style={styles.footerDot}>·</Text>
+            <Pressable onPress={() => jump("how")} hitSlop={6}>
+              <Text style={styles.footerLink}>How it works</Text>
+            </Pressable>
+            <Text style={styles.footerDot}>·</Text>
+            <Pressable onPress={() => jump("orgs")} hitSlop={6}>
+              <Text style={styles.footerLink}>Organizations</Text>
+            </Pressable>
+            <Text style={styles.footerDot}>·</Text>
+            <Pressable onPress={() => jump("impact")} hitSlop={6}>
+              <Text style={styles.footerLink}>Impact</Text>
+            </Pressable>
+            <Text style={styles.footerDot}>·</Text>
+            <Pressable onPress={() => openWaitlist()} hitSlop={6}>
+              <Text style={styles.footerLink}>Waitlist</Text>
+            </Pressable>
+          </View>
+          <View style={styles.footerSocialRow}>
+            <Pressable
+              accessibilityLabel="Poolyn on LinkedIn"
+              onPress={() =>
+                Linking.openURL("https://www.linkedin.com/company/poolyn")
+              }
+              hitSlop={8}
+              style={styles.footerSocialHit}
+            >
+              <Ionicons
+                name="logo-linkedin"
+                size={24}
+                color="rgba(255,255,255,0.88)"
+              />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Poolyn on X"
+              onPress={() => Linking.openURL("https://x.com/poolyn")}
+              hitSlop={8}
+              style={styles.footerSocialHit}
+            >
+              <Ionicons
+                name="logo-twitter"
+                size={22}
+                color="rgba(255,255,255,0.88)"
+              />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Poolyn on Instagram"
+              onPress={() =>
+                Linking.openURL("https://www.instagram.com/poolyn")
+              }
+              hitSlop={8}
+              style={styles.footerSocialHit}
+            >
+              <Ionicons
+                name="logo-instagram"
+                size={24}
+                color="rgba(255,255,255,0.88)"
+              />
+            </Pressable>
+          </View>
           <View style={styles.footerRow}>
             <Link href="/(public)/terms" asChild>
-              <Pressable><Text style={styles.footerLink}>Privacy & Terms</Text></Pressable>
+              <Pressable hitSlop={6}>
+                <Text style={styles.footerLink}>Privacy & Terms</Text>
+              </Pressable>
             </Link>
             <Text style={styles.footerDot}>·</Text>
             <Pressable onPress={() => Linking.openURL("mailto:hello@poolyn.com")}>
@@ -596,8 +711,12 @@ function OrgBullet({
 function DashRow({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.dashRow}>
-      <Text style={styles.dashLabel}>{label}</Text>
-      <Text style={styles.dashValue}>{value}</Text>
+      <Text style={styles.dashLabel} numberOfLines={3}>
+        {label}
+      </Text>
+      <Text style={styles.dashValue} numberOfLines={2}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -966,7 +1085,9 @@ const styles = StyleSheet.create({
   commRow: { flexDirection: "row", gap: 48, alignItems: "stretch" },
   commCol: { flexDirection: "column", gap: Spacing["2xl"] },
   commCopy: { flex: 1 },
+  commCopyNarrow: { flex: 0, width: "100%", alignSelf: "stretch" },
   commMiniGrid: { gap: Spacing.lg, marginTop: Spacing.xl },
+  commMiniGridBelowArt: { marginTop: 0, width: "100%" },
   commMini: {
     flexDirection: "row",
     gap: Spacing.md,
@@ -1002,6 +1123,14 @@ const styles = StyleSheet.create({
       web: { boxShadow: LandingWebShadow.commArt } as object,
       default: {},
     }),
+  },
+  commArtStacked: {
+    flex: 0,
+    flexGrow: 0,
+    alignSelf: "stretch",
+    width: "100%",
+    minHeight: 300,
+    maxHeight: 380,
   },
   commArtCaption: {
     fontFamily: LandingFont.bodyMedium,
@@ -1059,6 +1188,14 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
     lineHeight: 20,
   },
+  orgPricingNote: {
+    fontFamily: LandingFont.displaySemi,
+    fontSize: FontSize.sm,
+    color: Landing.tealDark,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.lg,
+    lineHeight: 20,
+  },
 
   dashCard: {
     flexGrow: 0,
@@ -1084,29 +1221,108 @@ const styles = StyleSheet.create({
     backgroundColor: Landing.orange,
     marginBottom: Spacing.md,
   },
+  dashTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+    marginBottom: Spacing.xs,
+    flexWrap: "wrap",
+  },
   dashTitle: {
     fontFamily: LandingFont.displayBold,
     fontSize: FontSize.lg,
     color: Landing.ink,
-    marginBottom: Spacing.md,
     letterSpacing: Platform.OS === "web" ? -0.35 : -0.1,
+    flexShrink: 1,
+  },
+  dashIllustrativePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Landing.outlineTint,
+    borderWidth: 1,
+    borderColor: Landing.tealLine,
+  },
+  dashIllustrativePillText: {
+    fontFamily: LandingFont.bodySemi,
+    fontSize: FontSize.xs,
+    color: Landing.tealDark,
+    letterSpacing: 0.2,
+    textTransform: "uppercase" as const,
+  },
+  dashSubtitle: {
+    fontFamily: LandingFont.body,
+    fontSize: FontSize.sm,
+    color: Landing.muted,
+    lineHeight: 20,
+    marginBottom: Spacing.md,
+  },
+  dashEsgIconRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+    flexWrap: "wrap",
+  },
+  dashEsgIconLabel: {
+    fontFamily: LandingFont.bodySemi,
+    fontSize: FontSize.xs,
+    color: Landing.forest,
+    marginLeft: Spacing.xs,
+  },
+  dashMiniChart: {
+    marginBottom: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  dashMiniChartLabel: {
+    fontFamily: LandingFont.bodySemi,
+    fontSize: FontSize.xs,
+    color: Landing.muted,
+    marginBottom: Spacing.sm,
+    lineHeight: 16,
+  },
+  dashBars: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 6,
+    height: 44,
+  },
+  dashBar: {
+    flex: 1,
+    maxWidth: 14,
+    borderRadius: 3,
+    backgroundColor: Landing.tealDark,
   },
   dashRow: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
+    gap: Spacing.sm,
     paddingVertical: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
   },
   dashLabel: {
+    flex: 1,
     fontFamily: LandingFont.body,
     color: Landing.muted,
-    fontSize: FontSize.base,
+    fontSize: FontSize.sm,
+    marginRight: Spacing.sm,
   },
   dashValue: {
+    flexShrink: 0,
+    maxWidth: "46%",
+    textAlign: "right" as const,
     fontFamily: LandingFont.displaySemi,
     color: Landing.tealDark,
-    fontSize: FontSize.base,
+    fontSize: FontSize.sm,
     letterSpacing: Platform.OS === "web" ? -0.3 : 0,
   },
   dashNote: {
@@ -1176,6 +1392,25 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: Spacing.md,
     lineHeight: 22,
+  },
+  footerQuickLinks: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xs,
+    marginBottom: Spacing.lg,
+    paddingHorizontal: Spacing.sm,
+  },
+  footerSocialRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xl,
+    marginBottom: Spacing.lg,
+  },
+  footerSocialHit: {
+    padding: Spacing.sm,
   },
   footerRow: {
     flexDirection: "row",
