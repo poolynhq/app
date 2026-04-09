@@ -1,4 +1,4 @@
-import { View, TouchableOpacity, Text, StyleSheet } from "react-native";
+import { View, Text, StyleSheet, Platform, TouchableOpacity } from "react-native";
 import { Tabs, useRouter } from "expo-router";
 import { useFonts } from "expo-font";
 import {
@@ -8,23 +8,30 @@ import {
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/contexts/AuthContext";
 import { Colors, FontSize, FontWeight, BorderRadius, Shadow, Spacing } from "@/constants/theme";
 
-const tabs: { name: string; title: string }[] = [
-  { name: "home", title: "Home" },
-  { name: "rides", title: "My Rides" },
-  { name: "messages", title: "Messages" },
-  { name: "profile", title: "Profile" },
+const TAB_DEFS: {
+  name: string;
+  title: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  iconFocused: keyof typeof Ionicons.glyphMap;
+}[] = [
+  { name: "home", title: "Home", icon: "home-outline", iconFocused: "home" },
+  { name: "rides", title: "My rides", icon: "car-outline", iconFocused: "car" },
+  { name: "navigate", title: "Navigate", icon: "navigate-outline", iconFocused: "navigate" },
+  { name: "messages", title: "Messages", icon: "chatbubbles-outline", iconFocused: "chatbubbles" },
+  { name: "profile", title: "Profile", icon: "person-outline", iconFocused: "person" },
 ];
 
-function AdminReturnToDashboard() {
+function AdminReturnToDashboard({ fabBottom }: { fabBottom: number }) {
   const { isAdmin } = useAuth();
   const router = useRouter();
   if (!isAdmin) return null;
   return (
     <TouchableOpacity
-      style={styles.adminFab}
+      style={[styles.adminFab, { bottom: fabBottom }]}
       onPress={() => router.push("/(admin)/")}
       activeOpacity={0.88}
       accessibilityRole="button"
@@ -43,6 +50,11 @@ export default function TabsLayout() {
     Inter_600SemiBold,
     Inter_700Bold,
   });
+  const insets = useSafeAreaInsets();
+  const tabBarBottom = Math.max(insets.bottom, Platform.OS === "web" ? 12 : 8);
+  /** Room for icon + label above home indicator (default 52 was clipping labels on Android). */
+  const tabBarContentMin = Platform.OS === "android" ? 58 : 54;
+  const tabBarHeight = tabBarContentMin + tabBarBottom;
 
   if (!fontsLoaded) {
     return <View style={styles.fontBoot} />;
@@ -53,15 +65,47 @@ export default function TabsLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
-          tabBarStyle: { display: "none", height: 0 },
-          tabBarItemStyle: { height: 0, width: 0 },
+          tabBarActiveTintColor: Colors.primary,
+          tabBarInactiveTintColor: Colors.textTertiary,
+          tabBarAllowFontScaling: false,
+          tabBarLabelStyle: {
+            fontSize: 10,
+            fontWeight: FontWeight.semibold,
+            marginTop: 0,
+            marginBottom: Platform.OS === "ios" ? 3 : 1,
+          },
+          tabBarIconStyle: {
+            marginTop: Platform.OS === "android" ? 2 : 4,
+          },
+          tabBarItemStyle: {
+            paddingTop: 2,
+            paddingBottom: 0,
+          },
+          tabBarStyle: {
+            paddingTop: Platform.OS === "android" ? 6 : 4,
+            paddingBottom: tabBarBottom,
+            height: tabBarHeight,
+            minHeight: tabBarHeight,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: Colors.border,
+            backgroundColor: Colors.surface,
+          },
         }}
       >
-        {tabs.map((tab) => (
-          <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.title }} />
+        {TAB_DEFS.map((tab) => (
+          <Tabs.Screen
+            key={tab.name}
+            name={tab.name}
+            options={{
+              title: tab.title,
+              tabBarIcon: ({ color, focused, size }) => (
+                <Ionicons name={focused ? tab.iconFocused : tab.icon} size={size ?? 22} color={color} />
+              ),
+            }}
+          />
         ))}
       </Tabs>
-      <AdminReturnToDashboard />
+      <AdminReturnToDashboard fabBottom={tabBarHeight + 12} />
     </View>
   );
 }
@@ -74,7 +118,6 @@ const styles = StyleSheet.create({
   adminFab: {
     position: "absolute",
     right: Spacing.base,
-    bottom: 24,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,

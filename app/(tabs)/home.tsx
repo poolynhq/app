@@ -11,6 +11,7 @@ import {
   Pressable,
   ActivityIndicator,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -45,10 +46,17 @@ import {
 } from "@/constants/theme";
 import { viewerMyRoutesDisplayCollection } from "@/lib/viewerRoutePrimarySwap";
 import { createCommuteRideRequest, cancelMyPendingRideRequest } from "@/lib/rideRequests";
+import {
+  incrementRouteConfirmationCount,
+  needsRouteDestinationDoubleCheck,
+  ROUTE_CONFIRMATION_THRESHOLD,
+} from "@/lib/routeTripConfirmation";
+import { PoolynMiniTourModal, POOLYN_MINI_TOUR_DONE_KEY } from "@/components/home/PoolynMiniTourModal";
 import { usePassengerPickupState } from "@/hooks/usePassengerPickupState";
 import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
 import { fetchDrivingRoute } from "@/lib/mapboxDirections";
 import { HomeNetworkHub } from "@/components/home/HomeNetworkHub";
+import { RoutinePoolynCrewMingleBlock } from "@/components/home/RoutinePoolynCrewMingle";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -247,6 +255,8 @@ export default function Dashboard() {
   const [postRequestSubmitting, setPostRequestSubmitting] = useState(false);
   const [postRequestDirection, setPostRequestDirection] = useState<"to_work" | "from_work">("to_work");
   const [postRequestTiming, setPostRequestTiming] = useState<PostPickupTiming>("now");
+  const routineSectionYRef = useRef(0);
+  const [miniTourVisible, setMiniTourVisible] = useState(false);
 
   const {
     demandPoints,
@@ -503,6 +513,69 @@ export default function Dashboard() {
     }
   }
 
+  const runPostPickupRequest = useCallback(async () => {
+    setPostRequestSubmitting(true);
+    const isNow = postRequestTiming === "now";
+    const res = await createCommuteRideRequest({
+      direction: postRequestDirection,
+      leaveInMins: isNow ? null : postRequestTiming,
+      flexibilityMins: isNow ? 10 : 15,
+    });
+    setPostRequestSubmitting(false);
+    if (res.ok) {
+      await incrementRouteConfirmationCount(postRequestDirection);
+      void pickupState.reload();
+      showAlert(
+        "Request sent",
+        isNow
+          ? "Nearby drivers with seats are being notified now. Watch for a banner or sound on their phone."
+          : "Drivers get advance notice so they can plan. You will see confirmation when someone accepts."
+      );
+      setPostRequestOpen(false);
+      setViewerMapRefetchTick((t) => t + 1);
+      void reloadMapLayers();
+    } else {
+      showAlert("Could not post", res.reason);
+    }
+  }, [postRequestTiming, postRequestDirection, pickupState, reloadMapLayers]);
+
+  function handlePostPickupPress() {
+    void (async () => {
+      const needConfirm = await needsRouteDestinationDoubleCheck(postRequestDirection);
+      const dirLabel = postRequestDirection === "to_work" ? "to work" : "from work";
+      if (needConfirm) {
+        showAlert(
+          `Confirm your ${dirLabel} trip`,
+          `For your first ${ROUTE_CONFIRMATION_THRESHOLD} pickup posts in each direction, double-check saved home and work so drivers are routed correctly.`,
+          [
+            {
+              text: "Edit commute",
+              style: "cancel",
+              onPress: () => {
+                setPostRequestOpen(false);
+                router.push("/(tabs)/profile/commute-locations");
+              },
+            },
+            { text: "Destination OK — post", onPress: () => void runPostPickupRequest() },
+          ]
+        );
+        return;
+      }
+      await runPostPickupRequest();
+    })();
+  }
+
+  useEffect(() => {
+    if (!profile?.onboarding_completed) return;
+    let cancelled = false;
+    void AsyncStorage.getItem(POOLYN_MINI_TOUR_DONE_KEY).then((v) => {
+      if (!cancelled && !v) setMiniTourVisible(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.onboarding_completed]);
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
@@ -587,15 +660,6 @@ export default function Dashboard() {
             </View>
 
             <View style={styles.heroRightActions}>
-              <TouchableOpacity
-                style={styles.heroIconBtn}
-                activeOpacity={0.75}
-                onPress={() => router.push("/(tabs)/rides")}
-                accessibilityRole="button"
-                accessibilityLabel="My rides"
-              >
-                <Ionicons name="car-outline" size={21} color={Colors.text} />
-              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.heroIconBtn}
                 activeOpacity={0.75}
@@ -722,58 +786,48 @@ export default function Dashboard() {
           </View>
         ) : null}
 
-        {/* Snapshot stats */}
-        <View style={styles.statsSection}>
-          <Text style={styles.statsSectionLabel}>At a glance</Text>
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <View style={styles.statInlineRow}>
-                <View style={[styles.statIcon, { backgroundColor: "#EFF6FF" }]}>
-                  <Ionicons name="star" size={17} color={Colors.info} />
-                </View>
-                <Text style={styles.statValue}>{profile?.points_balance ?? 0}</Text>
-              </View>
-              <Text style={styles.statLabel}>Points</Text>
-            </View>
-            <View style={styles.statCard}>
-              <View style={styles.statInlineRow}>
-                <View style={[styles.statIcon, { backgroundColor: Colors.accentLight }]}>
-                  <Ionicons name="flash" size={17} color={Colors.accent} />
-                </View>
-                <Text style={styles.statValue}>
-                  {profile?.flex_credits_balance ?? 3}
-                </Text>
-              </View>
-              <Text style={styles.statLabel}>Flex credits</Text>
-            </View>
-            <View style={styles.statCard}>
-              <View style={styles.statInlineRow}>
-                <View style={[styles.statIcon, { backgroundColor: Colors.primaryLight }]}>
-                  <Ionicons name="leaf" size={17} color={Colors.primary} />
-                </View>
-                <Text style={styles.statValue}>0</Text>
-              </View>
-              <Text style={styles.statLabel}>CO₂ saved (kg)</Text>
-            </View>
-            <View style={styles.statCard}>
-              <View style={styles.statInlineRow}>
-                <View style={[styles.statIcon, { backgroundColor: "#F3E8FF" }]}>
-                  <Ionicons name="car" size={17} color="#8B5CF6" />
-                </View>
-                <Text style={styles.statValue}>0</Text>
-              </View>
-              <Text style={styles.statLabel}>Total rides</Text>
-            </View>
-          </View>
-        </View>
+        {profile?.onboarding_completed && profile.home_location && profile.work_location ? (
+          <TouchableOpacity
+            style={styles.searchRouteHeroBtn}
+            activeOpacity={0.88}
+            onPress={() => {
+              const y = routineSectionYRef.current;
+              homeScrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Search people on my route on the map"
+          >
+            <Ionicons name="map-outline" size={22} color={Colors.textOnPrimary} />
+            <Text style={styles.searchRouteHeroBtnText}>Search people on my route</Text>
+            <Ionicons name="chevron-down" size={20} color={Colors.textOnPrimary} />
+          </TouchableOpacity>
+        ) : null}
 
         {/* ── Routine Poolyn: recurring commute, map, same-day matching ── */}
+        <View
+          onLayout={(e) => {
+            routineSectionYRef.current = e.nativeEvent.layout.y;
+          }}
+        >
         <PillarSection
           variant="routine"
           eyebrow="ROUTINE POOLYN"
           title="Your regular commute"
-          subtitle="Map, network scope, and quick actions below. Seats you can book and overlap stats are on this same page under the map."
+          subtitle="Choose Crew for a fixed group and daily chat, or Mingle for open corridor matching. Map, seats, and quick actions stay on this page."
         >
+          {profile?.id ? (
+            <RoutinePoolynCrewMingleBlock
+              profile={profile}
+              orgId={profile.org_id}
+              visibilityMode={profile.visibility_mode}
+              setVisibilityMode={setVisibilityMode}
+              onCrewCreated={() => {
+                reloadMapLayers();
+                setViewerMapRefetchTick((t) => t + 1);
+                void refreshProfile();
+              }}
+            />
+          ) : null}
           <View style={styles.roleWrap}>
             <View
               style={[
@@ -992,6 +1046,7 @@ export default function Dashboard() {
             }
           />
         </PillarSection>
+        </View>
 
         {profile ? (
           <View
@@ -1224,30 +1279,7 @@ export default function Dashboard() {
               <TouchableOpacity
                 style={postRequestModalStyles.postBtn}
                 disabled={postRequestSubmitting}
-                onPress={async () => {
-                  setPostRequestSubmitting(true);
-                  const isNow = postRequestTiming === "now";
-                  const res = await createCommuteRideRequest({
-                    direction: postRequestDirection,
-                    leaveInMins: isNow ? null : postRequestTiming,
-                    flexibilityMins: isNow ? 10 : 15,
-                  });
-                  setPostRequestSubmitting(false);
-                  if (res.ok) {
-                    void pickupState.reload();
-                    showAlert(
-                      "Request sent",
-                      isNow
-                        ? "Nearby drivers with seats are being notified now. Watch for a banner or sound on their phone."
-                        : "Drivers get advance notice so they can plan. You will see confirmation when someone accepts."
-                    );
-                    setPostRequestOpen(false);
-                    setViewerMapRefetchTick((t) => t + 1);
-                    void reloadMapLayers();
-                  } else {
-                    showAlert("Could not post", res.reason);
-                  }
-                }}
+                onPress={handlePostPickupPress}
               >
                 {postRequestSubmitting ? (
                   <ActivityIndicator color={Colors.textOnPrimary} />
@@ -1259,6 +1291,8 @@ export default function Dashboard() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <PoolynMiniTourModal visible={miniTourVisible} onClose={() => setMiniTourVisible(false)} />
     </SafeAreaView>
   );
 }
@@ -1436,15 +1470,24 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     color: Colors.primary,
   },
-  statsSection: {
-    marginBottom: Spacing["2xl"],
+  searchRouteHeroBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    marginBottom: Spacing.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.primary,
+    ...Shadow.sm,
   },
-  statsSectionLabel: {
-    fontSize: FontSize.xs,
+  searchRouteHeroBtnText: {
+    fontSize: FontSize.base,
     fontWeight: FontWeight.bold,
-    color: Colors.textTertiary,
-    letterSpacing: 1.2,
-    marginBottom: Spacing.sm,
+    color: Colors.textOnPrimary,
+    textAlign: "center",
+    flexShrink: 1,
   },
   pillarShell: {
     flexDirection: "row",
@@ -1540,12 +1583,12 @@ const styles = StyleSheet.create({
   heroHeader: {
     marginHorizontal: -Spacing.xl,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.md,
     marginBottom: Spacing.lg,
     borderBottomLeftRadius: BorderRadius.xl,
     borderBottomRightRadius: BorderRadius.xl,
     borderWidth: 1,
-    ...Shadow.sm,
+    ...Shadow.md,
   },
   heroExplorer: {
     backgroundColor: "#FFF7ED",
@@ -1650,12 +1693,12 @@ const styles = StyleSheet.create({
   heroRightActions: {
     flexShrink: 0,
     alignItems: "flex-end",
-    gap: 8,
+    gap: 6,
   },
   heroIconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: "rgba(255,255,255,0.94)",
     justifyContent: "center",
     alignItems: "center",
@@ -1729,49 +1772,6 @@ const styles = StyleSheet.create({
   },
   visibilityTextActive: {
     color: Colors.textOnPrimary,
-  },
-  statsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: Spacing.md,
-    marginBottom: Spacing.xl,
-  },
-  statCard: {
-    width: "47%",
-    minHeight: 104,
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    justifyContent: "center",
-    ...Shadow.sm,
-  },
-  statInlineRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: Spacing.md,
-    marginBottom: Spacing.xs,
-  },
-  statIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  statValue: {
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.bold,
-    color: Colors.text,
-  },
-  statLabel: {
-    fontSize: FontSize.xs,
-    color: Colors.textSecondary,
-    textAlign: "center",
-    lineHeight: 16,
   },
   quickActions: {
     flexDirection: "row",

@@ -15,6 +15,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { AuthBrandingHero } from "@/components/auth/AuthBrandingHero";
 
 /** Unauthenticated entry for “Start a network” / “Join or explore” (URL: /start). */
 export default function AccountTypeSelection() {
@@ -24,13 +25,10 @@ export default function AccountTypeSelection() {
       contentContainerStyle={styles.scroll}
       keyboardShouldPersistTaps="handled"
     >
-      <View style={styles.header}>
-        <View style={styles.logoContainer}>
-          <Ionicons name="car-sport" size={40} color={Colors.textOnPrimary} />
-        </View>
-        <Text style={styles.appName}>Poolyn</Text>
-        <Text style={styles.tagline}>Choose how you want to connect</Text>
-      </View>
+      <AuthBrandingHero
+        kicker="Choose how you connect"
+        subline="Start a managed workplace network, or join as an individual and explore your route."
+      />
 
       <View style={styles.cards}>
         <Link href="/(auth)/business-sign-up" asChild>
@@ -102,32 +100,7 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: Spacing.xl,
-  },
-  header: {
-    alignItems: "center",
-    paddingTop: 80,
-    paddingBottom: Spacing["3xl"],
-  },
-  logoContainer: {
-    width: 72,
-    height: 72,
-    borderRadius: BorderRadius.xl,
-    backgroundColor: Colors.primary,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: Spacing.base,
-    ...Shadow.lg,
-  },
-  appName: {
-    fontSize: FontSize["3xl"],
-    fontWeight: FontWeight.bold,
-    color: Colors.text,
-    letterSpacing: -0.5,
-  },
-  tagline: {
-    fontSize: FontSize.base,
-    color: Colors.textSecondary,
-    marginTop: Spacing.xs,
+    paddingTop: Spacing["2xl"],
   },
   cards: {
     gap: Spacing.base,

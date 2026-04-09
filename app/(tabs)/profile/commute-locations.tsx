@@ -133,16 +133,26 @@ export default function CommuteLocationsScreen() {
   /** Saved “from” point: home if present, else routine pickup pin (some profiles only store pickup + work). */
   const routineStartPt = useMemo(() => homePt ?? pickupPt, [homePt, pickupPt]);
 
-  /** True only when pickup is intentionally different from saved home (one-day override). */
-  const alternateActive = useMemo(() => {
+  /** Max distance (m) where "today's pickup" still replaces home for the routine preview. Beyond → treat as stale. */
+  const MAX_PICKUP_OVERRIDE_M = 50_000;
+
+  /** True when pickup is a plausible same-day alternate start (not cross-city leftover GPS). */
+  const nearPickupOverride = useMemo(() => {
     if (!pickupPt || !homePt) return false;
-    return distanceMeters(homePt, pickupPt) > 80;
+    const d = distanceMeters(homePt, pickupPt);
+    return d > 80 && d <= MAX_PICKUP_OVERRIDE_M;
+  }, [homePt, pickupPt]);
+
+  /** Saved pickup exists but is far from home — do not use it for routing (e.g. old session in another city). */
+  const staleRemotePickup = useMemo(() => {
+    if (!pickupPt || !homePt) return false;
+    return distanceMeters(homePt, pickupPt) > MAX_PICKUP_OVERRIDE_M;
   }, [homePt, pickupPt]);
 
   const tripStart = useMemo(() => {
-    if (alternateActive) return pickupPt;
+    if (nearPickupOverride) return pickupPt;
     return routineStartPt;
-  }, [alternateActive, pickupPt, routineStartPt]);
+  }, [nearPickupOverride, pickupPt, routineStartPt]);
 
   const hasCommute = Boolean(workPt && routineStartPt);
 
@@ -169,7 +179,7 @@ export default function CommuteLocationsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [profile?.id, hasCommute]);
+  }, [profile?.id, hasCommute, workPt?.lat, workPt?.lng, routineStartPt?.lat, routineStartPt?.lng]);
 
   useEffect(() => {
     if (!tripStart || !workPt) {
@@ -267,6 +277,7 @@ export default function CommuteLocationsScreen() {
         showAlert("Could not save", error.message);
         return;
       }
+      setLocRow((prev) => (prev ? { ...prev, pickup_location: wkt } : prev));
       await refreshProfile();
       showAlert("Pickup updated", "Matching will use this spot as your pickup origin until you clear it.");
     } catch (e) {
@@ -286,25 +297,27 @@ export default function CommuteLocationsScreen() {
         showAlert("Could not clear", error.message);
         return;
       }
+      setLocRow((prev) => (prev ? { ...prev, pickup_location: null } : prev));
       await refreshProfile();
     } finally {
       setSavingPickup(false);
     }
   }, [profile?.id, refreshProfile]);
 
+  // Prefer reverse-geocode of the saved pin so the title matches the map (avoids stale org/campus text).
   const workTitle =
+    workLabelGeo?.trim() ||
     locRow?.work_location_label?.trim() ||
     profile?.work_location_label?.trim() ||
-    workLabelGeo ||
     (workPt ? "Saved workplace pin" : "");
 
-  const startTitle = alternateActive
+  const startTitle = nearPickupOverride
     ? pickupLabelGeo || "Today’s pickup pin"
     : homePt
       ? homeLabel || "Saved home area"
       : pickupLabelGeo || "Saved trip start";
 
-  const startLegendShort = alternateActive ? "Pickup" : homePt ? "Home" : "Start";
+  const startLegendShort = nearPickupOverride ? "Pickup" : homePt ? "Home" : "Start";
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
@@ -337,7 +350,23 @@ export default function CommuteLocationsScreen() {
               <Text style={styles.summaryLine} numberOfLines={3}>
                 {startTitle}
               </Text>
-              {alternateActive ? (
+              {staleRemotePickup ? (
+                <View style={styles.stalePickupBanner}>
+                  <Text style={styles.stalePickupText}>
+                    A saved “today’s pickup” pin is very far from your home and is ignored for this route. Clear
+                    it so it does not confuse matching, or save home &amp; work again from Edit locations.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.stalePickupBtn}
+                    onPress={() => void clearAlternatePickup()}
+                    disabled={savingPickup}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.stalePickupBtnText}>Clear saved pickup</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+              {nearPickupOverride ? (
                 <Text style={styles.summaryHint}>Using today’s pickup instead of saved home.</Text>
               ) : !homePt && pickupPt ? (
                 <Text style={styles.summaryHint}>
@@ -388,6 +417,11 @@ export default function CommuteLocationsScreen() {
                           ? `~${Math.round(primaryMin)} min drive`
                           : `~${Math.floor(primaryMin / 60)}h ${Math.round(primaryMin % 60)}m drive`}
                       </Text>
+                      {routeInfo ? (
+                        <Text style={styles.statsLight}>
+                          Primary route is the shortest distance Mapbox returned; alts may be faster in traffic.
+                        </Text>
+                      ) : null}
                       {routeInfo?.alternates.map((alt, i) => (
                         <Text key={i} style={styles.statsAlt}>
                           Alt {i + 1}: {alt.distanceKm.toFixed(1)} km ·{" "}
@@ -441,13 +475,15 @@ export default function CommuteLocationsScreen() {
               use it for matching; clear it when you are back to your usual start.
             </Text>
             <Text style={styles.pickupStatus}>
-              {alternateActive
-                ? "Using alternate pickup (not your saved home pin)."
-                : homePt
-                  ? "Using saved home as pickup."
-                  : pickupPt
-                    ? "Trip start uses your saved pickup pin (no separate home on file)."
-                    : "Set a trip start in Edit locations to enable pickup overrides."}
+              {staleRemotePickup
+                ? "Saved pickup is far from home — not used for your routine route until you clear it."
+                : nearPickupOverride
+                  ? "Using alternate pickup (not your saved home pin)."
+                  : homePt
+                    ? "Using saved home as pickup."
+                    : pickupPt
+                      ? "Trip start uses your saved pickup pin (no separate home on file)."
+                      : "Set a trip start in Edit locations to enable pickup overrides."}
             </Text>
             <TouchableOpacity
               style={[styles.pickupBtn, savingPickup && styles.pickupBtnDisabled]}
@@ -464,7 +500,7 @@ export default function CommuteLocationsScreen() {
                 </>
               )}
             </TouchableOpacity>
-            {alternateActive ? (
+            {nearPickupOverride || staleRemotePickup ? (
               <TouchableOpacity style={styles.clearBtn} onPress={clearAlternatePickup} disabled={savingPickup}>
                 <Text style={styles.clearBtnText}>Clear — use home location</Text>
               </TouchableOpacity>
@@ -554,6 +590,32 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.info,
     marginTop: 4,
+  },
+  stalePickupBanner: {
+    marginTop: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    gap: Spacing.sm,
+  },
+  stalePickupText: {
+    fontSize: FontSize.xs,
+    color: Colors.text,
+    lineHeight: 18,
+  },
+  stalePickupBtn: {
+    alignSelf: "flex-start",
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary,
+  },
+  stalePickupBtnText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textOnPrimary,
   },
   mapBlock: { marginTop: Spacing.md },
   mapImage: {

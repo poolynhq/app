@@ -24,6 +24,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { AuthBrandingHero } from "@/components/auth/AuthBrandingHero";
 
 function isValidEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -226,6 +227,15 @@ export default function SignUp() {
             </TouchableOpacity>
           </Link>
         </View>
+
+        <AuthBrandingHero
+          kicker={isBusinessPath ? "Launch your program" : "Join Poolyn"}
+          subline={
+            isBusinessPath
+              ? "Create your admin login first. You’ll set up your organisation next."
+              : "A few details and you’re on your way to smarter shared commutes."
+          }
+        />
 
         <View style={styles.individualBadge}>
           <Ionicons

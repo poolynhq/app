@@ -232,7 +232,12 @@ function SatelliteNode({
   );
 }
 
-export function CommunityHubAnimation() {
+export function CommunityHubAnimation({
+  layoutMode = "fill",
+}: {
+  /** `stacked`: fixed height for narrow column layouts (avoids flex growth / overlap with copy). */
+  layoutMode?: "fill" | "stacked";
+}) {
   const [layout, setLayout] = useState({ width: 0, height: 0 });
 
   const dashOffset = useSharedValue(0);
@@ -290,8 +295,11 @@ export function CommunityHubAnimation() {
   const orbit = Math.min(W, H) * 0.36;
   const pulseMax = orbit + 18;
 
+  const rootStyle =
+    layoutMode === "stacked" ? styles.rootStacked : styles.rootFill;
+
   return (
-    <View style={styles.root} onLayout={onLayout}>
+    <View style={[styles.rootBase, rootStyle]} onLayout={onLayout}>
       {W > 0 && H > 0 ? (
         <>
           <Svg width={W} height={H} style={StyleSheet.absoluteFill}>
@@ -349,12 +357,22 @@ export function CommunityHubAnimation() {
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    minHeight: 280,
+  rootBase: {
     width: "100%",
     position: "relative",
     overflow: "hidden",
+  },
+  rootFill: {
+    flex: 1,
+    minHeight: 280,
+  },
+  /** Fixed height for the hub only; parent slot holds caption below (no flex overlap with copy). */
+  rootStacked: {
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 236,
+    minHeight: 220,
+    maxHeight: 248,
   },
   satWrap: {
     position: "absolute",

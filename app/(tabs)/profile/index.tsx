@@ -330,6 +330,7 @@ export default function Profile() {
         { icon: "notifications-outline" as const, label: "Notifications", route: "/(tabs)/profile/notifications" },
         { icon: "pulse-outline" as const, label: "Activity", route: "/(tabs)/profile/activity" },
         { icon: "chatbubbles-outline" as const, label: "Ride messages", route: "/(tabs)/messages" },
+        { icon: "dice-outline" as const, label: "Poolyn Crews", route: "/(tabs)/profile/crews" },
         ...(profile?.org_id
           ? [
               {

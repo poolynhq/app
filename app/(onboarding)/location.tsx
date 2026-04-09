@@ -250,7 +250,9 @@ export default function LocationSetup() {
       setWorkPin(wp);
       const wl = profile.work_location_label?.trim();
       setWorkAddress(wl || "Saved work location");
-      if (wl) setWorkLabel(wl);
+      // Leave optional tag empty when loading — a stale org/campus label here used to overwrite the
+      // real address on save (`workLabel || workAddress`). Users can re-enter a short building name.
+      setWorkLabel("");
     }
   }, [
     fromProfile,
@@ -373,6 +375,7 @@ export default function LocationSetup() {
     workJustSelected.current = true;
     setWorkAddress(s.label);
     setWorkPin({ lat: s.lat, lng: s.lng });
+    setWorkLabel("");
     setWorkSuggestions([]);
     if (workError) setWorkError("");
   }
@@ -388,6 +391,7 @@ export default function LocationSetup() {
       workJustSelected.current = true;
       setWorkAddress(address);
       setWorkPin({ lat, lng });
+      setWorkLabel("");
       setWorkSuggestions([]);
       if (workError) setWorkError("");
     }
@@ -435,8 +439,11 @@ export default function LocationSetup() {
       return;
     }
 
+    const addrLine = workAddress.trim();
+    const tag = workLabel.trim();
     const updates: Record<string, unknown> = {
-      work_location_label: workLabel.trim() || workAddress.trim(),
+      // Always persist the searched address; optional tag is a prefix (never replace coords' meaning).
+      work_location_label: tag ? `${tag} — ${addrLine}` : addrLine,
     };
     if (homePin) {
       updates.home_location = `POINT(${homePin.lng} ${homePin.lat})`;
@@ -444,6 +451,8 @@ export default function LocationSetup() {
     if (workPin) {
       updates.work_location = `POINT(${workPin.lng} ${workPin.lat})`;
     }
+    // One-day pickup must not survive a routine commute save (it was overriding saved home on Profile → Commute).
+    updates.pickup_location = null;
     const { error: saveErr } = await supabase.from("users").update(updates).eq("id", userId);
 
     if (saveErr) {
@@ -603,6 +612,7 @@ export default function LocationSetup() {
               onChangeText={(t) => {
                 setWorkAddress(t);
                 setWorkPin(null);
+                setWorkLabel("");
                 if (workError) setWorkError("");
               }}
               autoComplete="street-address"
@@ -652,7 +662,7 @@ export default function LocationSetup() {
             />
             <TextInput
               style={styles.input}
-              placeholder='Label (e.g. "HQ" or "Building C")'
+              placeholder='Optional short name (e.g. "Building C") — not your full address'
               placeholderTextColor={Colors.textTertiary}
               value={workLabel}
               onChangeText={setWorkLabel}

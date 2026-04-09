@@ -443,6 +443,121 @@ export interface Database {
         };
       };
 
+      crew_members: {
+        Row: {
+          crew_id: string;
+          user_id: string;
+          role: string;
+          joined_at: string;
+        };
+        Insert: {
+          crew_id: string;
+          user_id: string;
+          role?: string;
+          joined_at?: string;
+        };
+        Update: {
+          role?: string;
+        };
+      };
+
+      crew_messages: {
+        Row: {
+          id: string;
+          crew_trip_instance_id: string;
+          sender_id: string | null;
+          body: string;
+          kind: string;
+          meta: Json;
+          sent_at: string;
+        };
+        Insert: {
+          id?: string;
+          crew_trip_instance_id: string;
+          sender_id?: string | null;
+          body: string;
+          kind?: string;
+          meta?: Json;
+          sent_at?: string;
+        };
+        Update: never;
+      };
+
+      crew_trip_instances: {
+        Row: {
+          id: string;
+          crew_id: string;
+          trip_date: string;
+          designated_driver_user_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          crew_id: string;
+          trip_date: string;
+          designated_driver_user_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          designated_driver_user_id?: string | null;
+          updated_at?: string;
+        };
+      };
+
+      crew_invitations: {
+        Row: {
+          id: string;
+          crew_id: string;
+          invited_user_id: string;
+          invited_by_user_id: string;
+          message: string | null;
+          status: string;
+          created_at: string;
+          responded_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          crew_id: string;
+          invited_user_id: string;
+          invited_by_user_id: string;
+          message?: string | null;
+          status?: string;
+          created_at?: string;
+          responded_at?: string | null;
+        };
+        Update: {
+          status?: string;
+          responded_at?: string | null;
+        };
+      };
+
+      crews: {
+        Row: {
+          id: string;
+          name: string;
+          org_id: string | null;
+          created_by: string;
+          invite_code: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          org_id?: string | null;
+          created_by: string;
+          invite_code?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          name?: string;
+          updated_at?: string;
+        };
+      };
+
       driver_preferences: {
         Row: {
           id: string;
@@ -1419,6 +1534,22 @@ export interface Database {
       expire_pending_ride_requests: {
         Args: Record<string, never>;
         Returns: null;
+      };
+      poolyn_join_crew: {
+        Args: { p_invite_code: string };
+        Returns: Json;
+      };
+      poolyn_respond_crew_invitation: {
+        Args: { p_invitation_id: string; p_accept: boolean };
+        Returns: Json;
+      };
+      poolyn_crew_roll_driver: {
+        Args: { p_trip_instance_id: string; p_eligible_user_ids?: string[] };
+        Returns: Json;
+      };
+      poolyn_org_crew_route_candidates: {
+        Args: { p_detour_mins: number };
+        Returns: { id: string; full_name: string }[];
       };
       get_discover_route_snapshot: {
         Args: { p_user_id: string };

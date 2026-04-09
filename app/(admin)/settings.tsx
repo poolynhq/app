@@ -41,6 +41,7 @@ export default function AdminSettings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoAssign, setAutoAssign] = useState(false);
+  const [allowCrossOrg, setAllowCrossOrg] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
   const fetchOrg = useCallback(async () => {
@@ -57,6 +58,7 @@ export default function AdminSettings() {
       setOrg(data);
       const settings = (data?.settings ?? {}) as Record<string, unknown>;
       setAutoAssign(Boolean(settings.auto_assign_driver));
+      setAllowCrossOrg(data?.allow_cross_org === true);
     } catch (e: any) {
       setError(e.message ?? "Failed to load settings");
     } finally {
@@ -124,6 +126,21 @@ export default function AdminSettings() {
       .eq("id", org.id);
     if (!updateError) {
       setOrg((prev) => (prev ? { ...prev, settings: nextSettings } : prev));
+    }
+  }
+
+  async function handleAllowCrossOrgToggle(value: boolean) {
+    if (!org?.id || profile?.org_role !== "admin") return;
+    setAllowCrossOrg(value);
+    const { error: updateError } = await supabase
+      .from("organisations")
+      .update({ allow_cross_org: value })
+      .eq("id", org.id);
+    if (!updateError) {
+      setOrg((prev) => (prev ? { ...prev, allow_cross_org: value } : prev));
+    } else {
+      setAllowCrossOrg(!value);
+      showAlert("Could not update", updateError.message);
     }
   }
 
@@ -243,6 +260,27 @@ export default function AdminSettings() {
 
         <Text style={styles.sectionTitle}>MATCHING</Text>
         <View style={styles.menuCard}>
+          {profile?.org_role === "admin" ? (
+            <>
+              <View style={styles.menuItem}>
+                <Ionicons name="git-network-outline" size={22} color={Colors.text} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuLabel}>Allow cross-network commuting</Text>
+                  <Text style={styles.menuSubLabel}>
+                    When off, members only match carpools within your organisation (stricter safety). When on,
+                    drivers may opt in to see compatible commuters outside the network if they enable it on Home.
+                  </Text>
+                </View>
+                <Switch
+                  value={allowCrossOrg}
+                  onValueChange={(v) => void handleAllowCrossOrgToggle(v)}
+                  trackColor={{ false: Colors.border, true: Colors.primaryLight }}
+                  thumbColor={allowCrossOrg ? Colors.primary : Colors.surface}
+                />
+              </View>
+              <View style={styles.menuDivider} />
+            </>
+          ) : null}
           <View style={styles.menuItem}>
             <Ionicons name="shuffle-outline" size={22} color={Colors.text} />
             <View style={{ flex: 1 }}>
@@ -390,6 +428,11 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.base,
     paddingHorizontal: Spacing.base,
     gap: Spacing.md,
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: Colors.borderLight,
+    marginHorizontal: Spacing.base,
   },
   adminMenuItem: {
     flexDirection: "row",

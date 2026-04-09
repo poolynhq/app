@@ -61,6 +61,21 @@ function formatDepart(iso: string) {
   }
 }
 
+function rideRequestAcceptErrorMessage(raw: string): string {
+  const key = raw.trim();
+  const map: Record<string, string> = {
+    driver_org_closed_network:
+      "Your organisation is set to in-network commuting only. Ask an admin to allow cross-network commuting in Admin → Settings if you should pick up people outside your workplace.",
+    passenger_org_closed_network:
+      "This person’s organisation does not allow commuting with people outside their network.",
+    driver_outer_riders_disabled:
+      "Turn on “Show riders outside my workplace” under the map on Home to accept pickup requests from other organisations.",
+    org_mismatch:
+      "This pickup cannot be matched under current network rules. Check cross-network settings for both organisations.",
+  };
+  return map[key] ?? raw;
+}
+
 function ActiveRideCard({
   rideId,
   origin,
@@ -254,7 +269,7 @@ export default function MyRides() {
       void loadDriverUpcoming();
       setActiveTab("upcoming");
     } else {
-      showAlert("Could not accept", res.reason);
+      showAlert("Could not accept", rideRequestAcceptErrorMessage(res.reason));
     }
   }
 
@@ -290,8 +305,9 @@ export default function MyRides() {
         {activeTab === "open_requests" ? (
           <View style={styles.panel}>
             <Text style={styles.panelHint}>
-              Same-org requests only. You need an active vehicle with more than one seat. Prefer accepting from
-              the push alert you already received.
+              Open requests use your saved commute and organisation rules. Cross-network pickups are allowed only
+              when both workplaces permit it and you have enabled outside riders on Home. You need an active
+              vehicle with more than one seat. Prefer accepting from the push alert you already received.
             </Text>
             {loadingOpen ? (
               <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.xl }} />

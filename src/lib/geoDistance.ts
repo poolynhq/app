@@ -13,3 +13,11 @@ export function haversineKm(
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
 }
+
+/** Great-circle distance in metres (WGS84). */
+export function haversineMeters(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number }
+): number {
+  return haversineKm(a, b) * 1000;
+}

@@ -23,6 +23,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { AuthBrandingHero } from "@/components/auth/AuthBrandingHero";
 
 function isValidEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -99,20 +100,15 @@ export default function SignIn() {
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.header}>
-          <View style={styles.logoContainer}>
-            <Ionicons name="car-sport" size={40} color={Colors.textOnPrimary} />
-          </View>
-          <Text style={styles.appName}>Poolyn</Text>
-          <Text style={styles.tagline}>
-            Smarter commutes with your colleagues
-          </Text>
-        </View>
+        <AuthBrandingHero
+          kicker="Welcome back"
+          subline="Sign in with your work email. Verified colleagues, shared routes, less solo driving."
+        />
 
         <View style={styles.form}>
-          <Text style={styles.title}>Welcome back</Text>
+          <Text style={styles.title}>Sign in</Text>
           <Text style={styles.subtitle}>
-            Sign in with your work email to continue
+            Use the email and password for your Poolyn account
           </Text>
 
           <TouchableOpacity
@@ -250,32 +246,7 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: Spacing.xl,
-  },
-  header: {
-    alignItems: "center",
-    paddingTop: 80,
-    paddingBottom: Spacing["3xl"],
-  },
-  logoContainer: {
-    width: 72,
-    height: 72,
-    borderRadius: BorderRadius.xl,
-    backgroundColor: Colors.primary,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: Spacing.base,
-    ...Shadow.lg,
-  },
-  appName: {
-    fontSize: FontSize["3xl"],
-    fontWeight: FontWeight.bold,
-    color: Colors.text,
-    letterSpacing: -0.5,
-  },
-  tagline: {
-    fontSize: FontSize.base,
-    color: Colors.textSecondary,
-    marginTop: Spacing.xs,
+    paddingTop: Spacing["2xl"],
   },
   form: {
     flex: 1,

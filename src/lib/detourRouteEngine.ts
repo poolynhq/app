@@ -93,7 +93,8 @@ export async function computeDriverPassengerDetourMetrics(
   } else {
     const b = await fetchDrivingRoute(
       [input.driver_origin, input.driver_destination],
-      profile
+      profile,
+      { preferShortestDistance: true }
     );
     if (!b.ok) return { ok: false, error: `baseline_route:${b.error}` };
     baseline = b.route;

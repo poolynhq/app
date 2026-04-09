@@ -30,10 +30,19 @@ export function usePassengerPickupState(passengerId: string | null, enabled: boo
         .select("id, direction, desired_depart_at, flexibility_mins, status, expires_at")
         .eq("passenger_id", passengerId)
         .eq("status", "pending")
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle(),
       listMyUpcomingRidesAsPassenger(passengerId),
     ]);
-    setPending((pRes.data as PassengerPendingRequest | null) ?? null);
+    if (pRes.error) {
+      if (__DEV__) {
+        console.warn("[usePassengerPickupState] ride_requests:", pRes.error.message);
+      }
+      setPending(null);
+    } else {
+      setPending((pRes.data as PassengerPendingRequest | null) ?? null);
+    }
     setUpcomingRides(rides);
   }, [passengerId, enabled]);
 
@@ -75,7 +84,7 @@ export function usePassengerPickupState(passengerId: string | null, enabled: boo
 
   useEffect(() => {
     if (!passengerId || !enabled) return;
-    const t = setInterval(() => void load(), 15_000);
+    const t = setInterval(() => void load(), 45_000);
     return () => clearInterval(t);
   }, [passengerId, enabled, load]);
 
