@@ -41,7 +41,7 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/poolyn_favicon.png"
+      "favicon": "./assets/landing-favicon-poolyn.png"
     },
     "plugins": [
       "expo-router",

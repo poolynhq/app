@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ImageSourcePropType } from "react-native";
 import {
   Animated,
@@ -7,6 +7,7 @@ import {
   ImageBackground,
   LayoutChangeEvent,
   Linking,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -16,7 +17,7 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Link } from "expo-router";
+import { Link, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
   BorderRadius,
@@ -65,7 +66,7 @@ const LANDING_CONTENT_MAX = 1220;
  * Community (animation vs copy):
  * - COMMUNITY_SIDE_BY_SIDE_MIN_WIDTH — only at this width+ do copy + animation sit side-by-side; below = stacked (avoids overlap)
  */
-const FOOTER_LAYOUT_SWEEP_BAND_PAD_V = 6;
+const FOOTER_LAYOUT_SWEEP_BAND_PAD_V = 12;
 const FOOTER_LAYOUT_INNER_PAD_TOP = 0;
 const SECTION_BLOCK_PAD_V = 60;
 const SECTION_EYEBROW_MARGIN_BOTTOM = 8;
@@ -139,9 +140,12 @@ function FooterFaviconSweep({
 }
 
 export default function MarketingLanding() {
+  const router = useRouter();
   const { width } = useWindowDimensions();
   const isWide = width >= 880;
   const isMedium = width >= 560;
+  /** Single-row hero nav: logo + hamburger + waitlist CTA (links + Sign in live in the menu). */
+  const isNavCompact = !isMedium;
   /** Community side-by-side only when there is room; avoids squeezed/overlapping columns. */
   const isCommunityWide = width >= COMMUNITY_SIDE_BY_SIDE_MIN_WIDTH;
   const scrollRef = useRef<ScrollView>(null);
@@ -156,6 +160,7 @@ export default function MarketingLanding() {
   const [waitlistIntent, setWaitlistIntent] = useState<WaitlistIntent | undefined>(
     undefined
   );
+  const [heroMenuOpen, setHeroMenuOpen] = useState(false);
   const signupBlockedOnWeb = useAccountSignupBlockedOnWeb();
 
   function mark(key: SectionKey, e: LayoutChangeEvent) {
@@ -167,6 +172,11 @@ export default function MarketingLanding() {
       y: Math.max(0, ys[key] - (isWide ? 84 : 64)),
       animated: true,
     });
+  }
+
+  function jumpFromHeroMenu(key: SectionKey) {
+    setHeroMenuOpen(false);
+    requestAnimationFrame(() => jump(key));
   }
 
   function openWaitlist(intent?: WaitlistIntent) {
@@ -181,8 +191,14 @@ export default function MarketingLanding() {
   const heroLogoSize = useMemo(() => {
     // Leave room for Sign in + CTA (and center links when wide) so the bar
     // doesn’t wrap into a tall block that overlaps the hero copy below.
-    const reserveForNav = isWide ? 400 : isMedium ? 248 : 200;
-    const widthCap = isWide ? 220 : 168;
+    const reserveForNav = isWide
+      ? 400
+      : isNavCompact
+        ? 168
+        : isMedium
+          ? 248
+          : 200;
+    const widthCap = isWide ? 220 : isNavCompact ? 132 : 168;
     const maxW = Math.max(
       96,
       Math.min(widthCap, layoutWidth - 2 * contentPad - reserveForNav)
@@ -196,10 +212,14 @@ export default function MarketingLanding() {
     Platform.OS === "web"
       ? isWide
         ? 120
-        : 172
+        : isNavCompact
+          ? 104
+          : 172
       : isWide
         ? 132
-        : 184;
+        : isNavCompact
+          ? 108
+          : 184;
 
   // Web: full-width content (no narrow centered column).
   const webContentLayout =
@@ -213,6 +233,7 @@ export default function MarketingLanding() {
         contentContainerStyle={[
           styles.pageContent,
           webContentLayout,
+          Platform.OS === "web" && styles.pageContentWeb,
         ]}
       >
         {/* Hero (nav overlays image) */}
@@ -241,6 +262,7 @@ export default function MarketingLanding() {
                 style={[
                   styles.landingShell,
                   styles.heroNavInner,
+                  isNavCompact && styles.heroNavInnerCompact,
                   { paddingHorizontal: contentPad },
                 ]}
               >
@@ -267,6 +289,7 @@ export default function MarketingLanding() {
                     />
                   </Pressable>
                 </View>
+                {isNavCompact ? <View style={styles.navCompactSpacer} /> : null}
                 {isMedium ? (
                   <View style={styles.navMid}>
                     <Pressable onPress={() => jump("how")} hitSlop={6}>
@@ -286,18 +309,52 @@ export default function MarketingLanding() {
                     </Pressable>
                   </View>
                 ) : null}
-                <View style={styles.navRight}>
-                  <Link href="/(auth)/sign-in" asChild>
-                    <Pressable hitSlop={6}>
-                      <Text style={styles.navLinkMutedOnHero}>Sign in</Text>
-                    </Pressable>
-                  </Link>
-                  <Pressable
-                    style={styles.navCta}
-                    onPress={() => openWaitlist()}
-                  >
-                    <Text style={styles.navCtaText}>Join the waitlist</Text>
-                  </Pressable>
+                <View
+                  style={[styles.navRight, isNavCompact && styles.navRightCompact]}
+                >
+                  {isNavCompact ? (
+                    <>
+                      <Pressable
+                        style={[styles.navCta, styles.navCtaCompact]}
+                        onPress={() => openWaitlist()}
+                      >
+                        <Text
+                          style={[styles.navCtaText, styles.navCtaTextCompact]}
+                          numberOfLines={1}
+                        >
+                          Join the waitlist
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setHeroMenuOpen(true)}
+                        style={styles.navHamburger}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        accessibilityLabel="Open menu"
+                        accessibilityState={{ expanded: heroMenuOpen }}
+                      >
+                        <Ionicons
+                          name="menu"
+                          size={28}
+                          color="rgba(255,255,255,0.94)"
+                        />
+                      </Pressable>
+                    </>
+                  ) : (
+                    <>
+                      <Link href="/(auth)/sign-in" asChild>
+                        <Pressable hitSlop={6}>
+                          <Text style={styles.navLinkMutedOnHero}>Sign in</Text>
+                        </Pressable>
+                      </Link>
+                      <Pressable
+                        style={styles.navCta}
+                        onPress={() => openWaitlist()}
+                      >
+                        <Text style={styles.navCtaText}>Join the waitlist</Text>
+                      </Pressable>
+                    </>
+                  )}
                 </View>
               </View>
             </View>
@@ -500,11 +557,23 @@ export default function MarketingLanding() {
               Every empty seat is a missed opportunity.
             </Text>
             <View style={styles.impactGrid}>
-              <ImpactItem icon="car-outline" title="Reduce road congestion" body="Fewer single-occupancy vehicles on peak corridors." />
+              <ImpactItem
+                title="Reduce road congestion"
+                body="Fewer single-occupancy vehicles on peak corridors."
+                iconNode={<ImpactCongestionIcon />}
+              />
               <ImpactItem icon="flame-outline" title="Reduce fuel costs" body="Share fuel expenses instead of absorbing them alone." />
               <ImpactItem icon="construct-outline" title="Reduce vehicle wear" body="Split miles across your carpool; maintenance adds up." />
-              <ImpactItem icon="globe-outline" title="Reduce environmental impact" body="Measurable CO₂ savings your team can report." />
-              <ImpactItem icon="pin-outline" title="Reduce parking hassle" body="Less circling, less stress at the office." />
+              <ImpactItem
+                title="Reduce environmental impact"
+                body="Measurable CO₂ savings your team can report."
+                iconNode={<ImpactLeafIcon />}
+              />
+              <ImpactItem
+                title="Reduce parking hassle"
+                body="Less circling, less stress at the office."
+                iconNode={<ImpactParkingPIcon />}
+              />
               <ImpactItem icon="cash-outline" title="Stop paying for empty seats" body="Fair, transparent splits, no awkward Venmo chains." />
             </View>
             </View>
@@ -520,58 +589,69 @@ export default function MarketingLanding() {
               { paddingHorizontal: contentPad },
             ]}
           >
-          <View
-            style={[
-              styles.commRow,
-              !isCommunityWide && styles.commCol,
-              !isCommunityWide && styles.commColCommunity,
-            ]}
-          >
-            <View
-              style={[
-                styles.commCopy,
-                !isCommunityWide && styles.commCopyNarrow,
-              ]}
-            >
-              <Text style={styles.eyebrow}>Community</Text>
-              <Text style={styles.sectionH1}>
-                More than a ride.{" "}
-                <Text style={styles.sectionH1Leaf}>A daily ritual.</Text>
-              </Text>
-              <Text style={styles.sectionLead}>
-                Poolyn turns your commute into a social experience without forcing
-                small talk.
-              </Text>
-              {isCommunityWide ? (
-                <View style={styles.commMiniGrid}>
+            {isCommunityWide ? (
+              <View style={styles.commRow}>
+                <View style={styles.commCopy}>
+                  <Text style={styles.eyebrow}>Community</Text>
+                  <Text style={styles.sectionH1}>
+                    More than a ride.{" "}
+                    <Text style={styles.sectionH1Leaf}>A daily ritual.</Text>
+                  </Text>
+                  <Text style={styles.sectionLead}>
+                    Poolyn turns your commute into a social experience without forcing
+                    small talk.
+                  </Text>
+                  <View style={styles.commMiniGrid}>
+                    <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
+                    <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
+                    <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
+                    <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
+                  </View>
+                </View>
+                <LinearGradient
+                  colors={LandingGradients.commArt}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.commArt}
+                >
+                  <CommunityHubAnimation layoutMode="fill" />
+                  <Text style={styles.commArtCaption}>Your carpool, elevated</Text>
+                </LinearGradient>
+              </View>
+            ) : (
+              <>
+                <LinearGradient
+                  colors={LandingGradients.commArt}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.commStackedCard}
+                >
+                  <View style={styles.commStackedCopy}>
+                    <Text style={styles.eyebrow}>Community</Text>
+                    <Text style={styles.sectionH1}>
+                      More than a ride.{" "}
+                      <Text style={styles.sectionH1Leaf}>A daily ritual.</Text>
+                    </Text>
+                    <Text style={[styles.sectionLead, styles.commStackedLead]}>
+                      Poolyn turns your commute into a social experience without
+                      forcing small talk.
+                    </Text>
+                  </View>
+                  <View style={styles.commStackedArtSlot}>
+                    <CommunityHubAnimation layoutMode="stacked" />
+                    <Text style={styles.commArtCaptionStacked}>
+                      Your carpool, elevated
+                    </Text>
+                  </View>
+                </LinearGradient>
+                <View style={[styles.commMiniGrid, styles.commMiniGridBelowArt]}>
                   <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
                   <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
                   <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
                   <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
                 </View>
-              ) : null}
-            </View>
-            <LinearGradient
-              colors={LandingGradients.commArt}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={[
-                styles.commArt,
-                !isCommunityWide && styles.commArtStacked,
-              ]}
-            >
-              <CommunityHubAnimation />
-              <Text style={styles.commArtCaption}>Your carpool, elevated</Text>
-            </LinearGradient>
-            {!isCommunityWide ? (
-              <View style={[styles.commMiniGrid, styles.commMiniGridBelowArt]}>
-                <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
-                <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
-                <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
-                <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
-              </View>
-            ) : null}
-          </View>
+              </>
+            )}
           </View>
         </View>
 
@@ -818,9 +898,80 @@ export default function MarketingLanding() {
             </Pressable>
           </View>
           <Text style={styles.footerTag}>Poolyn · smarter commuting for modern teams.</Text>
+          <Text style={styles.footerCopyright}>
+            © {new Date().getFullYear()} Poolyn. All rights reserved.
+          </Text>
           </View>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={heroMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHeroMenuOpen(false)}
+      >
+        <View style={styles.heroMenuRoot}>
+          <Pressable
+            style={styles.heroMenuBackdrop}
+            onPress={() => setHeroMenuOpen(false)}
+            accessibilityLabel="Dismiss menu"
+          />
+          <View style={styles.heroMenuSheet}>
+            <View style={styles.heroMenuHeader}>
+              <Text style={styles.heroMenuTitle}>Menu</Text>
+              <Pressable
+                onPress={() => setHeroMenuOpen(false)}
+                hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Close menu"
+              >
+                <Ionicons name="close" size={26} color={Landing.ink} />
+              </Pressable>
+            </View>
+            <Pressable
+              style={styles.heroMenuRow}
+              onPress={() => jumpFromHeroMenu("how")}
+            >
+              <Text style={styles.heroMenuLink}>How it works</Text>
+            </Pressable>
+            <Pressable
+              style={styles.heroMenuRow}
+              onPress={() => jumpFromHeroMenu("features")}
+            >
+              <Text style={styles.heroMenuLink}>Differentiators</Text>
+            </Pressable>
+            <Pressable
+              style={styles.heroMenuRow}
+              onPress={() => jumpFromHeroMenu("impact")}
+            >
+              <Text style={styles.heroMenuLink}>Impact</Text>
+            </Pressable>
+            <Pressable
+              style={styles.heroMenuRow}
+              onPress={() => jumpFromHeroMenu("community")}
+            >
+              <Text style={styles.heroMenuLink}>Community</Text>
+            </Pressable>
+            <Pressable
+              style={styles.heroMenuRow}
+              onPress={() => jumpFromHeroMenu("orgs")}
+            >
+              <Text style={styles.heroMenuLink}>Organizations</Text>
+            </Pressable>
+            <View style={styles.heroMenuDivider} />
+            <Pressable
+              style={styles.heroMenuRow}
+              onPress={() => {
+                setHeroMenuOpen(false);
+                router.push("/(auth)/sign-in");
+              }}
+            >
+              <Text style={styles.heroMenuLink}>Sign in</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <WaitlistExitIntentModal
         waitlistModalOpen={waitlistOpen}
@@ -903,19 +1054,94 @@ function FeatureCard({
   );
 }
 
+/** Matches {@link LandingIcon} `onDark` tile for custom impact glyphs. */
+function ImpactIconTile({ children }: { children: ReactNode }) {
+  const box = 42;
+  const radius = Math.min(14, box * 0.28);
+  return (
+    <View
+      style={{
+        width: box,
+        height: box,
+        borderRadius: radius,
+        backgroundColor: Landing.onDarkFill,
+        borderWidth: 1,
+        borderColor: Landing.onDarkBorder,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      {children}
+    </View>
+  );
+}
+
+function ImpactParkingPIcon() {
+  return (
+    <ImpactIconTile>
+      <Text
+        style={{
+          fontFamily: LandingFont.displayBold,
+          fontSize: 22,
+          color: Landing.orange,
+          marginTop: -2,
+          letterSpacing: -1,
+        }}
+        accessibilityLabel="Parking, letter P"
+      >
+        P
+      </Text>
+    </ImpactIconTile>
+  );
+}
+
+function ImpactLeafIcon() {
+  return (
+    <ImpactIconTile>
+      <View accessibilityLabel="Environmental impact, leaf">
+        <Ionicons name="leaf" size={22} color="#34D399" />
+      </View>
+    </ImpactIconTile>
+  );
+}
+
+function ImpactCongestionIcon() {
+  return (
+    <ImpactIconTile>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          width: "100%",
+        }}
+        accessibilityLabel="Multiple vehicles"
+      >
+        <Ionicons name="car-outline" size={13} color={Landing.orange} style={{ marginRight: -7 }} />
+        <Ionicons name="car-outline" size={15} color={Landing.orange} style={{ marginRight: -7, zIndex: 1 }} />
+        <Ionicons name="car-outline" size={13} color={Landing.orange} />
+      </View>
+    </ImpactIconTile>
+  );
+}
+
 function ImpactItem({
   icon,
+  iconNode,
   title,
   body,
 }: {
-  icon: keyof typeof Ionicons.glyphMap;
   title: string;
   body: string;
+  icon?: keyof typeof Ionicons.glyphMap;
+  iconNode?: ReactNode;
 }) {
   return (
     <View style={styles.impactCard}>
       <View style={styles.impactIconSlot}>
-        <LandingIcon name={icon} size={20} box={42} tone="onDark" rounded="tile" />
+        {iconNode ?? (
+          <LandingIcon name={icon!} size={20} box={42} tone="onDark" rounded="tile" />
+        )}
       </View>
       <Text style={styles.impactCardTitle}>{title}</Text>
       <Text style={styles.impactCardBody}>{body}</Text>
@@ -986,6 +1212,15 @@ const styles = StyleSheet.create({
     }),
   },
   pageContent: { paddingBottom: Spacing["5xl"] },
+  /**
+   * Web: drop extra ScrollView padding below the footer, and let the content column fill at least
+   * the viewport so any “shortfall” under the footer picks up the same forest tone as the footer.
+   */
+  pageContentWeb: {
+    paddingBottom: 0,
+    flexGrow: 1,
+    backgroundColor: Landing.forestDeep,
+  },
   landingShell: {
     width: "100%",
     ...Platform.select({
@@ -1031,11 +1266,17 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
     flexWrap: "wrap",
   },
+  heroNavInnerCompact: {
+    flexWrap: "nowrap",
+    alignItems: "center",
+  },
   heroMainStretch: {
     width: "100%",
     alignItems: "center",
   },
   navLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  /** Pushes compact actions (waitlist + hamburger) flush right without growing the logo row. */
+  navCompactSpacer: { flex: 1, minWidth: 0 },
   logoHeroLockup: {
     justifyContent: "center",
     alignItems: "flex-start",
@@ -1069,6 +1310,78 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.82)",
   },
   navRight: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
+  navRightCompact: {
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: Spacing.sm,
+  },
+  navHamburger: {
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  navCtaCompact: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    maxWidth: 200,
+  },
+  navCtaTextCompact: {
+    fontSize: FontSize.sm,
+  },
+  heroMenuRoot: {
+    flex: 1,
+    justifyContent: "flex-start",
+  },
+  heroMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(10, 22, 16, 0.48)",
+  },
+  heroMenuSheet: {
+    width: "100%",
+    backgroundColor: Landing.white,
+    paddingBottom: Spacing["3xl"],
+    borderBottomLeftRadius: BorderRadius.xl,
+    borderBottomRightRadius: BorderRadius.xl,
+    ...Platform.select({
+      web: {
+        boxShadow: "0 12px 40px rgba(0,0,0,0.18)",
+      } as object,
+      default: {
+        elevation: 8,
+      },
+    }),
+  },
+  heroMenuHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing["2xl"],
+    paddingBottom: Spacing.lg,
+  },
+  heroMenuTitle: {
+    fontFamily: LandingFont.displaySemi,
+    fontSize: FontSize.xl,
+    color: Landing.ink,
+  },
+  heroMenuRow: {
+    paddingVertical: Spacing.base,
+    paddingHorizontal: Spacing.xl,
+  },
+  heroMenuLink: {
+    fontFamily: LandingFont.bodySemi,
+    fontSize: FontSize.lg,
+    color: Landing.forest,
+  },
+  heroMenuDivider: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginVertical: Spacing.sm,
+    marginHorizontal: Spacing.xl,
+  },
   navCta: {
     backgroundColor: Landing.forest,
     paddingHorizontal: 20,
@@ -1387,17 +1700,45 @@ const styles = StyleSheet.create({
 
   commRow: { flexDirection: "row", gap: 40, alignItems: "stretch" },
   commCol: { flexDirection: "column", gap: Spacing["2xl"] },
-  /** Extra vertical rhythm when Community is stacked (narrow); reduces art riding up on copy. */
-  commColCommunity: { gap: Spacing["4xl"] },
   commCopy: { flex: 1 },
-  commCopyNarrow: {
-    flex: 0,
+  /** Narrow: one mint card — copy block, then a fixed-height slot so the hub never overlaps headings. */
+  commStackedCard: {
     width: "100%",
     alignSelf: "stretch",
-    marginBottom: Spacing.lg,
+    flexDirection: "column",
+    borderRadius: BorderRadius.xl,
+    borderWidth: 1,
+    borderColor: Landing.tealLine,
+    overflow: "hidden",
+    ...Platform.select({
+      web: { boxShadow: LandingWebShadow.commArt } as object,
+      default: {},
+    }),
+  },
+  commStackedCopy: {
+    width: "100%",
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.md,
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  commStackedLead: {
+    marginBottom: 0,
+  },
+  commStackedArtSlot: {
+    width: "100%",
+    height: 292,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    paddingTop: Spacing.xs,
+    paddingBottom: Spacing.md,
+    flexGrow: 0,
+    flexShrink: 0,
   },
   commMiniGrid: { gap: Spacing.lg, marginTop: Spacing.xl },
-  commMiniGridBelowArt: { marginTop: 0, width: "100%" },
+  commMiniGridBelowArt: { marginTop: Spacing["2xl"], width: "100%" },
   commMini: {
     flexDirection: "row",
     gap: Spacing.md,
@@ -1435,20 +1776,20 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  commArtStacked: {
-    flex: 0,
-    flexGrow: 0,
-    alignSelf: "stretch",
-    width: "100%",
-    minHeight: 280,
-    maxHeight: 380,
-  },
   commArtCaption: {
     fontFamily: LandingFont.bodyMedium,
     marginTop: Spacing.md,
     color: Landing.forest,
     fontSize: FontSize.sm,
     letterSpacing: 0.15,
+  },
+  commArtCaptionStacked: {
+    fontFamily: LandingFont.bodyMedium,
+    marginTop: Spacing.sm,
+    color: Landing.forest,
+    fontSize: FontSize.sm,
+    letterSpacing: 0.15,
+    textAlign: "center",
   },
 
   orgRow: { flexDirection: "row", gap: 40, alignItems: "center" },
@@ -1711,7 +2052,7 @@ const styles = StyleSheet.create({
   },
   footerInner: {
     paddingTop: FOOTER_LAYOUT_INNER_PAD_TOP,
-    paddingBottom: Spacing["4xl"],
+    paddingBottom: Spacing["3xl"],
     alignItems: "center",
   },
   /** Tight band: car + track vertically centered between footer top and quick links. */
@@ -1785,5 +2126,15 @@ const styles = StyleSheet.create({
     fontFamily: LandingFont.body,
     fontSize: FontSize.xs,
     color: "rgba(255,255,255,0.55)",
+    textAlign: "center",
+    marginBottom: Spacing.sm,
+  },
+  footerCopyright: {
+    fontFamily: LandingFont.body,
+    fontSize: 11,
+    color: "rgba(255,255,255,0.45)",
+    textAlign: "center",
+    marginTop: Spacing.xs,
+    paddingBottom: Spacing.lg,
   },
 });
