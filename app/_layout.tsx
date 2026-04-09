@@ -12,6 +12,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Colors } from "@/constants/theme";
 import {
   isAccountSignupBlockedOnWeb,
+  isWebPublicAuthPath,
   MARKETING_BLOCKED_AUTH_SEGMENTS,
 } from "@/lib/marketingWebRestrictions";
 import {
@@ -19,6 +20,7 @@ import {
   SIGNUP_CLOSED_AUTH_SEGMENTS,
 } from "@/lib/poolynSignupClosed";
 import { View, ActivityIndicator, StyleSheet, LogBox, Platform } from "react-native";
+import { CommuteLocationGateHost } from "@/components/CommuteLocationGateHost";
 
 if (__DEV__) {
   LogBox.ignoreLogs([/expo-notifications: Android Push notifications/]);
@@ -88,12 +90,10 @@ function NavigationGuard() {
     const inPublicGroup = segments[0] === "(public)";
     const browserPath = getBrowserPathname();
     const routerPath = normalizeRouterPath(pathname);
+    /** URL bar is the source of truth; do not treat routerPath "still on /" as marketing when user already opened /sign-in etc. */
     const onPublicWebMarketing =
       Platform.OS === "web" &&
-      (browserPath === "/" ||
-        browserPath === "/terms" ||
-        routerPath === "/" ||
-        routerPath === "/terms");
+      (browserPath === "/" || browserPath === "/terms");
     const inBusinessSetup = inAuthGroup && segments.at(1) === "business-sign-up";
     const nextParam = Array.isArray(searchParams.next)
       ? searchParams.next[0]
@@ -105,12 +105,17 @@ function NavigationGuard() {
        * Web marketing: `app/index.tsx` often yields segments like ["index"], not "(public)".
        * expo-router pathname can also hydrate as /sign-in while the address bar is still /.
        * Never send anonymous visitors on / or /terms to sign-in; reconcile router to the URL.
+       * If the router already moved to sign-in (etc.) while the bar is briefly still `/`, do not
+       * replace back to `/` or the Sign in action is cancelled.
        */
       if (Platform.OS === "web") {
         const bar = browserPath;
         if (bar === "/" || bar === "/terms") {
           if (bar === "/" && routerPath !== "/" && routerPath !== "/terms") {
-            router.replace("/");
+            if (!isWebPublicAuthPath(routerPath)) {
+              router.replace("/");
+              return;
+            }
             return;
           }
           if (bar === "/terms" && routerPath !== "/terms") {
@@ -218,6 +223,7 @@ export default function RootLayout() {
     <AuthProvider>
       <StatusBar style="dark" />
       <NavigationGuard />
+      <CommuteLocationGateHost />
     </AuthProvider>
   );
 }

@@ -9,6 +9,30 @@ export const MARKETING_BLOCKED_AUTH_SEGMENTS = new Set([
   "join-org",
 ]);
 
+/** Public `(auth)` routes (pathname without route groups). Used by web NavigationGuard. */
+const WEB_AUTH_PATH_PREFIXES = [
+  "/sign-in",
+  "/sign-up",
+  "/forgot-password",
+  "/reset-password",
+  "/join-org",
+  "/start",
+  "/business-sign-up",
+  "/signup-closed",
+] as const;
+
+/**
+ * True when `pathname` is a normal sign-in / sign-up style screen (expo-router public path).
+ * Used so we do not `router.replace("/")` while the address bar is still `/` during a client
+ * transition from the marketing home to auth.
+ */
+export function isWebPublicAuthPath(path: string): boolean {
+  const base = (path || "/").split("?")[0].replace(/\/$/, "") || "/";
+  return (WEB_AUTH_PATH_PREFIXES as readonly string[]).some(
+    (p) => base === p || base.startsWith(`${p}/`)
+  );
+}
+
 /**
  * Web marketing deploys: block account-creation routes so the site stays waitlist-only.
  *
