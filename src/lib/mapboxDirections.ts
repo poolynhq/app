@@ -53,10 +53,45 @@ type MapboxLegStep = {
   duration?: number;
 };
 
-/** Mapbox’s first route is duration/traffic-weighted; for commute preview we prefer shortest distance among alternatives. */
-function pickShortestRoute<
-  T extends { distance: number; duration: number; geometry: { coordinates: LngLat[] } },
->(routes: T[] | undefined): T | undefined {
+/** Subset of Directions `route` JSON we read for commute UI + storage. */
+export type MapboxDirectionsRouteJson = {
+  distance: number;
+  duration: number;
+  duration_typical?: number;
+  geometry?: { coordinates: LngLat[] };
+  legs?: { distance?: number; steps?: MapboxLegStep[] }[];
+};
+
+/**
+ * Prefer summed leg distances when Mapbox returns legs (matches turn-by-turn totals).
+ */
+export function commuteDistanceMetersFromRouteJson(r: MapboxDirectionsRouteJson): number {
+  const legs = r.legs;
+  if (legs?.length) {
+    let sum = 0;
+    for (const l of legs) sum += l.distance ?? 0;
+    if (sum > 1) return sum;
+  }
+  return r.distance;
+}
+
+/**
+ * For `driving-traffic`, Mapbox’s `duration` is live-traffic-weighted and can diverge sharply between
+ * alternatives; `duration_typical` matches “usual” trip time (closer to other map apps). Commute chips use this.
+ */
+export function commuteDisplayDurationSeconds(
+  r: MapboxDirectionsRouteJson,
+  profile: MapboxDirectionsProfile
+): number {
+  if (profile === "mapbox/driving-traffic") {
+    const t = r.duration_typical;
+    if (typeof t === "number" && Number.isFinite(t) && t > 30) return t;
+  }
+  return r.duration;
+}
+
+/** Among alternatives, pick minimum path length (m). Mapbox’s `routes[0]` is usually better for real-world ETA. */
+function pickShortestRoute(routes: MapboxDirectionsRouteJson[] | undefined): MapboxDirectionsRouteJson | undefined {
   if (!routes?.length) return undefined;
   let best = routes[0];
   let bestD = best.distance;
@@ -71,8 +106,16 @@ function pickShortestRoute<
 }
 
 export type FetchDrivingRouteOptions = {
-  /** When true, requests alternatives and uses the route with minimum distance (m). */
+  /**
+   * When true, requests alternatives and picks the minimum-distance path.
+   * Default false: use `routes[0]` (Mapbox duration/traffic-weighted primary).
+   */
   preferShortestDistance?: boolean;
+  /**
+   * Commute save path: use typical traffic duration + leg-based distance when the API provides them,
+   * so stored numbers align with route chips (live `duration` per alternative can misstate relative ETAs).
+   */
+  applyCommuteDisplayCalibration?: boolean;
 };
 
 function parseLegSteps(legs: { steps?: MapboxLegStep[] }[] | undefined): DrivingRouteStep[] {
@@ -94,6 +137,60 @@ function parseLegSteps(legs: { steps?: MapboxLegStep[] }[] | undefined): Driving
  * Mapbox Directions with explicit success/failure. No silent fallback.
  * Waypoints are visited in order (no optimization query params).
  */
+export type DrivingCommuteAlternativesResult =
+  | { ok: true; routes: DirectionsRoute[] }
+  | { ok: false; error: string };
+
+/**
+ * Up to three driving options in **Mapbox API order** (primary first = duration/traffic-weighted, then alternates).
+ * Same ordering as `fetchRouteInfo` in `mapboxCommutePreview.ts` so variant indices stay aligned.
+ * Tries traffic profile first, then non-traffic.
+ */
+export async function fetchDrivingCommuteAlternatives(
+  coords: LngLat[],
+  profile: MapboxDirectionsProfile = "mapbox/driving-traffic"
+): Promise<DrivingCommuteAlternativesResult> {
+  if (!MAPBOX_TOKEN?.trim()) {
+    return { ok: false, error: "missing_mapbox_token" };
+  }
+  if (coords.length < 2) {
+    return { ok: false, error: "insufficient_coordinates" };
+  }
+  const tryProfile = async (p: MapboxDirectionsProfile): Promise<DirectionsRoute[] | null> => {
+    try {
+      const res = await fetch(buildUrl(p, coords, false, true));
+      const data = (await res.json()) as {
+        message?: string;
+        code?: string;
+        routes?: MapboxDirectionsRouteJson[];
+      };
+      if (!res.ok) return null;
+      const raw = data.routes ?? [];
+      const mapped: DirectionsRoute[] = [];
+      for (const r of raw) {
+        if (!r.geometry?.coordinates || r.geometry.coordinates.length < 2) continue;
+        mapped.push({
+          distanceM: commuteDistanceMetersFromRouteJson(r),
+          durationS: Math.round(commuteDisplayDurationSeconds(r, p)),
+          coordinates: r.geometry.coordinates,
+        });
+        if (mapped.length >= 3) break;
+      }
+      return mapped.length ? mapped : null;
+    } catch {
+      return null;
+    }
+  };
+  let routes = await tryProfile(profile);
+  if (!routes?.length && profile === "mapbox/driving-traffic") {
+    routes = await tryProfile("mapbox/driving");
+  }
+  if (!routes?.length) {
+    return { ok: false, error: "no_routes" };
+  }
+  return { ok: true, routes };
+}
+
 export async function fetchDrivingRoute(
   coords: LngLat[],
   profile: MapboxDirectionsProfile = "mapbox/driving-traffic",
@@ -111,7 +208,7 @@ export async function fetchDrivingRoute(
     const data = (await res.json()) as {
       message?: string;
       code?: string;
-      routes?: { distance: number; duration: number; geometry: { coordinates: LngLat[] } }[];
+      routes?: MapboxDirectionsRouteJson[];
     };
     if (!res.ok) {
       return {
@@ -123,11 +220,14 @@ export async function fetchDrivingRoute(
     if (!r?.geometry?.coordinates?.length) {
       return { ok: false, error: "no_route_geometry" };
     }
+    const cal = Boolean(options?.applyCommuteDisplayCalibration);
     return {
       ok: true,
       route: {
-        distanceM: r.distance,
-        durationS: r.duration,
+        distanceM: cal ? commuteDistanceMetersFromRouteJson(r) : r.distance,
+        durationS: cal
+          ? Math.round(commuteDisplayDurationSeconds(r, profile))
+          : r.duration,
         coordinates: r.geometry.coordinates,
       },
     };
@@ -157,12 +257,7 @@ export async function fetchDrivingRouteWithSteps(
     const data = (await res.json()) as {
       message?: string;
       code?: string;
-      routes?: {
-        distance: number;
-        duration: number;
-        geometry: { coordinates: LngLat[] };
-        legs?: { steps?: MapboxLegStep[] }[];
-      }[];
+      routes?: MapboxDirectionsRouteJson[];
     };
     if (!res.ok) {
       return {
@@ -175,11 +270,14 @@ export async function fetchDrivingRouteWithSteps(
       return { ok: false, error: "no_route_geometry" };
     }
     const steps = parseLegSteps(r.legs);
+    const cal = Boolean(options?.applyCommuteDisplayCalibration);
     return {
       ok: true,
       route: {
-        distanceM: r.distance,
-        durationS: r.duration,
+        distanceM: cal ? commuteDistanceMetersFromRouteJson(r) : r.distance,
+        durationS: cal
+          ? Math.round(commuteDisplayDurationSeconds(r, profile))
+          : r.duration,
         coordinates: r.geometry.coordinates,
       },
       steps,
@@ -200,14 +298,12 @@ export async function getDrivingRoute(
   return r.ok ? r.route : null;
 }
 
-/** Driver baseline: home → work (shortest-distance option when Mapbox returns alternatives). */
+/** Driver baseline: home → work (Mapbox primary route with traffic when available). */
 export async function getBaselineCommute(
   home: LngLat,
   work: LngLat
 ): Promise<DirectionsRoute | null> {
-  return getDrivingRoute([home, work], "mapbox/driving-traffic", {
-    preferShortestDistance: true,
-  });
+  return getDrivingRoute([home, work], "mapbox/driving-traffic");
 }
 
 /**

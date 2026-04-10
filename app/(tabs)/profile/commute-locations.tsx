@@ -8,9 +8,10 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { Stack, useRouter } from "expo-router";
 import * as Location from "expo-location";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
@@ -32,6 +33,10 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { estimateIllustrativeCommuteContributionRangeAud } from "@/lib/costModel";
+import { computeClientNetworkFeePreview } from "@/lib/passengerPaymentPreview";
+import { poolynExplorerCashFeeFraction } from "@/lib/poolynPricingConfig";
+import { openPassengerPaymentExplainer } from "@/components/home/PassengerPaymentCostLines";
 
 function distanceMeters(
   a: { lat: number; lng: number },
@@ -45,18 +50,6 @@ function distanceMeters(
   const x =
     Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
-}
-
-/** Illustrative one-way cash range from driving distance (not a quote). */
-function estimateContributionRangeAud(distanceKm: number): { low: string; high: string } {
-  const d = distanceKm;
-  if (!Number.isFinite(d) || d <= 0) {
-    return { low: "—", high: "—" };
-  }
-  const midAud = Math.min(0.95 + d * 0.135, 28);
-  const low = Math.max(0.55, midAud * 0.68);
-  const high = Math.min(midAud * 1.42, 42);
-  return { low: low.toFixed(2), high: high.toFixed(2) };
 }
 
 type LocationRowSnapshot = {
@@ -253,8 +246,34 @@ export default function CommuteLocationsScreen() {
 
   const costRange =
     primaryKm != null && Number.isFinite(primaryKm)
-      ? estimateContributionRangeAud(primaryKm)
+      ? estimateIllustrativeCommuteContributionRangeAud(primaryKm)
       : null;
+
+  const explorerFeePct = Math.round(poolynExplorerCashFeeFraction("mingle") * 100);
+
+  const illustrativeExplorerCash = useMemo(() => {
+    if (!costRange || costRange.low === "—") return null;
+    const lowAud = parseFloat(costRange.low);
+    const highAud = parseFloat(costRange.high);
+    if (!Number.isFinite(lowAud) || !Number.isFinite(highAud)) return null;
+    const lowC = Math.round(lowAud * 100);
+    const highC = Math.round(highAud * 100);
+    const pl = computeClientNetworkFeePreview({
+      totalContributionCents: lowC,
+      hasWorkplaceOrgOnProfile: false,
+    });
+    const ph = computeClientNetworkFeePreview({
+      totalContributionCents: highC,
+      hasWorkplaceOrgOnProfile: false,
+    });
+    if (pl.networkFeeCents <= 0 && ph.networkFeeCents <= 0) return null;
+    return {
+      feeLow: pl.networkFeeCents,
+      feeHigh: ph.networkFeeCents,
+      totalLow: pl.finalChargeCents,
+      totalHigh: ph.finalChargeCents,
+    };
+  }, [costRange]);
 
   const setPickupFromDevice = useCallback(async () => {
     if (!profile?.id) return;
@@ -319,8 +338,32 @@ export default function CommuteLocationsScreen() {
 
   const startLegendShort = nearPickupOverride ? "Pickup" : homePt ? "Home" : "Start";
 
+  function goToProfileHome() {
+    router.replace("/(tabs)/profile");
+  }
+
   return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
+    <>
+      <Stack.Screen
+        options={{
+          headerLeft: () => (
+            <TouchableOpacity
+              onPress={goToProfileHome}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={{ marginLeft: Platform.OS === "ios" ? 4 : 0, padding: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Back to profile"
+            >
+              <Ionicons
+                name={Platform.OS === "ios" ? "chevron-back" : "arrow-back"}
+                size={Platform.OS === "ios" ? 28 : 24}
+                color={Colors.primary}
+              />
+            </TouchableOpacity>
+          ),
+        }}
+      />
+      <SafeAreaView style={styles.safe} edges={["bottom"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.lead}>
           Your routine commute is used to match you with people on a similar corridor. Pickup overrides apply
@@ -419,7 +462,7 @@ export default function CommuteLocationsScreen() {
                       </Text>
                       {routeInfo ? (
                         <Text style={styles.statsLight}>
-                          Primary route is the shortest distance Mapbox returned; alts may be faster in traffic.
+                          Primary route is Mapbox’s usual recommendation; alternates are other driving options.
                         </Text>
                       ) : null}
                       {routeInfo?.alternates.map((alt, i) => (
@@ -437,13 +480,33 @@ export default function CommuteLocationsScreen() {
 
                   {costRange ? (
                     <View style={styles.costBox}>
-                      <Text style={styles.costLabel}>Approx. passenger contribution (one way)</Text>
+                      <View style={styles.costLabelRow}>
+                        <Text style={styles.costLabel}>Approx. trip share (one way)</Text>
+                        <TouchableOpacity
+                          onPress={() =>
+                            openPassengerPaymentExplainer({
+                              hasWorkplaceNetworkOnProfile: Boolean(profile?.org_id),
+                              context: "profile_estimate",
+                            })
+                          }
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          accessibilityLabel="What this payment covers"
+                        >
+                          <Ionicons name="information-circle-outline" size={18} color={Colors.primaryDark} />
+                        </TouchableOpacity>
+                      </View>
                       <Text style={styles.costValue}>
                         ${costRange.low} – ${costRange.high} AUD
                       </Text>
+                      {!profile?.org_id && illustrativeExplorerCash ? (
+                        <Text style={styles.costFeeNote}>
+                          {`Independent Mingle riders: + ~${explorerFeePct}% cash service fee (routing, matching, payments) → fee ~$${(illustrativeExplorerCash.feeLow / 100).toFixed(2)} – $${(illustrativeExplorerCash.feeHigh / 100).toFixed(2)} · est. total cash ~$${(illustrativeExplorerCash.totalLow / 100).toFixed(2)} – $${(illustrativeExplorerCash.totalHigh / 100).toFixed(2)}`}
+                        </Text>
+                      ) : null}
                       <Text style={styles.costDisclaimer}>
-                        Indicative only — actual shared-ride pricing depends on your network, trip, and driver.
-                        Organisation members may have different fees.
+                        Indicative only — actual pricing depends on the trip, vehicle class, pool size, and
+                        network. Workplace members on an active Poolyn plan normally skip the explorer platform
+                        fee (confirmed when you book).
                       </Text>
                     </View>
                   ) : null}
@@ -509,6 +572,7 @@ export default function CommuteLocationsScreen() {
         ) : null}
       </ScrollView>
     </SafeAreaView>
+    </>
   );
 }
 
@@ -670,12 +734,25 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,
     color: Colors.primaryDark,
+    flex: 1,
+    marginRight: Spacing.sm,
+  },
+  costLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: 4,
   },
   costValue: {
     fontSize: FontSize.lg,
     fontWeight: FontWeight.bold,
     color: Colors.text,
+  },
+  costFeeNote: {
+    fontSize: 11,
+    color: Colors.textSecondary,
+    lineHeight: 16,
+    marginTop: Spacing.sm,
   },
   costDisclaimer: {
     fontSize: 10,

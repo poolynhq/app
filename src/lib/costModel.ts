@@ -1,17 +1,29 @@
 /**
- * Cost-sharing (integer cents). Unified BASE_COST_PER_KM; no vehicle-class pricing.
- * Phase 3-4: weighted contribution, conditional detour/time, fixed stop fee.
+ * Cost-sharing (integer cents). Crew Poolyn + Mingle Poolyn + reservations.
+ * Tunables live in `poolynPricingConfig.ts` only.
  */
 
-/** AUD per km (all distance-based pricing). */
-export const PRICING_BASE_COST_PER_KM_AUD = 0.18;
-/** AUD per minute for chargeable detour time (fractional minutes allowed). */
-export const PRICING_TIME_COST_PER_MIN_AUD = 0.3;
-/** Applied to base trip cost (driver / system adjustment). */
-export const PRICING_DRIVER_BENEFIT_FACTOR = 1.15;
-export const SYSTEM_ADJUSTMENT_FACTOR = PRICING_DRIVER_BENEFIT_FACTOR;
-/** Fixed stop fee per picked-up passenger (cents). */
-export const PRICING_STOP_FEE_CENTS = 100;
+import {
+  POOLYN_CREW_MAX_ASSUMED_RIDERS,
+  POOLYN_DEFAULT_VEHICLE_CLASS,
+  POOLYN_MAX_POOL_RIDERS_FOR_SPLIT,
+  POOLYN_MINGLE_MIN_POOL_RIDERS,
+  POOLYN_MINGLE_USE_EQUAL_CORRIDOR_POOL_WEIGHT,
+  POOLYN_STOP_FEE_CENTS,
+  POOLYN_SYSTEM_ADJUSTMENT_FACTOR,
+  POOLYN_TIME_COST_PER_MIN_AUD,
+  poolynDistanceRateAudPerKm,
+  type PoolynVehicleClass,
+} from "@/lib/poolynPricingConfig";
+
+export type { PoolynVehicleClass } from "@/lib/poolynPricingConfig";
+
+/** @deprecated Use `poolynDistanceRateAudPerKm(POOLYN_DEFAULT_VEHICLE_CLASS)` — alias for sedan-class default. */
+export const PRICING_BASE_COST_PER_KM_AUD = poolynDistanceRateAudPerKm(POOLYN_DEFAULT_VEHICLE_CLASS);
+export const PRICING_TIME_COST_PER_MIN_AUD = POOLYN_TIME_COST_PER_MIN_AUD;
+export const PRICING_DRIVER_BENEFIT_FACTOR = POOLYN_SYSTEM_ADJUSTMENT_FACTOR;
+export const SYSTEM_ADJUSTMENT_FACTOR = POOLYN_SYSTEM_ADJUSTMENT_FACTOR;
+export const PRICING_STOP_FEE_CENTS = POOLYN_STOP_FEE_CENTS;
 
 /**
  * @deprecated Matching config types are no longer used for passenger pricing.
@@ -38,7 +50,7 @@ export interface CostBreakdownCents {
   time_cost: number;
   stop_fee: number;
   total_contribution: number;
-  /** total_route_distance_km × BASE_COST_PER_KM × 100 (same as base_trip_cost_cents). */
+  /** total_route_distance_km × rate × 100 (same as base_trip_cost_cents). */
   total_trip_cost_cents: number;
   base_trip_cost_cents: number;
   adjusted_trip_cost_cents: number;
@@ -79,10 +91,11 @@ export function computeTotalTripCostCents(
   return Math.round(km * classCostPerKmCents);
 }
 
-function baseTripCostCentsFromRouteKm(totalRouteDistanceKm: number): number {
-  return Math.round(
-    Math.max(0, totalRouteDistanceKm) * PRICING_BASE_COST_PER_KM_AUD * 100
-  );
+function baseTripCostCentsFromRouteKm(
+  totalRouteDistanceKm: number,
+  distanceRateAudPerKm: number
+): number {
+  return Math.round(Math.max(0, totalRouteDistanceKm) * distanceRateAudPerKm * 100);
 }
 
 function adjustedTripCostCentsFromBase(baseCents: number): number {
@@ -97,15 +110,18 @@ export function computePhase3DetourPricingCents(input: {
   addedDistanceKm: number;
   addedDurationSeconds: number;
   isDetourChargeable: boolean;
+  /** AUD/km for detour distance line item (defaults to vehicle class rate). */
+  distanceRateAudPerKm?: number;
 }): { detour_cost: number; time_cost: number } {
   if (!input.isDetourChargeable) {
     return { detour_cost: 0, time_cost: 0 };
   }
+  const rate = input.distanceRateAudPerKm ?? poolynDistanceRateAudPerKm(POOLYN_DEFAULT_VEHICLE_CLASS);
   const addedKm = Math.max(0, input.addedDistanceKm);
   const addedSec = Math.max(0, input.addedDurationSeconds);
   const addedMinutes = addedSec / 60;
-  const detour_cost = Math.round(addedKm * PRICING_BASE_COST_PER_KM_AUD * 100);
-  const time_cost = Math.round(addedMinutes * PRICING_TIME_COST_PER_MIN_AUD * 100);
+  const detour_cost = Math.round(addedKm * rate * 100);
+  const time_cost = Math.round(addedMinutes * POOLYN_TIME_COST_PER_MIN_AUD * 100);
   return { detour_cost, time_cost };
 }
 
@@ -117,6 +133,7 @@ export function computePhase4WeightedContributionCents(input: {
   passengerDistanceKm: number;
   totalRouteDistanceKm: number;
   totalPassengerWeightKm?: number;
+  distanceRateAudPerKm?: number;
 }): {
   passenger_contribution: number;
   base_trip_cost_cents: number;
@@ -124,6 +141,8 @@ export function computePhase4WeightedContributionCents(input: {
 } {
   const { passengerDistanceKm, totalRouteDistanceKm } = input;
   const totalWeight = input.totalPassengerWeightKm ?? passengerDistanceKm;
+  const rate =
+    input.distanceRateAudPerKm ?? poolynDistanceRateAudPerKm(POOLYN_DEFAULT_VEHICLE_CLASS);
 
   if (totalRouteDistanceKm <= 0 || totalWeight <= 0 || passengerDistanceKm <= 0) {
     return {
@@ -133,7 +152,7 @@ export function computePhase4WeightedContributionCents(input: {
     };
   }
 
-  const base_trip_cost_cents = baseTripCostCentsFromRouteKm(totalRouteDistanceKm);
+  const base_trip_cost_cents = baseTripCostCentsFromRouteKm(totalRouteDistanceKm, rate);
   const adjusted_trip_cost_cents = adjustedTripCostCentsFromBase(base_trip_cost_cents);
   const passenger_contribution = Math.round(
     (passengerDistanceKm / totalWeight) * adjusted_trip_cost_cents
@@ -162,19 +181,26 @@ export type DeprecatedPassengerPricingArgs = {
   cappedMarginBps?: number;
 };
 
-export function computePassengerCostBreakdown(
-  input: {
-    baselineDistanceM: number;
-    baselineDurationS: number;
-    withPassengerDistanceM: number;
-    withPassengerDurationS: number;
-    passengerSegmentDistanceM: number;
-    detourChargeable?: boolean;
-    addedDistanceKm?: number;
-    addedDurationSeconds?: number;
-    totalPassengerWeightKm?: number;
-  } & DeprecatedPassengerPricingArgs
-): CostBreakdownCents {
+export type PassengerCostBreakdownInput = {
+  baselineDistanceM: number;
+  baselineDurationS: number;
+  withPassengerDistanceM: number;
+  withPassengerDurationS: number;
+  passengerSegmentDistanceM: number;
+  detourChargeable?: boolean;
+  addedDistanceKm?: number;
+  addedDurationSeconds?: number;
+  totalPassengerWeightKm?: number;
+  /** Vehicle class → distance rate via `poolynPricingConfig`. */
+  vehicleClass?: string | null;
+  /**
+   * Paying riders splitting Phase-3 detour/time (each pays ~1/N).
+   * Mingle: typically max(1, driver_seats - 1). Crew: max(1, members - 1).
+   */
+  poolRideAlongPassengerCount?: number;
+} & DeprecatedPassengerPricingArgs;
+
+export function computePassengerCostBreakdown(input: PassengerCostBreakdownInput): CostBreakdownCents {
   const {
     baselineDistanceM,
     withPassengerDistanceM,
@@ -184,45 +210,60 @@ export function computePassengerCostBreakdown(
     detourChargeable = true,
   } = input;
 
+  const distanceRateAudPerKm = poolynDistanceRateAudPerKm(input.vehicleClass);
+  const poolN = Math.max(
+    POOLYN_MINGLE_MIN_POOL_RIDERS,
+    Math.min(POOLYN_MAX_POOL_RIDERS_FOR_SPLIT, input.poolRideAlongPassengerCount ?? 1)
+  );
+
   const addedDistanceKm =
-    input.addedDistanceKm ??
-    Math.max(0, withPassengerDistanceM - baselineDistanceM) / 1000;
+    input.addedDistanceKm ?? Math.max(0, withPassengerDistanceM - baselineDistanceM) / 1000;
   const addedDurationSeconds =
-    input.addedDurationSeconds ??
-    Math.max(0, withPassengerDurationS - baselineDurationS);
+    input.addedDurationSeconds ?? Math.max(0, withPassengerDurationS - baselineDurationS);
 
   const p3 = computePhase3DetourPricingCents({
     addedDistanceKm,
     addedDurationSeconds,
     isDetourChargeable: detourChargeable,
+    distanceRateAudPerKm,
   });
 
   const passengerKm = Math.max(0, passengerSegmentDistanceM) / 1000;
   const totalRouteKm = Math.max(0, withPassengerDistanceM) / 1000;
+
+  let totalWeightKm = input.totalPassengerWeightKm;
+  if (
+    totalWeightKm == null &&
+    POOLYN_MINGLE_USE_EQUAL_CORRIDOR_POOL_WEIGHT &&
+    poolN > 1 &&
+    passengerKm > 0
+  ) {
+    totalWeightKm = passengerKm * poolN;
+  }
+
   const p4 = computePhase4WeightedContributionCents({
     passengerDistanceKm: passengerKm,
     totalRouteDistanceKm: totalRouteKm,
-    totalPassengerWeightKm: input.totalPassengerWeightKm,
+    totalPassengerWeightKm: totalWeightKm,
+    distanceRateAudPerKm,
   });
 
   let passenger_contribution = p4.passenger_contribution;
-  let detour_cost = p3.detour_cost;
-  let time_cost = p3.time_cost;
-  let stop_fee = PRICING_STOP_FEE_CENTS;
+  let detour_cost = Math.round(p3.detour_cost / poolN);
+  let time_cost = Math.round(p3.time_cost / poolN);
+  let stop_fee = POOLYN_STOP_FEE_CENTS;
 
   const base_trip_cost_cents = p4.base_trip_cost_cents;
   const adjusted_trip_cost_cents = p4.adjusted_trip_cost_cents;
   const total_trip_cost_cents = base_trip_cost_cents;
   const max_total_passenger_cents = adjusted_trip_cost_cents;
 
-  /** Stop is fixed at PRICING_STOP_FEE_CENTS unless cap cannot cover it. */
   if (max_total_passenger_cents > 0 && stop_fee > max_total_passenger_cents) {
     stop_fee = max_total_passenger_cents;
   }
 
   const poolMax = Math.max(0, max_total_passenger_cents - stop_fee);
-  const variableSubtotal =
-    passenger_contribution + detour_cost + time_cost;
+  const variableSubtotal = passenger_contribution + detour_cost + time_cost;
   let scaled_to_cap = false;
   if (variableSubtotal > poolMax && poolMax > 0) {
     const scale = poolMax / variableSubtotal;
@@ -240,8 +281,7 @@ export function computePassengerCostBreakdown(
     scaled_to_cap = variableSubtotal > 0;
   }
 
-  const total_contribution =
-    passenger_contribution + detour_cost + time_cost + stop_fee;
+  const total_contribution = passenger_contribution + detour_cost + time_cost + stop_fee;
 
   return {
     passenger_contribution,
@@ -255,4 +295,59 @@ export function computePassengerCostBreakdown(
     max_total_passenger_cents,
     scaled_to_cap,
   };
+}
+
+/**
+ * Crew Poolyn: equal split of locked corridor cost among paying riders (one driver assumed).
+ * No extra detour line item vs locked route (detour baked into corridor length at formation).
+ */
+export function computeCrewEqualCorridorRiderBreakdown(input: {
+  lockedRouteDistanceM: number;
+  lockedRouteDurationS: number;
+  /** Paying riders (excludes driver). */
+  poolRiderCount: number;
+  vehicleClass?: string | null;
+}): CostBreakdownCents | null {
+  const capped = Math.max(
+    1,
+    Math.min(POOLYN_CREW_MAX_ASSUMED_RIDERS, Math.floor(input.poolRiderCount))
+  );
+  const d = input.lockedRouteDistanceM;
+  if (!Number.isFinite(d) || d <= 0) return null;
+  const dur = Number.isFinite(input.lockedRouteDurationS) ? input.lockedRouteDurationS : 0;
+  const seg = d / capped;
+  return computePassengerCostBreakdown({
+    baselineDistanceM: d,
+    baselineDurationS: dur,
+    withPassengerDistanceM: d,
+    withPassengerDurationS: dur,
+    passengerSegmentDistanceM: seg,
+    totalPassengerWeightKm: d / 1000,
+    detourChargeable: false,
+    poolRideAlongPassengerCount: capped,
+    vehicleClass: input.vehicleClass ?? undefined,
+  });
+}
+
+/**
+ * Profile / commute UI: illustrative one-way cash band (not a quote).
+ */
+export function estimateIllustrativeCommuteContributionRangeAud(
+  distanceKm: number,
+  vehicleClass?: string | null
+): {
+  low: string;
+  high: string;
+} {
+  const d = distanceKm;
+  if (!Number.isFinite(d) || d <= 0) {
+    return { low: "—", high: "—" };
+  }
+  const km = Math.min(Math.max(d, 0), 250);
+  const rate = poolynDistanceRateAudPerKm(vehicleClass ?? POOLYN_DEFAULT_VEHICLE_CLASS);
+  const variableAud = km * rate * POOLYN_SYSTEM_ADJUSTMENT_FACTOR;
+  const stopAud = POOLYN_STOP_FEE_CENTS / 100;
+  const lowAud = Math.max(0.85, variableAud * 0.975 + stopAud);
+  const highAud = Math.min(variableAud * 1.025 + stopAud + 0.1, 95);
+  return { low: lowAud.toFixed(2), high: highAud.toFixed(2) };
 }

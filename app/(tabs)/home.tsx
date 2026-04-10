@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
@@ -57,12 +58,22 @@ import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
 import { fetchDrivingRoute } from "@/lib/mapboxDirections";
 import { HomeNetworkHub } from "@/components/home/HomeNetworkHub";
 import { RoutinePoolynCrewMingleBlock } from "@/components/home/RoutinePoolynCrewMingle";
+import { CommuteRouteChoicePanel } from "@/components/home/CommuteRouteChoicePanel";
+import { RoutePeopleSearchModal } from "@/components/home/RoutePeopleSearchModal";
+import { formatPoolynCreditsBalance } from "@/lib/poolynCreditsUi";
 
 function getGreeting() {
   const h = new Date().getHours();
   if (h < 12) return "Good morning";
   if (h < 17) return "Good afternoon";
   return "Good evening";
+}
+
+/** e.g. Mon, 24-May */
+function formatHomeDateLine(d = new Date()): string {
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${days[d.getDay()]}, ${d.getDate()}-${mon[d.getMonth()]}`;
 }
 
 const PLAN_LABELS: Record<string, string> = {
@@ -204,31 +215,37 @@ const pStyles = StyleSheet.create({
 });
 
 const ROUTINE_ACCENT = "#0D9488";
-const ADHOC_ACCENT = "#7C3AED";
+const ADHOC_ACCENT = "#D97706";
 
 function PillarSection({
   variant,
   eyebrow,
   title,
   subtitle,
+  belowTitle,
   children,
 }: {
   variant: "routine" | "adhoc";
   eyebrow: string;
   title: string;
-  subtitle: string;
+  /** Omit or empty to save vertical space. */
+  subtitle?: string | null;
+  /** Rendered directly under the title (e.g. commute route preview). */
+  belowTitle?: ReactNode;
   children: ReactNode;
 }) {
   const accent = variant === "routine" ? ROUTINE_ACCENT : ADHOC_ACCENT;
+  const sub = subtitle?.trim();
   return (
     <View
       style={[styles.pillarShell, variant === "routine" ? styles.pillarShellRoutine : styles.pillarShellAdhoc]}
-  >
+    >
       <View style={[styles.pillarAccentBar, { backgroundColor: accent }]} />
       <View style={styles.pillarContent}>
         <Text style={[styles.pillarEyebrow, { color: accent }]}>{eyebrow}</Text>
         <Text style={styles.pillarTitle}>{title}</Text>
-        <Text style={styles.pillarSubtitle}>{subtitle}</Text>
+        {belowTitle ? <View style={styles.pillarBelowTitle}>{belowTitle}</View> : null}
+        {sub ? <Text style={styles.pillarSubtitle}>{sub}</Text> : null}
         <View style={styles.pillarChildren}>{children}</View>
       </View>
     </View>
@@ -257,6 +274,8 @@ export default function Dashboard() {
   const [postRequestTiming, setPostRequestTiming] = useState<PostPickupTiming>("now");
   const routineSectionYRef = useRef(0);
   const [miniTourVisible, setMiniTourVisible] = useState(false);
+  const [commuteRouteReady, setCommuteRouteReady] = useState(false);
+  const [routePeopleModalOpen, setRoutePeopleModalOpen] = useState(false);
 
   const {
     demandPoints,
@@ -456,6 +475,16 @@ export default function Dashboard() {
   const isEnterpriseOrg = org?.org_type === "enterprise";
   const isCommunityOrg = hasOrg && !isEnterpriseOrg;
 
+  const heroGradientColors = useMemo((): [string, string, string] => {
+    if (isEnterpriseOrg) return ["#DCFCE7", "#ECFDF5", "#FFFFFF"];
+    if (isCommunityOrg) return ["#DBEAFE", "#F0F9FF", "#FFFFFF"];
+    if (!hasOrg) return ["#FFEDD5", "#FFFBF0", "#FFFFFF"];
+    return ["#F1F5F9", "#F8FAFC", "#FFFFFF"];
+  }, [hasOrg, isEnterpriseOrg, isCommunityOrg]);
+
+  const [poolynProgram, setPoolynProgram] = useState<"routine" | "adhoc">("routine");
+  const orgAllowsOpenLane = org?.allow_cross_org === true;
+
   let orgLogoPublicUrl: string | null = null;
   if (
     org?.settings &&
@@ -584,8 +613,11 @@ export default function Dashboard() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Hero header — background by explorer / workplace type */}
-        <View
+        {/* Hero — gradient band by explorer / workplace type */}
+        <LinearGradient
+          colors={heroGradientColors}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
           style={[
             styles.heroHeader,
             !hasOrg && styles.heroExplorer,
@@ -612,16 +644,42 @@ export default function Dashboard() {
             </TouchableOpacity>
 
             <View style={styles.heroTextBlock}>
-              <Text
-                style={[
-                  styles.heroGreetingCaps,
-                  !hasOrg && styles.heroGreetingExplorer,
-                  isEnterpriseOrg && styles.heroGreetingEnterprise,
-                  isCommunityOrg && styles.heroGreetingCommunity,
-                ]}
-              >
-                {getGreeting().toUpperCase()}
-              </Text>
+              <View style={styles.heroGreetRow}>
+                <Text
+                  style={[
+                    styles.heroGreetingCaps,
+                    !hasOrg && styles.heroGreetingExplorer,
+                    isEnterpriseOrg && styles.heroGreetingEnterprise,
+                    isCommunityOrg && styles.heroGreetingCommunity,
+                  ]}
+                >
+                  {getGreeting().toUpperCase()}
+                </Text>
+                <View style={styles.heroDateCreditsCol}>
+                  <Text
+                    style={[
+                      styles.heroDateLine,
+                      !hasOrg && styles.heroDateLineExplorer,
+                      isEnterpriseOrg && styles.heroDateLineEnterprise,
+                      isCommunityOrg && styles.heroDateLineCommunity,
+                    ]}
+                  >
+                    {formatHomeDateLine()}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.heroCreditsTouch}
+                    onPress={() => router.push("/(tabs)/profile/poolyn-credits")}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Poolyn Credits"
+                  >
+                    <Ionicons name="sparkles" size={14} color={Colors.accent} />
+                    <Text style={styles.heroCreditsText}>
+                      {formatPoolynCreditsBalance(profile?.commute_credits_balance ?? 0)}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
               <Text
                 style={[
                   styles.heroNameDisplay,
@@ -704,7 +762,7 @@ export default function Dashboard() {
               )}
             </View>
           </View>
-        </View>
+        </LinearGradient>
 
         {passengerPickupEnabled &&
         (pickupState.pending || pickupState.upcomingRides.length > 0) ? (
@@ -790,30 +848,104 @@ export default function Dashboard() {
           <TouchableOpacity
             style={styles.searchRouteHeroBtn}
             activeOpacity={0.88}
-            onPress={() => {
-              const y = routineSectionYRef.current;
-              homeScrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
-            }}
+            onPress={() => setRoutePeopleModalOpen(true)}
             accessibilityRole="button"
-            accessibilityLabel="Search people on my route on the map"
+            accessibilityLabel="People along your route"
           >
-            <Ionicons name="map-outline" size={22} color={Colors.textOnPrimary} />
-            <Text style={styles.searchRouteHeroBtnText}>Search people on my route</Text>
-            <Ionicons name="chevron-down" size={20} color={Colors.textOnPrimary} />
+            <Ionicons name="people-outline" size={22} color={Colors.textOnPrimary} />
+            <Text style={styles.searchRouteHeroBtnText}>Who’s on my route?</Text>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textOnPrimary} />
           </TouchableOpacity>
         ) : null}
 
-        {/* ── Routine Poolyn: recurring commute, map, same-day matching ── */}
+        {profile ? (
+          <View style={styles.poolynProgramToggleWrap}>
+            <Text style={styles.poolynProgramEyebrow}>YOUR POOLYN</Text>
+            <Text style={styles.poolynProgramHint}>
+              Regular commute uses your saved home–work line. Ad-hoc is for dated, one-off trips.
+            </Text>
+            <View style={styles.poolynProgramSegments}>
+              <Pressable
+                style={[
+                  styles.poolynProgramSeg,
+                  poolynProgram === "routine" && styles.poolynProgramSegOnRoutine,
+                ]}
+                onPress={() => setPoolynProgram("routine")}
+                accessibilityRole="button"
+                accessibilityState={{ selected: poolynProgram === "routine" }}
+                accessibilityLabel="Regular commute Poolyn"
+              >
+                <Ionicons
+                  name="repeat"
+                  size={20}
+                  color={poolynProgram === "routine" ? "#FFFFFF" : ROUTINE_ACCENT}
+                />
+                <Text
+                  style={[
+                    styles.poolynProgramSegText,
+                    poolynProgram === "routine" && styles.poolynProgramSegTextOn,
+                  ]}
+                >
+                  Regular commute
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.poolynProgramSeg,
+                  poolynProgram === "adhoc" && styles.poolynProgramSegOnAdhoc,
+                ]}
+                onPress={() => setPoolynProgram("adhoc")}
+                accessibilityRole="button"
+                accessibilityState={{ selected: poolynProgram === "adhoc" }}
+                accessibilityLabel="Ad-hoc Poolyn"
+              >
+                <Ionicons
+                  name="calendar-outline"
+                  size={20}
+                  color={poolynProgram === "adhoc" ? "#FFFFFF" : ADHOC_ACCENT}
+                />
+                <Text
+                  style={[
+                    styles.poolynProgramSegText,
+                    poolynProgram === "adhoc" && styles.poolynProgramSegTextOn,
+                  ]}
+                >
+                  Ad-hoc trips
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {/* ── Regular commute: route card + corridor pillar ── */}
+        {poolynProgram === "routine" ? (
         <View
           onLayout={(e) => {
             routineSectionYRef.current = e.nativeEvent.layout.y;
           }}
         >
+          {profile != null && profile.id ? (
+            <View style={styles.commuteRouteOuterCard}>
+              <Text style={styles.commuteRouteOuterEyebrow}>ROUTINE POOLYN</Text>
+              <Text style={styles.commuteRouteOuterTitle}>Your regular commute</Text>
+              <CommuteRouteChoicePanel
+                omitOuterCard
+                userId={profile.id}
+                profile={{
+                  home_location: profile.home_location,
+                  work_location: profile.work_location,
+                }}
+                onRouteReadyChange={setCommuteRouteReady}
+                onEditCommutePins={() => router.push("/(tabs)/profile/commute-locations")}
+              />
+            </View>
+          ) : null}
+
         <PillarSection
           variant="routine"
-          eyebrow="ROUTINE POOLYN"
-          title="Your regular commute"
-          subtitle="Choose Crew for a fixed group and daily chat, or Mingle for open corridor matching. Map, seats, and quick actions stay on this page."
+          eyebrow="ON YOUR CORRIDOR"
+          title="Crew, mingle, and map"
+          subtitle={null}
         >
           {profile?.id ? (
             <RoutinePoolynCrewMingleBlock
@@ -821,6 +953,7 @@ export default function Dashboard() {
               orgId={profile.org_id}
               visibilityMode={profile.visibility_mode}
               setVisibilityMode={setVisibilityMode}
+              commuteRouteReady={commuteRouteReady}
               onCrewCreated={() => {
                 reloadMapLayers();
                 setViewerMapRefetchTick((t) => t + 1);
@@ -1004,8 +1137,8 @@ export default function Dashboard() {
                     onPress={() => setPostRequestOpen(true)}
                   >
                     <View style={styles.actionTitleRow}>
-                      <View style={[styles.actionIcon, { backgroundColor: "#F3E8FF" }]}>
-                        <Ionicons name="megaphone-outline" size={24} color="#8B5CF6" />
+                      <View style={[styles.actionIcon, { backgroundColor: "#FFFBEB" }]}>
+                        <Ionicons name="megaphone-outline" size={24} color="#D97706" />
                       </View>
                       <Text style={styles.actionTitle}>Post a request</Text>
                     </View>
@@ -1018,7 +1151,7 @@ export default function Dashboard() {
             </>
           )}
 
-          <Text style={styles.pillarInlineLabel}>Demand &amp; supply near routes</Text>
+          <Text style={styles.pillarInlineLabel}>Live map</Text>
           {profile ? (
             <DiscoverMapLegend
               lens={homeMapLegendLens}
@@ -1037,8 +1170,8 @@ export default function Dashboard() {
             viewerPinsGeoJson={viewerPinsGeoJson}
             viewerMyRoutesGeoJson={homeViewerRoutesDisplayed}
             layerEmphasis={homeMapLayerEmphasis}
-            title="Live network map"
-            mapHeight={268}
+            title="Corridor map"
+            mapHeight={220}
             fallbackCenter={homeMapFallbackCenter}
             remoteLoading={homeMapLayersLoading || routesLoading}
             onViewerRouteAlternateTap={
@@ -1047,44 +1180,24 @@ export default function Dashboard() {
           />
         </PillarSection>
         </View>
-
-        {profile ? (
-          <View
-            style={styles.networkHubBlock}
-            onLayout={(e) => {
-              networkHubBlockY.current = e.nativeEvent.layout.y;
-            }}
-          >
-            <HomeNetworkHub
-              scrollToParam={scrollToParamNorm}
-              onRequestScrollToSeats={scrollToSeatsOnHome}
-              onSeatsSectionInnerLayout={(y) => {
-                seatsSectionInnerY.current = y;
-              }}
-            />
-          </View>
-        ) : null}
-
-        {/* ── Ad-hoc Poolyn: dated / one-off trips ── */}
+        ) : (
         <PillarSection
           variant="adhoc"
           eyebrow="AD-HOC POOLYN"
           title="One-off & planned trips"
-          subtitle="Longer or dated trips—think city-to-city with a calendar morning or afternoon. Post from My Rides; search and overlap matching will grow here."
+          subtitle="Dated trips live in My Rides for now. Richer search is on the way."
         >
           <TouchableOpacity
             style={styles.adhocRow}
             onPress={() => router.push("/(tabs)/rides")}
             activeOpacity={0.75}
           >
-            <View style={[styles.adhocIconWrap, { backgroundColor: "#EDE9FE" }]}>
+            <View style={[styles.adhocIconWrap, { backgroundColor: "#FEF3C7" }]}>
               <Ionicons name="calendar-outline" size={22} color={ADHOC_ACCENT} />
             </View>
             <View style={styles.adhocRowText}>
               <Text style={styles.adhocRowTitle}>Post a dated trip</Text>
-              <Text style={styles.adhocRowSub}>
-                Create a drive with departure time and route—ad-hoc board features arrive next.
-              </Text>
+              <Text style={styles.adhocRowSub}>Create a drive with time, route, and seats.</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
           </TouchableOpacity>
@@ -1104,6 +1217,24 @@ export default function Dashboard() {
             <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
           </TouchableOpacity>
         </PillarSection>
+        )}
+
+        {profile ? (
+          <View
+            style={styles.networkHubBlock}
+            onLayout={(e) => {
+              networkHubBlockY.current = e.nativeEvent.layout.y;
+            }}
+          >
+            <HomeNetworkHub
+              scrollToParam={scrollToParamNorm}
+              onRequestScrollToSeats={scrollToSeatsOnHome}
+              onSeatsSectionInnerLayout={(y) => {
+                seatsSectionInnerY.current = y;
+              }}
+            />
+          </View>
+        ) : null}
 
         <ProfileCompletion
           profile={profile}
@@ -1141,32 +1272,6 @@ export default function Dashboard() {
           </View>
         )}
 
-        <View style={styles.howItWorks}>
-          <Text style={styles.howTitle}>Why Poolyn</Text>
-          {[
-            {
-              icon: "location-outline" as const,
-              text: "We match you with colleagues on similar routes",
-            },
-            {
-              icon: "time-outline" as const,
-              text: "Rides sync with your schedule automatically",
-            },
-            {
-              icon: "shield-checkmark-outline" as const,
-              text: "Only verified work emails. Your commute stays safe",
-            },
-            {
-              icon: "flash-outline" as const,
-              text: "Flex Credits mean no guilt when plans change",
-            },
-          ].map((item, i) => (
-            <View key={i} style={styles.howRow}>
-              <Ionicons name={item.icon} size={20} color={Colors.primary} />
-              <Text style={styles.howText}>{item.text}</Text>
-            </View>
-          ))}
-        </View>
       </ScrollView>
 
       <Modal
@@ -1293,6 +1398,13 @@ export default function Dashboard() {
       </Modal>
 
       <PoolynMiniTourModal visible={miniTourVisible} onClose={() => setMiniTourVisible(false)} />
+
+      <RoutePeopleSearchModal
+        visible={routePeopleModalOpen}
+        onClose={() => setRoutePeopleModalOpen(false)}
+        orgAllowsOpenLane={orgAllowsOpenLane}
+        viewerHasOrg={Boolean(profile?.org_id)}
+      />
     </SafeAreaView>
   );
 }
@@ -1489,6 +1601,91 @@ const styles = StyleSheet.create({
     textAlign: "center",
     flexShrink: 1,
   },
+  poolynProgramToggleWrap: {
+    marginBottom: Spacing.lg,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.xl,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.md,
+  },
+  poolynProgramEyebrow: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.5,
+    color: Colors.textSecondary,
+    marginBottom: 4,
+  },
+  poolynProgramHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    lineHeight: 18,
+    marginBottom: Spacing.md,
+  },
+  poolynProgramSegments: {
+    flexDirection: "row",
+    borderRadius: BorderRadius.lg,
+    padding: 4,
+    gap: 6,
+    backgroundColor: Colors.borderLight,
+  },
+  poolynProgramSeg: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
+  },
+  poolynProgramSegOnRoutine: {
+    backgroundColor: ROUTINE_ACCENT,
+    borderColor: "#0F766E",
+    ...Shadow.sm,
+  },
+  poolynProgramSegOnAdhoc: {
+    backgroundColor: ADHOC_ACCENT,
+    borderColor: "#B45309",
+    ...Shadow.sm,
+  },
+  poolynProgramSegText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    textAlign: "center",
+    flexShrink: 1,
+  },
+  poolynProgramSegTextOn: {
+    color: "#FFFFFF",
+  },
+  commuteRouteOuterCard: {
+    borderRadius: BorderRadius.xl,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: "#99F6E4",
+    padding: Spacing.lg,
+    marginBottom: Spacing.lg,
+    ...Shadow.md,
+  },
+  commuteRouteOuterEyebrow: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.5,
+    color: ROUTINE_ACCENT,
+    marginBottom: 4,
+  },
+  commuteRouteOuterTitle: {
+    fontSize: FontSize.xl,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    letterSpacing: -0.35,
+    marginBottom: Spacing.md,
+  },
   pillarShell: {
     flexDirection: "row",
     borderRadius: BorderRadius.xl,
@@ -1502,8 +1699,8 @@ const styles = StyleSheet.create({
     borderColor: "#99F6E4",
   },
   pillarShellAdhoc: {
-    backgroundColor: "#FAF5FF",
-    borderColor: "#DDD6FE",
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
   },
   pillarAccentBar: {
     width: 5,
@@ -1528,14 +1725,17 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
     marginBottom: Spacing.sm,
   },
+  pillarBelowTitle: {
+    marginBottom: Spacing.md,
+  },
   pillarSubtitle: {
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
-    lineHeight: 21,
-    marginBottom: Spacing.lg,
+    lineHeight: 20,
+    marginBottom: Spacing.md,
   },
   pillarChildren: {
-    gap: Spacing.lg,
+    gap: Spacing.md,
   },
   pillarInlineLabel: {
     fontSize: FontSize.sm,
@@ -1553,7 +1753,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
-    borderColor: "rgba(124,58,237,0.12)",
+    borderColor: "rgba(217,119,6,0.14)",
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.md,
     ...Shadow.sm,
@@ -1583,7 +1783,7 @@ const styles = StyleSheet.create({
   heroHeader: {
     marginHorizontal: -Spacing.xl,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.lg,
     marginBottom: Spacing.lg,
     borderBottomLeftRadius: BorderRadius.xl,
     borderBottomRightRadius: BorderRadius.xl,
@@ -1591,37 +1791,34 @@ const styles = StyleSheet.create({
     ...Shadow.md,
   },
   heroExplorer: {
-    backgroundColor: "#FFF7ED",
     borderColor: "#FDBA74",
   },
   heroEnterprise: {
-    backgroundColor: "#E8F5EE",
-    borderColor: "#A7E3C7",
+    borderColor: "#86EFAC",
   },
   heroCommunity: {
-    backgroundColor: "#EFF6FF",
-    borderColor: "#BFDBFE",
+    borderColor: "#93C5FD",
   },
   heroTopBand: {
     flexDirection: "row",
     alignItems: "center",
-    gap: Spacing.md,
+    gap: Spacing.lg,
   },
   heroAvatarBtn: {
     flexShrink: 0,
   },
   heroAvatarImg: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: Colors.surface,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.95)",
   },
   heroAvatarPlaceholder: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: "rgba(255,255,255,0.88)",
     borderWidth: 1.5,
     borderColor: "rgba(0,0,0,0.06)",
@@ -1633,21 +1830,58 @@ const styles = StyleSheet.create({
     minWidth: 0,
     justifyContent: "center",
   },
+  heroGreetRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: Spacing.md,
+    marginBottom: 4,
+  },
+  heroDateCreditsCol: {
+    alignItems: "flex-end",
+  },
+  heroDateLine: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
+    letterSpacing: 0.2,
+    color: Colors.textSecondary,
+  },
+  heroDateLineExplorer: { color: "#A16207" },
+  heroDateLineEnterprise: { color: "#166534" },
+  heroDateLineCommunity: { color: "#64748B" },
+  heroCreditsTouch: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 5,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: BorderRadius.full,
+    backgroundColor: "rgba(255,255,255,0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.4)",
+  },
+  heroCreditsText: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 12,
+    color: Colors.text,
+    fontVariant: ["tabular-nums"],
+  },
   heroGreetingCaps: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 10,
     letterSpacing: 1.6,
     color: Colors.textSecondary,
-    marginBottom: 2,
+    flexShrink: 1,
   },
   heroGreetingExplorer: { color: "#A16207" },
   heroGreetingEnterprise: { color: "#166534" },
   heroGreetingCommunity: { color: "#475569" },
   heroNameDisplay: {
     fontFamily: "Inter_700Bold",
-    fontSize: 22,
-    letterSpacing: -0.4,
-    lineHeight: 28,
+    fontSize: 24,
+    letterSpacing: -0.45,
+    lineHeight: 30,
     color: Colors.text,
   },
   heroNameExplorer: { color: "#7C2D12" },
@@ -1822,32 +2056,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: Spacing.sm,
     fontWeight: FontWeight.semibold,
-  },
-  howItWorks: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    gap: Spacing.md,
-    marginTop: Spacing.sm,
-    ...Shadow.sm,
-  },
-  howTitle: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.bold,
-    color: Colors.text,
-  },
-  howRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: Spacing.md,
-  },
-  howText: {
-    flex: 1,
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    lineHeight: 20,
   },
   // ── Flexible mode toggle ─────────────────────────────────
   modeToggleCard: {

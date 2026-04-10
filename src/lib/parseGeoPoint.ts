@@ -115,3 +115,24 @@ export function parseGeoPoint(value: unknown): { lat: number; lng: number } | nu
 
   return null;
 }
+
+/**
+ * PostgREST / JSON often returns `double precision` RPC columns as strings.
+ * Invalid or missing values must not become 0,0 (Null Island).
+ */
+export function parseRpcFiniteNumber(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value.trim());
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Reject (0,0) and out-of-range WGS84 coordinates. */
+export function isPlausibleWgs84LatLng(lat: number, lng: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (Math.abs(lat) < 1e-7 && Math.abs(lng) < 1e-7) return false;
+  return Math.abs(lat) <= 85 && Math.abs(lng) <= 180;
+}

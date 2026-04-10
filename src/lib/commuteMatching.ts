@@ -8,7 +8,11 @@ import type { Feature, LineString } from "geojson";
 import { supabase } from "@/lib/supabase";
 import type { Schedule, User } from "@/types/database";
 import { computePairCommuteScheduleOverlap } from "@/lib/commuteScheduleOverlap";
-import { computePassengerCostBreakdown, type CostBreakdownCents } from "@/lib/costModel";
+import {
+  computePassengerCostBreakdown,
+  type CostBreakdownCents,
+} from "@/lib/costModel";
+import { POOLYN_MINGLE_MIN_POOL_RIDERS, POOLYN_MAX_POOL_RIDERS_FOR_SPLIT } from "@/lib/poolynPricingConfig";
 import { fairnessSeedUint32, fairnessUnit } from "@/lib/fairnessHash";
 import { getBaselineCommute, type LngLat } from "@/lib/mapboxDirections";
 import { computeDriverPassengerDetourMetrics } from "@/lib/detourRouteEngine";
@@ -32,6 +36,8 @@ export interface RideOpportunityCard {
   seatsAvailable: number;
   passengerCostCents: number;
   costBreakdown: CostBreakdownCents;
+  /** Riders used to split detour + pooled corridor (includes this passenger when riding). */
+  assumedPoolRiders: number;
   trustReliability: number;
   /** For driver viewer: passenger reliability */
   counterpartyReliability: number;
@@ -39,6 +45,8 @@ export interface RideOpportunityCard {
   matchScore: number;
   /** Present when viewer is driver; same_org vs cross-network passenger */
   matchScope?: "same_org" | "outer_network";
+  /** Paying passenger; `org_id` on profile — server uses subscription at commit. */
+  passengerHasWorkplaceOrgOnProfile: boolean;
 }
 
 export interface PrefilterRow {
@@ -195,7 +203,7 @@ export async function getRideOpportunities(
     const { data: passengerUser } = await supabase
       .from("users")
       .select(
-        "id, home_location, pickup_location, work_location, reliability_score, schedule_flex_mins"
+        "id, org_id, home_location, pickup_location, work_location, reliability_score, schedule_flex_mins"
       )
       .eq("id", passengerId)
       .single();
@@ -289,6 +297,12 @@ export async function getRideOpportunities(
       | "suv"
       | "large_suv"
       | "electric";
+    const seatCount = Math.max(2, Number(vehicle?.seats) || 4);
+    const assumedPoolRiders = Math.max(
+      POOLYN_MINGLE_MIN_POOL_RIDERS,
+      Math.min(POOLYN_MAX_POOL_RIDERS_FOR_SPLIT, seatCount - 1)
+    );
+
     const costBreakdown = computePassengerCostBreakdown({
       baselineDistanceM: baseline.distanceM,
       baselineDurationS: baseline.durationS,
@@ -298,6 +312,8 @@ export async function getRideOpportunities(
       detourChargeable: dm.is_detour_chargeable,
       addedDistanceKm: dm.added_distance_km,
       addedDurationSeconds: dm.added_duration_seconds,
+      vehicleClass: vclass,
+      poolRideAlongPassengerCount: assumedPoolRiders,
     });
 
     const overlapRatio =
@@ -331,6 +347,7 @@ export async function getRideOpportunities(
       driverUserId: driverId,
       driverRouteId: row.driver_route_id,
       passengerRouteId: row.passenger_route_id,
+      passengerHasWorkplaceOrgOnProfile: Boolean(passengerUser.org_id),
       matchScope: intent === "driver" ? scope : undefined,
       overlapPercent: Math.round(overlapRatio * 100),
       detourMinutes: Math.round(detourMin * 10) / 10,
@@ -341,6 +358,7 @@ export async function getRideOpportunities(
       seatsAvailable: Math.max(0, (vehicle?.seats ?? 4) - 1),
       passengerCostCents: costBreakdown.total_contribution,
       costBreakdown,
+      assumedPoolRiders,
       trustReliability: intent === "passenger" ? relD : relP,
       counterpartyReliability: intent === "passenger" ? relP : relD,
       routeOverlapScore: overlapRatio,

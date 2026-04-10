@@ -3,7 +3,7 @@
  */
 
 import { supabase } from "@/lib/supabase";
-import { fetchDrivingRoute } from "@/lib/mapboxDirections";
+import { fetchDrivingCommuteAlternatives, fetchDrivingRoute } from "@/lib/mapboxDirections";
 import {
   simplifyRouteCoords,
   normalizeRouteCoords,
@@ -83,6 +83,56 @@ export async function upsertStraightLineCommuteRoute(
   }
 }
 
+/**
+ * Persists the chosen Mapbox alternative (0 = primary route, 1–2 = alternates in API order) to `commute_routes` to_work.
+ */
+export async function persistCommuteRouteVariantIndex(
+  userId: string,
+  home: { lat: number; lng: number },
+  work: { lat: number; lng: number },
+  variantIndex: number
+): Promise<{ ok: boolean; error?: string }> {
+  if (!MAPBOX_TOKEN) return { ok: false, error: "Missing Mapbox token" };
+  const leg: [[number, number], [number, number]] = [
+    [home.lng, home.lat],
+    [work.lng, work.lat],
+  ];
+  let alt = await fetchDrivingCommuteAlternatives(leg, "mapbox/driving-traffic");
+  if (!alt.ok) {
+    alt = await fetchDrivingCommuteAlternatives(leg, "mapbox/driving");
+  }
+  if (!alt.ok) {
+    return { ok: false, error: alt.error };
+  }
+  const idx = Math.min(Math.max(0, variantIndex), alt.routes.length - 1);
+  const r = alt.routes[idx];
+  let coords = normalizeRouteCoords(r.coordinates);
+  coords = dedupeConsecutiveCoords(simplifyRouteCoords(coords, MAX_STORED_ROUTE_POINTS));
+  coords = dedupeConsecutiveCoords(coords);
+  if (coords.length < 2) {
+    coords = [
+      [home.lng, home.lat],
+      [work.lng, work.lat],
+    ];
+  }
+  const bb = bboxFromCoords(coords);
+  const routeEwkt = lineStringToGeographyEwkt(coords);
+  const { error } = await supabase.from("commute_routes").upsert(
+    {
+      user_id: userId,
+      direction: "to_work",
+      route_geom: routeEwkt,
+      distance_m: r.distanceM,
+      duration_s: r.durationS,
+      ...bb,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,direction" }
+  );
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
 export async function upsertCommuteRouteToWork(
   userId: string,
   home: { lat: number; lng: number },
@@ -95,11 +145,11 @@ export async function upsertCommuteRouteToWork(
       [work.lng, work.lat],
     ];
     let routeRes = await fetchDrivingRoute(leg, "mapbox/driving-traffic", {
-      preferShortestDistance: true,
+      applyCommuteDisplayCalibration: true,
     });
     if (!routeRes.ok) {
       routeRes = await fetchDrivingRoute(leg, "mapbox/driving", {
-        preferShortestDistance: true,
+        applyCommuteDisplayCalibration: true,
       });
     }
     if (!routeRes.ok) {

@@ -21,10 +21,16 @@ import {
   respondToCrewInvite,
   countCrewMembers,
   countPendingCrewInvitationsForCrew,
+  MAX_CREWS_PER_USER,
   type CrewListRow,
   type CrewInvitePendingRow,
 } from "@/lib/crewMessaging";
 import { showAlert } from "@/lib/platformAlert";
+
+const MINGLE_AMBER = "#D97706";
+const MINGLE_AMBER_SOFT = "#FEF3C7";
+const MINGLE_CARD_BG = "#FFFBEB";
+const MINGLE_CARD_BORDER = "rgba(217, 119, 6, 0.22)";
 
 export type RoutinePoolynMode = "crew" | "mingle";
 
@@ -33,6 +39,8 @@ type Props = {
   orgId: string | null;
   visibilityMode: "network" | "nearby" | string | null | undefined;
   setVisibilityMode: (mode: "network" | "nearby") => void;
+  /** From home commute route panel: saved route chosen (or not required). */
+  commuteRouteReady: boolean;
   onCrewCreated?: () => void;
 };
 
@@ -41,6 +49,7 @@ export function RoutinePoolynCrewMingleBlock({
   orgId,
   visibilityMode,
   setVisibilityMode,
+  commuteRouteReady,
   onCrewCreated,
 }: Props) {
   const router = useRouter();
@@ -51,18 +60,18 @@ export function RoutinePoolynCrewMingleBlock({
     Math.min(30, Math.max(5, profile.detour_tolerance_mins ?? 12))
   );
   const [myCrews, setMyCrews] = useState<CrewListRow[]>([]);
-  const [primaryMemberCount, setPrimaryMemberCount] = useState(0);
-  const [primaryPendingInviteCount, setPrimaryPendingInviteCount] = useState(0);
   const [pendingInvites, setPendingInvites] = useState<CrewInvitePendingRow[]>([]);
   const [routineLoading, setRoutineLoading] = useState(true);
   const [inviteBusyId, setInviteBusyId] = useState<string | null>(null);
+  const [crewCardStats, setCrewCardStats] = useState<
+    Record<string, { members: number; pending: number }>
+  >({});
 
   const loadRoutineData = useCallback(async () => {
     if (!profile.id) {
       setMyCrews([]);
       setPendingInvites([]);
-      setPrimaryMemberCount(0);
-      setPrimaryPendingInviteCount(0);
+      setCrewCardStats({});
       setRoutineLoading(false);
       return;
     }
@@ -74,16 +83,19 @@ export function RoutinePoolynCrewMingleBlock({
       ]);
       setMyCrews(crews);
       setPendingInvites(pending);
-      if (crews[0]) {
-        const [nMem, nPen] = await Promise.all([
-          countCrewMembers(crews[0].id),
-          countPendingCrewInvitationsForCrew(crews[0].id),
-        ]);
-        setPrimaryMemberCount(nMem);
-        setPrimaryPendingInviteCount(nPen);
+      if (crews.length) {
+        const statsEntries = await Promise.all(
+          crews.map(async (c) => {
+            const [nMem, nPen] = await Promise.all([
+              countCrewMembers(c.id),
+              countPendingCrewInvitationsForCrew(c.id),
+            ]);
+            return [c.id, { members: nMem, pending: nPen }] as const;
+          })
+        );
+        setCrewCardStats(Object.fromEntries(statsEntries));
       } else {
-        setPrimaryMemberCount(0);
-        setPrimaryPendingInviteCount(0);
+        setCrewCardStats({});
       }
     } finally {
       setRoutineLoading(false);
@@ -110,8 +122,8 @@ export function RoutinePoolynCrewMingleBlock({
     setInviteBusyId(null);
     if (!r.ok) {
       const msg =
-        r.reason === "already_in_crew"
-          ? "You already belong to a crew. Leave it under Profile → Poolyn Crews before accepting another invite."
+        r.reason === "too_many_crews"
+          ? `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave one under Profile → Poolyn Crews before accepting another invite.`
           : r.reason;
       showAlert(accept ? "Could not accept" : "Could not decline", msg);
       return;
@@ -122,7 +134,6 @@ export function RoutinePoolynCrewMingleBlock({
     }
   }
 
-  const primaryCrew = myCrews[0];
   const hasCrew = myCrews.length > 0;
 
   return (
@@ -181,7 +192,7 @@ export function RoutinePoolynCrewMingleBlock({
           <Ionicons
             name="git-network-outline"
             size={18}
-            color={mode === "mingle" ? "#fff" : "#7C3AED"}
+            color={mode === "mingle" ? "#fff" : MINGLE_AMBER}
           />
           <Text style={[styles.toggleText, mode === "mingle" && styles.toggleTextOn]}>Mingle Poolyn</Text>
         </Pressable>
@@ -193,26 +204,44 @@ export function RoutinePoolynCrewMingleBlock({
             <ActivityIndicator color={Colors.primary} />
             <Text style={styles.loadingText}>Loading your crew…</Text>
           </View>
-        ) : hasCrew && primaryCrew ? (
+        ) : hasCrew ? (
           <View style={styles.crewHasWrap}>
-            {myCrews.length > 1 ? (
-              <Text style={styles.legacyCrewWarning}>
-                You have more than one crew on file from before the one-crew limit. Leave extras under Profile →
-                Poolyn Crews so matching stays simple.
+            {myCrews.map((c) => {
+              const st = crewCardStats[c.id];
+              return (
+                <MyCrewRoutineCard
+                  key={c.id}
+                  userId={profile.id}
+                  crew={c}
+                  memberCount={st?.members ?? 0}
+                  pendingInviteCount={st?.pending ?? 0}
+                  hasWorkplaceNetworkOnProfile={Boolean(profile.org_id)}
+                  profilePins={{
+                    home_location: profile.home_location,
+                    work_location: profile.work_location,
+                  }}
+                  onRefresh={() => void loadRoutineData()}
+                  onCrewDeleted={() => void loadRoutineData()}
+                />
+              );
+            })}
+            {myCrews.length < MAX_CREWS_PER_USER ? (
+              <Pressable
+                style={styles.secondaryCrewCta}
+                onPress={() => {
+                  if (myCrews.length >= MAX_CREWS_PER_USER) return;
+                  setCrewModalOpen(true);
+                }}
+              >
+                <Ionicons name="add-circle-outline" size={20} color={Colors.primary} />
+                <Text style={styles.secondaryCrewCtaText}>Form another crew</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.crewCapHint}>
+                You&apos;re in {MAX_CREWS_PER_USER} crews (the maximum). Leave one under Profile → Poolyn Crews to
+                add another.
               </Text>
-            ) : null}
-            <MyCrewRoutineCard
-              userId={profile.id}
-              crew={primaryCrew}
-              memberCount={primaryMemberCount}
-              pendingInviteCount={primaryPendingInviteCount}
-              profilePins={{
-                home_location: profile.home_location,
-                work_location: profile.work_location,
-              }}
-              onRefresh={() => void loadRoutineData()}
-              onCrewDeleted={() => void loadRoutineData()}
-            />
+            )}
           </View>
         ) : (
           <View style={styles.card}>
@@ -221,7 +250,19 @@ export function RoutinePoolynCrewMingleBlock({
               Form a crew with coworkers you trust. Selected people get an in-app invite; everyone can still use
               the invite code. Coordinate in daily crew chat and take turns driving.
             </Text>
-            <Pressable style={styles.crewCta} onPress={() => setCrewModalOpen(true)}>
+            <Pressable
+              style={[styles.crewCta, !commuteRouteReady && styles.crewCtaDisabled]}
+              onPress={() => {
+                if (!commuteRouteReady) {
+                  showAlert(
+                    "Choose a route",
+                    "Pick your usual commute route in the section above, then form a crew."
+                  );
+                  return;
+                }
+                setCrewModalOpen(true);
+              }}
+            >
               <Text style={styles.crewCtaText}>Form your Crew</Text>
               <Ionicons name="arrow-forward" size={18} color="#fff" />
             </Pressable>
@@ -238,11 +279,11 @@ export function RoutinePoolynCrewMingleBlock({
           <Text style={styles.miniLabel}>Detour tolerance (minutes)</Text>
           <View style={styles.stepper}>
             <Pressable style={styles.stepBtn} onPress={() => setDetourMins((m) => Math.max(5, m - 1))}>
-              <Ionicons name="remove" size={20} color="#7C3AED" />
+              <Ionicons name="remove" size={20} color={MINGLE_AMBER} />
             </Pressable>
             <Text style={styles.stepVal}>{detourMins} min</Text>
             <Pressable style={styles.stepBtn} onPress={() => setDetourMins((m) => Math.min(35, m + 1))}>
-              <Ionicons name="add" size={20} color="#7C3AED" />
+              <Ionicons name="add" size={20} color={MINGLE_AMBER} />
             </Pressable>
           </View>
 
@@ -353,7 +394,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   toggleChipOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  toggleChipOnMingle: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  toggleChipOnMingle: { backgroundColor: MINGLE_AMBER, borderColor: "#B45309" },
   toggleText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.text },
   toggleTextOn: { color: "#fff" },
   card: {
@@ -367,19 +408,9 @@ const styles = StyleSheet.create({
   loadingCard: { alignItems: "center", gap: Spacing.sm, paddingVertical: Spacing.xl },
   loadingText: { fontSize: FontSize.sm, color: Colors.textSecondary },
   crewHasWrap: { gap: Spacing.sm },
-  legacyCrewWarning: {
-    fontSize: FontSize.xs,
-    color: "#92400E",
-    backgroundColor: "#FEF3C7",
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    lineHeight: 18,
-    borderWidth: 1,
-    borderColor: "#FCD34D",
-  },
   cardMingle: {
-    backgroundColor: "#F5F3FF",
-    borderColor: "rgba(124, 58, 237, 0.22)",
+    backgroundColor: MINGLE_CARD_BG,
+    borderColor: MINGLE_CARD_BORDER,
   },
   cardTitle: {
     fontSize: FontSize.base,
@@ -419,7 +450,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "#EDE9FE",
+    backgroundColor: MINGLE_AMBER_SOFT,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -434,7 +465,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   scopeChipOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  scopeChipOnMingle: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  scopeChipOnMingle: { backgroundColor: MINGLE_AMBER, borderColor: "#B45309" },
   scopeChipText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, color: Colors.text },
   scopeChipTextOn: { color: "#fff" },
   mingleGo: {
@@ -443,10 +474,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#7C3AED",
+    backgroundColor: MINGLE_AMBER,
     paddingVertical: 14,
     borderRadius: BorderRadius.lg,
     ...Shadow.sm,
   },
   mingleGoText: { color: "#fff", fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  crewCtaDisabled: { opacity: 0.55 },
+  secondaryCrewCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: "#fff",
+  },
+  secondaryCrewCtaText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.primary },
+  crewCapHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    textAlign: "center",
+    marginTop: Spacing.xs,
+  },
 });

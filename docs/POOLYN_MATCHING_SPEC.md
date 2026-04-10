@@ -20,6 +20,8 @@
 
 - Every user **must** have a stored **home → work** commute route (`commute_routes`).
 - Generated with **Mapbox Directions API** only (single engine for baseline + detour).
+- Default stored path is Mapbox’s **primary** route (`routes[0]` when using `mapbox/driving-traffic`); users may pick alternates by index in the same API order.
+- Stored `duration_s` for commute rows uses **`duration_typical`** when the traffic profile returns it (usual travel time); live `duration` is kept for detours / ride hints. Distances prefer summed **leg** lengths when present.
 - Store: encoded polyline (optional), `route_geom` (LineString), `distance_m`, `duration_s`, axis-aligned **bbox** for fast pre-filter.
 - Generated: onboarding, when home/work changes, optional periodic refresh.
 - **No valid route → excluded from matching** (no proximity fallback).

@@ -30,6 +30,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { PoolynCreditsCard } from "@/components/profile/PoolynCreditsCard";
 
 const GENDER_LABELS: Record<string, string> = {
   male: "Male",
@@ -329,7 +330,6 @@ export default function Profile() {
           : []),
         { icon: "notifications-outline" as const, label: "Notifications", route: "/(tabs)/profile/notifications" },
         { icon: "pulse-outline" as const, label: "Activity", route: "/(tabs)/profile/activity" },
-        { icon: "chatbubbles-outline" as const, label: "Ride messages", route: "/(tabs)/messages" },
         { icon: "dice-outline" as const, label: "Poolyn Crews", route: "/(tabs)/profile/crews" },
         ...(profile?.org_id
           ? [
@@ -513,6 +513,10 @@ export default function Profile() {
           </View>
           <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
         </TouchableOpacity>
+
+        {profile ? (
+          <PoolynCreditsCard balance={profile.commute_credits_balance ?? 0} />
+        ) : null}
 
         {/* Completion bar */}
         {completionPct < 100 && (

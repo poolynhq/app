@@ -31,6 +31,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { PassengerPaymentCostLines } from "@/components/home/PassengerPaymentCostLines";
 
 function filterPassengerCards(
   cards: RideOpportunityCard[],
@@ -333,9 +334,19 @@ export function HomeNetworkHub({
                   <Text style={styles.matchScore}>{c.overlapPercent}% share</Text>
                 </View>
                 <Text style={styles.matchMeta}>
-                  Adds ~{c.detourMinutes} min detour · est. contribution for them{" "}
-                  {(c.passengerCostCents / 100).toFixed(2)} (incl. $1 stop fee)
+                  Adds ~{c.detourMinutes} min detour · est. for the rider (their trip share)
                 </Text>
+                <PassengerPaymentCostLines
+                  contributionCents={c.passengerCostCents}
+                  passengerHasWorkplaceOrgOnProfile={c.passengerHasWorkplaceOrgOnProfile}
+                  context="mingle"
+                  textStyle="meta"
+                  poolHint={
+                    c.assumedPoolRiders > 1
+                      ? `If ${c.assumedPoolRiders} riders share the car, detour and time are split that way.`
+                      : null
+                  }
+                />
                 <Text style={styles.driverRiderFootnote}>
                   Riders book from the list below. Confirmed pickups appear under My Rides.
                 </Text>
@@ -369,9 +380,18 @@ export function HomeNetworkHub({
               <Text style={styles.matchMeta}>
                 Pickup {c.pickupEtaLabel} · +{c.detourMinutes} min detour · reliability {c.trustReliability}
               </Text>
-              <Text style={styles.costLine}>
-                Est. contribution {(c.passengerCostCents / 100).toFixed(2)} (incl. $1 stop fee)
-              </Text>
+              <PassengerPaymentCostLines
+                contributionCents={c.passengerCostCents}
+                passengerHasWorkplaceOrgOnProfile={c.passengerHasWorkplaceOrgOnProfile}
+                context="mingle"
+                containerStyle={{ marginTop: Spacing.sm }}
+                primaryLine={`Est. trip share $${(c.passengerCostCents / 100).toFixed(2)} (incl. $1 stop fee)`}
+                poolHint={
+                  c.assumedPoolRiders > 1
+                    ? `Split further if ${c.assumedPoolRiders} riders are in the car.`
+                    : null
+                }
+              />
               <TouchableOpacity
                 style={styles.reserveBtn}
                 onPress={async () => {
@@ -647,12 +667,6 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: Spacing.xs,
     lineHeight: 18,
-  },
-  costLine: {
-    fontSize: FontSize.sm,
-    color: Colors.text,
-    marginTop: Spacing.sm,
-    fontWeight: FontWeight.semibold,
   },
   reserveBtn: {
     marginTop: Spacing.md,

@@ -5,11 +5,22 @@ import { parseGeoPoint } from "@/lib/parseGeoPoint";
 
 const MAX_BODY_LEN = 2000;
 
+/** Max crews a single user may belong to (join + create). */
+export const MAX_CREWS_PER_USER = 3;
+
+export type CrewCommutePattern = "to_work" | "to_home" | "round_trip";
+
 export type CrewListRow = {
   id: string;
   name: string;
   invite_code: string;
   org_id: string | null;
+  commute_pattern: CrewCommutePattern;
+  sticker_emoji: string | null;
+  sticker_image_url: string | null;
+  /** Snapshot from crew creation; map/stats ignore later profile route changes. */
+  locked_route_distance_m?: number | null;
+  locked_route_duration_s?: number | null;
 };
 
 export type CrewTripInstanceRow = {
@@ -17,6 +28,7 @@ export type CrewTripInstanceRow = {
   crew_id: string;
   trip_date: string;
   designated_driver_user_id: string | null;
+  excluded_pickup_user_ids: string[];
 };
 
 export type CrewMessageRow = {
@@ -216,6 +228,15 @@ export async function countCrewMembers(crewId: string): Promise<number> {
   return count ?? 0;
 }
 
+export async function countCrewsForUser(userId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from("crew_members")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId);
+  if (error) return 0;
+  return count ?? 0;
+}
+
 export async function listMyCrews(userId: string): Promise<CrewListRow[]> {
   const { data: links, error: e1 } = await supabase
     .from("crew_members")
@@ -225,11 +246,28 @@ export async function listMyCrews(userId: string): Promise<CrewListRow[]> {
   const ids = [...new Set(links.map((l) => l.crew_id as string))];
   const { data: crews, error: e2 } = await supabase
     .from("crews")
-    .select("id, name, invite_code, org_id")
+    .select(
+      "id, name, invite_code, org_id, commute_pattern, sticker_emoji, sticker_image_url, locked_route_distance_m, locked_route_duration_s"
+    )
     .in("id", ids)
     .order("name");
   if (e2 || !crews) return [];
-  return crews as CrewListRow[];
+  return crews.map((raw) => {
+    const c = raw as Record<string, unknown>;
+    return {
+      id: c.id as string,
+      name: c.name as string,
+      invite_code: c.invite_code as string,
+      org_id: (c.org_id as string | null) ?? null,
+      commute_pattern: ((c.commute_pattern as CrewCommutePattern) ?? "to_work") as CrewCommutePattern,
+      sticker_emoji: (c.sticker_emoji as string | null) ?? null,
+      sticker_image_url: (c.sticker_image_url as string | null) ?? null,
+      locked_route_distance_m:
+        typeof c.locked_route_distance_m === "number" ? c.locked_route_distance_m : null,
+      locked_route_duration_s:
+        typeof c.locked_route_duration_s === "number" ? c.locked_route_duration_s : null,
+    };
+  });
 }
 
 export async function createCrewInvitations(params: {
@@ -258,20 +296,15 @@ export async function createCrew(params: {
   name: string;
   userId: string;
   orgId: string | null;
+  commutePattern?: CrewCommutePattern;
 }): Promise<{ ok: true; crewId: string } | { ok: false; reason: string }> {
   const name = params.name.trim();
   if (!name) return { ok: false, reason: "Name is required." };
-  const { data: existing } = await supabase
-    .from("crew_members")
-    .select("crew_id")
-    .eq("user_id", params.userId)
-    .limit(1)
-    .maybeSingle();
-  if (existing?.crew_id) {
+  const n = await countCrewsForUser(params.userId);
+  if (n >= MAX_CREWS_PER_USER) {
     return {
       ok: false,
-      reason:
-        "You already belong to a crew. Leave it under Profile → Poolyn Crews before creating another.",
+      reason: `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave one under Profile → Poolyn Crews before creating another.`,
     };
   }
   const { data: crew, error: e1 } = await supabase
@@ -280,6 +313,7 @@ export async function createCrew(params: {
       name,
       created_by: params.userId,
       org_id: params.orgId,
+      commute_pattern: params.commutePattern ?? "to_work",
     })
     .select("id")
     .single();
@@ -291,6 +325,7 @@ export async function createCrew(params: {
     role: "owner",
   });
   if (e2) return { ok: false, reason: e2.message };
+  await supabase.rpc("poolyn_lock_crew_formation_route", { p_crew_id: crewId });
   return { ok: true, crewId };
 }
 
@@ -310,8 +345,7 @@ export async function joinCrewByCode(
     crew_not_found: "No crew matches that code.",
     org_mismatch: "This crew belongs to another workplace. Use an invite from your organisation.",
     invalid_code: "Enter a valid invite code.",
-    already_in_crew:
-      "You already belong to another crew. Leave it under Profile → Poolyn Crews before joining a different one.",
+    too_many_crews: `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave one under Profile → Poolyn Crews before joining another.`,
   };
   return { ok: false, reason: human[reason] ?? reason };
 }
@@ -323,10 +357,23 @@ export async function getOrCreateTripInstance(
   const { data, error } = await supabase
     .from("crew_trip_instances")
     .upsert({ crew_id: crewId, trip_date: tripDate }, { onConflict: "crew_id,trip_date" })
-    .select("id, crew_id, trip_date, designated_driver_user_id")
+    .select("id, crew_id, trip_date, designated_driver_user_id, excluded_pickup_user_ids")
     .single();
   if (error || !data) return { ok: false, reason: error?.message ?? "trip_instance_failed" };
-  return { ok: true, row: data as CrewTripInstanceRow };
+  const row = data as Record<string, unknown>;
+  const excluded = row.excluded_pickup_user_ids;
+  return {
+    ok: true,
+    row: {
+      id: row.id as string,
+      crew_id: row.crew_id as string,
+      trip_date: row.trip_date as string,
+      designated_driver_user_id: (row.designated_driver_user_id as string | null) ?? null,
+      excluded_pickup_user_ids: Array.isArray(excluded)
+        ? (excluded as string[])
+        : [],
+    },
+  };
 }
 
 export async function fetchCrewTripInstance(
@@ -334,11 +381,100 @@ export async function fetchCrewTripInstance(
 ): Promise<CrewTripInstanceRow | null> {
   const { data, error } = await supabase
     .from("crew_trip_instances")
-    .select("id, crew_id, trip_date, designated_driver_user_id")
+    .select("id, crew_id, trip_date, designated_driver_user_id, excluded_pickup_user_ids")
     .eq("id", tripInstanceId)
     .maybeSingle();
   if (error || !data) return null;
-  return data as CrewTripInstanceRow;
+  const row = data as Record<string, unknown>;
+  const excluded = row.excluded_pickup_user_ids;
+  return {
+    id: row.id as string,
+    crew_id: row.crew_id as string,
+    trip_date: row.trip_date as string,
+    designated_driver_user_id: (row.designated_driver_user_id as string | null) ?? null,
+    excluded_pickup_user_ids: Array.isArray(excluded) ? (excluded as string[]) : [],
+  };
+}
+
+export async function updateCrewSettings(params: {
+  crewId: string;
+  name?: string;
+  commute_pattern?: CrewCommutePattern;
+  sticker_emoji?: string | null;
+  sticker_image_url?: string | null;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const patch: Record<string, unknown> = {};
+  if (params.name !== undefined) patch.name = params.name.trim();
+  if (params.commute_pattern !== undefined) patch.commute_pattern = params.commute_pattern;
+  if (params.sticker_emoji !== undefined) {
+    const s = params.sticker_emoji?.trim().slice(0, 16) ?? "";
+    patch.sticker_emoji = s.length ? s : null;
+  }
+  if (params.sticker_image_url !== undefined) {
+    const u = params.sticker_image_url?.trim() ?? "";
+    patch.sticker_image_url = u.length ? u : null;
+  }
+  if (Object.keys(patch).length === 0) return { ok: true };
+  const { error } = await supabase.from("crews").update(patch).eq("id", params.crewId);
+  if (error) return { ok: false, reason: error.message };
+  return { ok: true };
+}
+
+export async function setTripExcludedPickups(
+  tripInstanceId: string,
+  excludedUserIds: string[]
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { error } = await supabase
+    .from("crew_trip_instances")
+    .update({ excluded_pickup_user_ids: excludedUserIds })
+    .eq("id", tripInstanceId);
+  if (error) return { ok: false, reason: error.message };
+  return { ok: true };
+}
+
+export async function removeCrewMemberAsOwner(
+  crewId: string,
+  targetUserId: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_crew_owner_remove_member", {
+    p_crew_id: crewId,
+    p_target_user_id: targetUserId,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) return { ok: true };
+  const reason = typeof o?.reason === "string" ? o.reason : "failed";
+  const human: Record<string, string> = {
+    not_owner: "Only the crew owner can remove a member.",
+    not_found_or_owner: "That member is not in the crew or cannot be removed.",
+    cannot_remove_self_here: "Use leave crew if you want to remove yourself.",
+  };
+  return { ok: false, reason: human[reason] ?? reason };
+}
+
+export async function fetchCrewRow(crewId: string): Promise<CrewListRow | null> {
+  const { data, error } = await supabase
+    .from("crews")
+    .select(
+      "id, name, invite_code, org_id, commute_pattern, sticker_emoji, sticker_image_url, locked_route_distance_m, locked_route_duration_s"
+    )
+    .eq("id", crewId)
+    .maybeSingle();
+  if (error || !data) return null;
+  const c = data as Record<string, unknown>;
+  return {
+    id: c.id as string,
+    name: c.name as string,
+    invite_code: c.invite_code as string,
+    org_id: (c.org_id as string | null) ?? null,
+    commute_pattern: ((c.commute_pattern as CrewCommutePattern) ?? "to_work") as CrewCommutePattern,
+    sticker_emoji: (c.sticker_emoji as string | null) ?? null,
+    sticker_image_url: (c.sticker_image_url as string | null) ?? null,
+    locked_route_distance_m:
+      typeof c.locked_route_distance_m === "number" ? c.locked_route_distance_m : null,
+    locked_route_duration_s:
+      typeof c.locked_route_duration_s === "number" ? c.locked_route_duration_s : null,
+  };
 }
 
 export async function fetchCrewName(crewId: string): Promise<string | null> {

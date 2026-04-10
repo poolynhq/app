@@ -22,6 +22,7 @@ import {
   getOrCreateTripInstance,
   deleteCrewAsOwner,
   isCrewOwner,
+  MAX_CREWS_PER_USER,
   type CrewListRow,
 } from "@/lib/crewMessaging";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
@@ -185,12 +186,12 @@ export default function PoolynCrewsScreen() {
 
       <View style={styles.actions}>
         <TouchableOpacity
-          style={[styles.actionBtn, rows.length >= 1 && styles.actionBtnDisabled]}
+          style={[styles.actionBtn, rows.length >= MAX_CREWS_PER_USER && styles.actionBtnDisabled]}
           onPress={() => {
-            if (rows.length >= 1) {
+            if (rows.length >= MAX_CREWS_PER_USER) {
               showAlert(
-                "One crew per person",
-                "Leave your current crew here before you can create a new one."
+                "Crew limit",
+                `You can be in up to ${MAX_CREWS_PER_USER} crews. Delete or leave one here before creating another.`
               );
               return;
             }
@@ -198,8 +199,16 @@ export default function PoolynCrewsScreen() {
           }}
           activeOpacity={0.85}
         >
-          <Ionicons name="add-circle-outline" size={20} color={rows.length >= 1 ? Colors.textTertiary : Colors.primary} />
-          <Text style={[styles.actionBtnText, rows.length >= 1 && styles.actionBtnTextDisabled]}>New crew</Text>
+          <Ionicons
+            name="add-circle-outline"
+            size={20}
+            color={rows.length >= MAX_CREWS_PER_USER ? Colors.textTertiary : Colors.primary}
+          />
+          <Text
+            style={[styles.actionBtnText, rows.length >= MAX_CREWS_PER_USER && styles.actionBtnTextDisabled]}
+          >
+            New crew
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.actionBtn} onPress={() => setJoinOpen(true)} activeOpacity={0.85}>
           <Ionicons name="enter-outline" size={20} color={Colors.primary} />
@@ -208,8 +217,8 @@ export default function PoolynCrewsScreen() {
       </View>
 
       <Text style={styles.hint}>
-        Each calendar day has its own chat thread. Roll the dice in chat to pick today&apos;s driver — they lead
-        coordination for the day.
+        Tap a crew for settings (members, invite). The chat icon opens today&apos;s thread. Each calendar day has its
+        own chat thread — roll the dice in chat to pick today&apos;s driver; they lead coordination for the day.
       </Text>
 
       {loading ? (
@@ -227,8 +236,10 @@ export default function PoolynCrewsScreen() {
               <View key={c.id} style={styles.card}>
                 <TouchableOpacity
                   style={styles.cardMain}
-                  onPress={() => void openTodaysChat(c.id)}
+                  onPress={() => router.push(`/(tabs)/profile/crew-settings/${c.id}`)}
                   activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${c.name}, crew settings`}
                 >
                   <View style={styles.cardIcon}>
                     <Ionicons name="people" size={22} color={Colors.primary} />
@@ -237,10 +248,18 @@ export default function PoolynCrewsScreen() {
                     <Text style={styles.cardTitle} numberOfLines={1}>
                       {c.name}
                     </Text>
-                    <Text style={styles.cardSub}>Today&apos;s chat · invite {c.invite_code}</Text>
+                    <Text style={styles.cardSub}>Settings · invite {c.invite_code}</Text>
                   </View>
-                  <Ionicons name="chatbubbles-outline" size={22} color={Colors.textTertiary} />
                 </TouchableOpacity>
+                <Pressable
+                  style={styles.cardChat}
+                  onPress={() => void openTodaysChat(c.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open today’s chat for ${c.name}`}
+                  hitSlop={10}
+                >
+                  <Ionicons name="chatbubbles-outline" size={22} color={Colors.primary} />
+                </Pressable>
                 {ownerByCrewId[c.id] ? (
                   <Pressable
                     style={styles.cardDelete}
@@ -393,6 +412,11 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
     minWidth: 0,
     paddingVertical: Spacing.xs,
+  },
+  cardChat: {
+    padding: Spacing.sm,
+    justifyContent: "center",
+    alignItems: "center",
   },
   cardDelete: {
     padding: Spacing.sm,

@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet, Platform, TouchableOpacity } from "react-native";
 import { Tabs, useRouter } from "expo-router";
+import type { NavigationState, PartialState } from "@react-navigation/native";
 import { useFonts } from "expo-font";
 import {
   Inter_400Regular,
@@ -24,6 +25,29 @@ const TAB_DEFS: {
   { name: "messages", title: "Messages", icon: "chatbubbles-outline", iconFocused: "chatbubbles" },
   { name: "profile", title: "Profile", icon: "person-outline", iconFocused: "person" },
 ];
+
+/** When Profile tab is pressed, pop nested stack to the main profile menu if user was on a sub-screen (e.g. Commute). */
+function profileTabListeners({
+  navigation,
+}: {
+  navigation: {
+    getState: () => NavigationState | PartialState<NavigationState>;
+    navigate: (name: "profile", params: { screen: string }) => void;
+  };
+}) {
+  return {
+    tabPress: (e: { preventDefault: () => void }) => {
+      const state = navigation.getState();
+      const profileRoute = state.routes.find((r) => r.name === "profile");
+      const nested = profileRoute?.state;
+      const idx = nested && "index" in nested ? nested.index : 0;
+      if (typeof idx === "number" && idx > 0) {
+        e.preventDefault();
+        navigation.navigate("profile", { screen: "index" });
+      }
+    },
+  };
+}
 
 function AdminReturnToDashboard({ fabBottom }: { fabBottom: number }) {
   const { isAdmin } = useAuth();
@@ -52,8 +76,8 @@ export default function TabsLayout() {
   });
   const insets = useSafeAreaInsets();
   const tabBarBottom = Math.max(insets.bottom, Platform.OS === "web" ? 12 : 8);
-  /** Room for icon + label above home indicator (default 52 was clipping labels on Android). */
-  const tabBarContentMin = Platform.OS === "android" ? 58 : 54;
+  /** Room for icon + label above home indicator (taller bar avoids clipping multi-word labels). */
+  const tabBarContentMin = Platform.OS === "android" ? 64 : Platform.OS === "ios" ? 58 : 56;
   const tabBarHeight = tabBarContentMin + tabBarBottom;
 
   if (!fontsLoaded) {
@@ -69,20 +93,22 @@ export default function TabsLayout() {
           tabBarInactiveTintColor: Colors.textTertiary,
           tabBarAllowFontScaling: false,
           tabBarLabelStyle: {
-            fontSize: 10,
+            fontSize: 9,
             fontWeight: FontWeight.semibold,
-            marginTop: 0,
-            marginBottom: Platform.OS === "ios" ? 3 : 1,
+            marginTop: 2,
+            marginBottom: Platform.OS === "ios" ? 6 : 8,
+            lineHeight: 11,
           },
           tabBarIconStyle: {
-            marginTop: Platform.OS === "android" ? 2 : 4,
+            marginTop: Platform.OS === "android" ? 2 : 2,
+            marginBottom: 0,
           },
           tabBarItemStyle: {
-            paddingTop: 2,
+            paddingTop: 4,
             paddingBottom: 0,
           },
           tabBarStyle: {
-            paddingTop: Platform.OS === "android" ? 6 : 4,
+            paddingTop: Platform.OS === "android" ? 4 : 6,
             paddingBottom: tabBarBottom,
             height: tabBarHeight,
             minHeight: tabBarHeight,
@@ -96,6 +122,7 @@ export default function TabsLayout() {
           <Tabs.Screen
             key={tab.name}
             name={tab.name}
+            listeners={tab.name === "profile" ? profileTabListeners : undefined}
             options={{
               title: tab.title,
               tabBarIcon: ({ color, focused, size }) => (

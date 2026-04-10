@@ -9,7 +9,10 @@
  * `organisations.status` active|grace vs inactive|dissolved); do not trust client flags.
  */
 
-export const NETWORK_FEE_PERCENTAGE = 0.18;
+import { POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION } from "@/lib/poolynPricingConfig";
+
+/** @deprecated Prefer {@link POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION} or `poolynExplorerCashFeeFraction`. */
+export const NETWORK_FEE_PERCENTAGE = POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION;
 
 /** Display / docs: credits per dollar (balance uses the same integer scale as cents). */
 export const POOLYN_COMMUTE_CREDITS_PER_DOLLAR = 100;

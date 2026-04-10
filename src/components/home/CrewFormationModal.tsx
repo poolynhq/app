@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -11,13 +13,21 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as ImagePicker from "expo-image-picker";
 import { supabase } from "@/lib/supabase";
 import {
   createCrew,
   createCrewInvitations,
   getOrCreateTripInstance,
   setCrewDesignatedDriver,
+  updateCrewSettings,
+  type CrewCommutePattern,
 } from "@/lib/crewMessaging";
+import { prepareAvatarJpegBuffer } from "@/lib/avatarUpload";
+import { getCrewStickerPublicUrl, uploadCrewStickerJpeg } from "@/lib/crewStickerUpload";
+import { fetchPeerDetourPreview } from "@/lib/crewDetourPreview";
+import { mapboxTokenPresent } from "@/lib/mapboxCommutePreview";
+import { isPlausibleWgs84LatLng, parseGeoPoint, parseRpcFiniteNumber } from "@/lib/parseGeoPoint";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
 import { showAlert } from "@/lib/platformAlert";
 import type { User } from "@/types/database";
@@ -32,7 +42,14 @@ import {
 
 const FIRST_OPEN_KEY = "poolyn_crew_formation_intro_v1";
 
-type Peer = { id: string; full_name: string | null };
+type Peer = {
+  id: string;
+  full_name: string | null;
+  home_lat: number;
+  home_lng: number;
+  coordsOk: boolean;
+  avatar_url: string | null;
+};
 
 type Props = {
   visible: boolean;
@@ -54,6 +71,19 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
   const [maxPick, setMaxPick] = useState(4);
   const [submitting, setSubmitting] = useState(false);
   const [inviteNote, setInviteNote] = useState("");
+  const [commutePattern, setCommutePattern] = useState<CrewCommutePattern>("to_work");
+  const [stickerUri, setStickerUri] = useState<string | null>(null);
+  const [peerDetailOpen, setPeerDetailOpen] = useState<Set<string>>(new Set());
+  const [peerDetourById, setPeerDetourById] = useState<
+    Record<
+      string,
+      | { extraMin: number; extraKm: number; mapUrl: string | null }
+      | "loading"
+      | "err"
+      | "no_coords"
+      | "no_token"
+    >
+  >({});
 
   const loadPeers = useCallback(async () => {
     if (!orgId || !profile.id) {
@@ -66,7 +96,23 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
         p_detour_mins: detourMins,
       });
       if (error) throw error;
-      setPeers((data as Peer[]) ?? []);
+      const rows = (data as Record<string, unknown>[]) ?? [];
+      setPeers(
+        rows.map((r) => {
+          const lat = parseRpcFiniteNumber(r.home_lat);
+          const lng = parseRpcFiniteNumber(r.home_lng);
+          const coordsOk =
+            lat != null && lng != null && isPlausibleWgs84LatLng(lat, lng);
+          return {
+            id: r.id as string,
+            full_name: (r.full_name as string | null) ?? null,
+            home_lat: lat ?? 0,
+            home_lng: lng ?? 0,
+            coordsOk,
+            avatar_url: (r.avatar_url as string | null) ?? null,
+          };
+        })
+      );
     } catch {
       setPeers([]);
     } finally {
@@ -96,6 +142,10 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
     void loadSeatsCap();
     setSelected(new Set());
     setInviteNote("");
+    setCommutePattern("to_work");
+    setStickerUri(null);
+    setPeerDetailOpen(new Set());
+    setPeerDetourById({});
     setDetourMins(Math.min(30, Math.max(5, profile.detour_tolerance_mins ?? 12)));
   }, [visible, loadSeatsCap, profile.detour_tolerance_mins]);
 
@@ -125,6 +175,69 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
     setIntroSeen(true);
   }
 
+  async function loadPeerDetour(peerId: string, peerList: Peer[]) {
+    const peer = peerList.find((p) => p.id === peerId);
+    if (!peer || !peer.coordsOk) return;
+    const home = parseGeoPoint(profile.home_location as unknown);
+    const work = parseGeoPoint(profile.work_location as unknown);
+    if (!home || !work) return;
+    if (!mapboxTokenPresent()) {
+      setPeerDetourById((m) => ({ ...m, [peerId]: "no_token" }));
+      return;
+    }
+    setPeerDetourById((m) => ({ ...m, [peerId]: "loading" }));
+    const preview = await fetchPeerDetourPreview(home, work, {
+      lat: peer.home_lat,
+      lng: peer.home_lng,
+    });
+    if (!preview) {
+      setPeerDetourById((m) => ({ ...m, [peerId]: "err" }));
+      return;
+    }
+    setPeerDetourById((m) => ({
+      ...m,
+      [peerId]: {
+        extraMin: preview.estimate.extraDurationMin,
+        extraKm: preview.estimate.extraDistanceKm,
+        mapUrl: preview.mapUrl,
+      },
+    }));
+  }
+
+  function togglePeerDetail(peerId: string) {
+    setPeerDetailOpen((prev) => {
+      const n = new Set(prev);
+      if (n.has(peerId)) n.delete(peerId);
+      else {
+        n.add(peerId);
+        const peer = peers.find((p) => p.id === peerId);
+        if (peer && !peer.coordsOk) {
+          setPeerDetourById((m) => ({ ...m, [peerId]: "no_coords" }));
+        } else {
+          void loadPeerDetour(peerId, peers);
+        }
+      }
+      return n;
+    });
+  }
+
+  async function pickCrewStickerImage() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      showAlert("Photos", "Allow photo library access to choose a crew sticker image.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.85,
+    });
+    if (!result.canceled && result.assets[0]?.uri) {
+      setStickerUri(result.assets[0].uri);
+    }
+  }
+
   async function handleCreate() {
     const name = crewName.trim() || "My commute crew";
     setSubmitting(true);
@@ -134,6 +247,7 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
         name,
         userId: profile.id,
         orgId,
+        commutePattern: commutePattern,
       });
       if (!created.ok) {
         showAlert("Could not create crew", created.reason);
@@ -160,6 +274,22 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
           message: inviteNote.trim() || null,
         });
         inviteOk = inv.ok;
+      }
+      if (stickerUri) {
+        try {
+          const buf = await prepareAvatarJpegBuffer(stickerUri);
+          const up = await uploadCrewStickerJpeg(created.crewId, buf);
+          if (up.ok) {
+            await updateCrewSettings({
+              crewId: created.crewId,
+              sticker_image_url: getCrewStickerPublicUrl(up.path),
+            });
+          } else {
+            showAlert("Sticker upload", up.message);
+          }
+        } catch (e) {
+          showAlert("Sticker upload", e instanceof Error ? e.message : "Could not upload image.");
+        }
       }
       const { data: codeRow } = await supabase
         .from("crews")
@@ -233,8 +363,9 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
               <View style={styles.callout}>
                 <Ionicons name="people-circle-outline" size={22} color={Colors.primary} />
                 <Text style={styles.calloutText}>
-                  Pick coworkers whose home sits near your home→work line and whose workplace is in the
-                  same metro area. Increase detour minutes to widen the corridor buffer along that line.
+                  People listed here sit near your saved driving route from Home (the line you picked under
+                  Your regular commute), not a straight pin-to-pin line. Widen the corridor with detour
+                  minutes. The route is frozen onto each new crew when you create it.
                 </Text>
                 <Pressable onPress={markIntroSeen}>
                   <Text style={styles.calloutDismiss}>Got it</Text>
@@ -250,6 +381,35 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
               style={styles.input}
               placeholderTextColor={Colors.textTertiary}
             />
+
+            <Text style={styles.label}>Commute type</Text>
+            <Text style={styles.hint}>
+              Shown on the crew card and trip summary so everyone knows if this is morning, evening, or
+              both.
+            </Text>
+            <View style={styles.patternRow}>
+              {(
+                [
+                  { id: "to_work" as const, label: "→ Work", sub: "One-way" },
+                  { id: "to_home" as const, label: "→ Home", sub: "One-way" },
+                  { id: "round_trip" as const, label: "Round trip", sub: "Both legs" },
+                ] as const
+              ).map((opt) => {
+                const on = commutePattern === opt.id;
+                return (
+                  <Pressable
+                    key={opt.id}
+                    style={[styles.patternChip, on && styles.patternChipOn]}
+                    onPress={() => setCommutePattern(opt.id)}
+                  >
+                    <Text style={[styles.patternChipTitle, on && styles.patternChipTitleOn]}>
+                      {opt.label}
+                    </Text>
+                    <Text style={[styles.patternChipSub, on && styles.patternChipSubOn]}>{opt.sub}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
             <Text style={styles.label}>Detour you&apos;ll accept (minutes)</Text>
             <View style={styles.stepper}>
@@ -297,18 +457,100 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
               peers.map((p) => {
                 const on = selected.has(p.id);
                 const disabled = !on && selected.size >= maxPick;
+                const detail = peerDetailOpen.has(p.id);
+                const det = peerDetourById[p.id];
                 return (
-                  <Pressable
-                    key={p.id}
-                    style={[styles.peerRow, disabled && styles.peerRowDisabled]}
-                    onPress={() => !disabled && togglePeer(p.id)}
-                    disabled={disabled && !on}
-                  >
-                    <View style={[styles.check, on && styles.checkOn]}>
-                      {on ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
-                    </View>
-                    <Text style={styles.peerName}>{p.full_name?.trim() || "Poolyn member"}</Text>
-                  </Pressable>
+                  <View key={p.id} style={styles.peerBlock}>
+                    <Pressable
+                      style={[styles.peerRow, disabled && styles.peerRowDisabled]}
+                      onPress={() => !disabled && togglePeer(p.id)}
+                      disabled={disabled && !on}
+                    >
+                      <View style={[styles.check, on && styles.checkOn]}>
+                        {on ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
+                      </View>
+                      {p.avatar_url ? (
+                        <Image source={{ uri: p.avatar_url }} style={styles.peerAvatar} />
+                      ) : (
+                        <View style={styles.peerAvatarPh}>
+                          <Ionicons name="person" size={18} color={Colors.textTertiary} />
+                        </View>
+                      )}
+                      <View style={styles.peerMain}>
+                        <Text style={styles.peerName}>{p.full_name?.trim() || "Poolyn member"}</Text>
+                        <Text style={styles.peerSub} numberOfLines={2}>
+                          {p.coordsOk
+                            ? `Pickup near ${p.home_lat.toFixed(3)}°, ${p.home_lng.toFixed(3)}° (approx.)`
+                            : "Home pin unavailable for routing preview — teammate should save home in Profile → Commute."}
+                        </Text>
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      style={styles.peerDetailsBtn}
+                      onPress={() => togglePeerDetail(p.id)}
+                      hitSlop={6}
+                    >
+                      <Text style={styles.peerDetailsBtnText}>{detail ? "Hide" : "Preview"}</Text>
+                      <Ionicons
+                        name={detail ? "chevron-up" : "chevron-down"}
+                        size={18}
+                        color={Colors.primary}
+                      />
+                    </Pressable>
+                    {detail ? (
+                      <View style={styles.peerDetailPanel}>
+                        {det === "loading" ? (
+                          <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.md }} />
+                        ) : null}
+                        {det === "no_token" ? (
+                          <Text style={styles.peerDetailNote}>Route preview not configured.</Text>
+                        ) : null}
+                        {det === "no_coords" ? (
+                          <Text style={styles.peerDetailNote}>
+                            No pickup pin — ask teammate to save home (Profile → Commute), then Refresh.
+                          </Text>
+                        ) : null}
+                        {det === "err" ? (
+                          <Text style={styles.peerDetailNote}>Couldn’t load. Try again.</Text>
+                        ) : null}
+                        {typeof det === "object" ? (
+                          <>
+                            {det.mapUrl ? (
+                              <Pressable
+                                style={styles.peerDetailMapWrap}
+                                onPress={() => void Linking.openURL(det.mapUrl!)}
+                                accessibilityRole="button"
+                                accessibilityLabel="Open map"
+                              >
+                                <Image
+                                  source={{ uri: det.mapUrl }}
+                                  style={styles.peerDetailMap}
+                                  resizeMode="cover"
+                                />
+                                <View style={styles.mapTapHint}>
+                                  <Ionicons name="open-outline" size={15} color={Colors.primaryDark} />
+                                  <Text style={styles.mapTapHintText}>Open</Text>
+                                </View>
+                              </Pressable>
+                            ) : null}
+                            <View style={styles.routeLegend}>
+                              <View style={styles.legendItem}>
+                                <View style={[styles.legendDash, { backgroundColor: "#64748B" }]} />
+                                <Text style={styles.legendText}>Direct</Text>
+                              </View>
+                              <View style={styles.legendItem}>
+                                <View style={[styles.legendDash, { backgroundColor: "#EA580C" }]} />
+                                <Text style={styles.legendText}>Pickup</Text>
+                              </View>
+                            </View>
+                            <Text style={styles.peerDetailStats}>
+                              +{det.extraMin.toFixed(0)} min · +{det.extraKm.toFixed(1)} km
+                            </Text>
+                          </>
+                        ) : null}
+                      </View>
+                    ) : null}
+                  </View>
                 );
               })
             )}
@@ -328,6 +570,33 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
               You start as today&apos;s driver. Open group chat to roll dice or assign driver. Others can still
               join with the invite code if they miss the in-app invite.
             </Text>
+
+            <Text style={styles.label}>Team sticker (optional)</Text>
+            <Text style={styles.hint}>
+              Square image shown on your crew card. Uploads after the crew is created (JPEG, max ~1 MB on server).
+            </Text>
+            <View style={styles.stickerUploadRow}>
+              {stickerUri ? (
+                <Image source={{ uri: stickerUri }} style={styles.stickerPreview} resizeMode="cover" />
+              ) : (
+                <View style={styles.stickerPreviewPh}>
+                  <Ionicons name="image-outline" size={28} color={Colors.textTertiary} />
+                </View>
+              )}
+              <View style={styles.stickerUploadActions}>
+                <Pressable style={styles.stickerPickBtn} onPress={() => void pickCrewStickerImage()}>
+                  <Ionicons name="cloud-upload-outline" size={18} color={Colors.primary} />
+                  <Text style={styles.stickerPickBtnText}>
+                    {stickerUri ? "Change image" : "Choose image"}
+                  </Text>
+                </Pressable>
+                {stickerUri ? (
+                  <Pressable onPress={() => setStickerUri(null)} hitSlop={8}>
+                    <Text style={styles.stickerRemoveText}>Remove</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
           </ScrollView>
 
           <Pressable
@@ -390,7 +659,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingBottom: Spacing.sm,
   },
-  scroll: { maxHeight: 420 },
+  scroll: { maxHeight: 560 },
   scrollContent: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
   title: {
     fontSize: FontSize.xl,
@@ -486,15 +755,147 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
   },
   empty: { fontSize: FontSize.sm, color: Colors.textTertiary, fontStyle: "italic", marginTop: Spacing.sm },
-  peerRow: {
+  patternRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.sm,
+  },
+  patternChip: {
+    flexGrow: 1,
+    minWidth: "28%",
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.lg,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.sm,
+    backgroundColor: Colors.background,
+  },
+  patternChipOn: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  patternChipTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    textAlign: "center",
+  },
+  patternChipTitleOn: { color: Colors.primaryDark },
+  patternChipSub: { fontSize: 11, color: Colors.textTertiary, textAlign: "center", marginTop: 2 },
+  patternChipSubOn: { color: Colors.primaryDark },
+  stickerUploadRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: Spacing.md,
-    paddingVertical: Spacing.sm,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  stickerPreview: {
+    width: 72,
+    height: 72,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.border,
+  },
+  stickerPreviewPh: {
+    width: 72,
+    height: 72,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderStyle: "dashed",
+    backgroundColor: Colors.background,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  stickerUploadActions: { flex: 1, gap: Spacing.sm },
+  stickerPickBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    alignSelf: "flex-start",
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  stickerPickBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.primaryDark },
+  stickerRemoveText: { fontSize: FontSize.sm, color: Colors.error, fontWeight: FontWeight.medium },
+  peerBlock: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: Colors.border,
+    paddingBottom: Spacing.sm,
+    marginBottom: Spacing.xs,
+  },
+  peerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
   },
   peerRowDisabled: { opacity: 0.45 },
+  peerAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.border },
+  peerAvatarPh: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  peerMain: { flex: 1, minWidth: 0 },
+  peerSub: { fontSize: FontSize.xs, color: Colors.textTertiary, marginTop: 2 },
+  peerDetailsBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: 6,
+  },
+  peerDetailsBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.primary },
+  peerDetailPanel: { paddingBottom: Spacing.sm },
+  peerDetailMapWrap: {
+    borderRadius: BorderRadius.md,
+    overflow: "hidden",
+    marginBottom: Spacing.sm,
+    backgroundColor: Colors.border,
+    position: "relative",
+  },
+  peerDetailMap: {
+    width: "100%",
+    height: 300,
+    backgroundColor: Colors.border,
+  },
+  mapTapHint: {
+    position: "absolute",
+    right: Spacing.sm,
+    bottom: Spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.md,
+  },
+  mapTapHintText: {
+    fontSize: 12,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primaryDark,
+  },
+  routeLegend: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.md,
+    marginBottom: Spacing.xs,
+  },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+  legendDash: { width: 18, height: 4, borderRadius: 2 },
+  legendText: { fontSize: 11, color: Colors.textSecondary, fontWeight: FontWeight.medium },
+  peerDetailStats: { fontSize: FontSize.sm, color: Colors.text, lineHeight: 20 },
+  peerDetailNote: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 20 },
   check: {
     width: 24,
     height: 24,

@@ -489,6 +489,7 @@ export interface Database {
           crew_id: string;
           trip_date: string;
           designated_driver_user_id: string | null;
+          excluded_pickup_user_ids: string[];
           created_at: string;
           updated_at: string;
         };
@@ -497,11 +498,13 @@ export interface Database {
           crew_id: string;
           trip_date: string;
           designated_driver_user_id?: string | null;
+          excluded_pickup_user_ids?: string[];
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           designated_driver_user_id?: string | null;
+          excluded_pickup_user_ids?: string[];
           updated_at?: string;
         };
       };
@@ -540,6 +543,12 @@ export interface Database {
           org_id: string | null;
           created_by: string;
           invite_code: string;
+          commute_pattern: string;
+          sticker_emoji: string | null;
+          sticker_image_url: string | null;
+          locked_formation_route_geom: unknown | null;
+          locked_route_distance_m: number | null;
+          locked_route_duration_s: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -549,11 +558,23 @@ export interface Database {
           org_id?: string | null;
           created_by: string;
           invite_code?: string;
+          commute_pattern?: string;
+          sticker_emoji?: string | null;
+          sticker_image_url?: string | null;
+          locked_formation_route_geom?: unknown | null;
+          locked_route_distance_m?: number | null;
+          locked_route_duration_s?: number | null;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           name?: string;
+          commute_pattern?: string;
+          sticker_emoji?: string | null;
+          sticker_image_url?: string | null;
+          locked_formation_route_geom?: unknown | null;
+          locked_route_distance_m?: number | null;
+          locked_route_duration_s?: number | null;
           updated_at?: string;
         };
       };
@@ -694,6 +715,7 @@ export interface Database {
           seats_available: number;
           recurrence_rule: string | null;
           notes: string | null;
+          poolyn_context: "mingle" | "crew";
           created_at: string;
           updated_at: string;
         };
@@ -714,6 +736,7 @@ export interface Database {
           seats_available: number;
           recurrence_rule?: string | null;
           notes?: string | null;
+          poolyn_context?: "mingle" | "crew";
           created_at?: string;
           updated_at?: string;
         };
@@ -726,6 +749,7 @@ export interface Database {
           origin?: GeoPoint;
           destination?: GeoPoint;
           route_geometry?: GeoLineString;
+          poolyn_context?: "mingle" | "crew";
           origin_cluster?: string | null;
           destination_cluster?: string | null;
           seats_available?: number;
@@ -1456,11 +1480,22 @@ export interface Database {
         Returns: Json;
       };
       poolyn_passenger_network_fee_preview: {
-        Args: { p_total_contribution_cents: number };
+        Args: {
+          p_total_contribution_cents: number;
+          p_poolyn_context?: string | null;
+        };
         Returns: Json;
       };
       poolyn_commit_commute_passenger_pricing: {
         Args: { p_ride_passenger_id: string; p_reservation_id: string };
+        Returns: Json;
+      };
+      poolyn_route_people_directory: {
+        Args: {
+          p_pool_scope?: string | null;
+          p_sort?: string | null;
+          p_max_distance_m?: number | null;
+        };
         Returns: Json;
       };
       poolyn_credit_driver_for_ride_leg: {
@@ -1549,7 +1584,25 @@ export interface Database {
       };
       poolyn_org_crew_route_candidates: {
         Args: { p_detour_mins: number };
-        Returns: { id: string; full_name: string }[];
+        Returns: {
+          id: string;
+          full_name: string;
+          home_lat: number;
+          home_lng: number;
+          avatar_url: string | null;
+        }[];
+      };
+      poolyn_lock_crew_formation_route: {
+        Args: { p_crew_id: string };
+        Returns: Json;
+      };
+      get_crew_routine_map_route_geojson: {
+        Args: { p_crew_id: string };
+        Returns: Json;
+      };
+      poolyn_crew_owner_remove_member: {
+        Args: { p_crew_id: string; p_target_user_id: string };
+        Returns: Json;
       };
       get_discover_route_snapshot: {
         Args: { p_user_id: string };

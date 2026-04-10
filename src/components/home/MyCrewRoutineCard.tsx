@@ -7,9 +7,8 @@ import {
   Image,
   ActivityIndicator,
   ScrollView,
-  Platform,
+  Linking,
 } from "react-native";
-import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -25,15 +24,28 @@ import {
   type PendingCrewInvitee,
 } from "@/lib/crewMessaging";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
+import { parseStoredLineStringGeometry } from "@/lib/discoverMapViewerRoutes";
 import {
   buildCrewMemberPinsMapUrl,
   buildCrewRoutineOverviewMapUrl,
+  buildViewerCommuteStaticMapUrl,
   fetchRouteInfo,
   mapboxTokenPresent,
 } from "@/lib/mapboxCommutePreview";
+import { supabase } from "@/lib/supabase";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
 import { showAlert } from "@/lib/platformAlert";
-import { openGoogleWebCrewPickupRoute, presentDrivingNavigationPicker } from "@/lib/navigationUrls";
+import { presentDrivingNavigationPicker } from "@/lib/navigationUrls";
+import {
+  distanceMeters,
+  orderPickupsAlongCommute,
+  orderPickupsGreedy,
+  resolveCommuteGeometry,
+  type ResolvedCommuteLeg,
+} from "@/lib/crewRouteOrdering";
+import { CrewTripStartSummaryModal } from "@/components/home/CrewTripStartSummaryModal";
+import { computeCrewEqualCorridorRiderBreakdown } from "@/lib/costModel";
+import { PassengerPaymentCostLines } from "@/components/home/PassengerPaymentCostLines";
 import type { User } from "@/types/database";
 import {
   Colors,
@@ -44,20 +56,6 @@ import {
   Shadow,
 } from "@/constants/theme";
 
-function distanceMeters(
-  a: { lat: number; lng: number },
-  b: { lat: number; lng: number }
-): number {
-  const R = 6371000;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const lat1 = (a.lat * Math.PI) / 180;
-  const lat2 = (b.lat * Math.PI) / 180;
-  const x =
-    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
-}
-
 type ProfilePins = Pick<User, "home_location" | "work_location">;
 
 type Props = {
@@ -66,35 +64,12 @@ type Props = {
   memberCount: number;
   /** Pending in-app invites (not yet in roster until they accept). */
   pendingInviteCount: number;
+  /** From profile `org_id`; server confirms active workplace subscription when you pay. */
+  hasWorkplaceNetworkOnProfile?: boolean;
   profilePins: ProfilePins;
   onRefresh?: () => void;
   onCrewDeleted?: () => void;
 };
-
-/** Nearest-neighbor order from a start point (good enough for carpool pickups). */
-function orderPickupsGreedy(
-  origin: { lat: number; lng: number },
-  pins: CrewMemberMapPin[]
-): CrewMemberMapPin[] {
-  const remaining = [...pins];
-  const ordered: CrewMemberMapPin[] = [];
-  let current = origin;
-  while (remaining.length > 0) {
-    let bestIdx = 0;
-    let bestD = distanceMeters(current, { lat: remaining[0].lat, lng: remaining[0].lng });
-    for (let i = 1; i < remaining.length; i++) {
-      const d = distanceMeters(current, { lat: remaining[i].lat, lng: remaining[i].lng });
-      if (d < bestD) {
-        bestD = d;
-        bestIdx = i;
-      }
-    }
-    const [next] = remaining.splice(bestIdx, 1);
-    ordered.push(next);
-    current = { lat: next.lat, lng: next.lng };
-  }
-  return ordered;
-}
 
 function mergeMemberAndPendingPins(
   memberPins: CrewMemberMapPin[],
@@ -120,6 +95,7 @@ export function MyCrewRoutineCard({
   crew,
   memberCount,
   pendingInviteCount,
+  hasWorkplaceNetworkOnProfile = false,
   profilePins,
   onRefresh,
   onCrewDeleted,
@@ -133,7 +109,12 @@ export function MyCrewRoutineCard({
   const [pendingInvitees, setPendingInvitees] = useState<PendingCrewInvitee[]>([]);
   const [crewPinsForNav, setCrewPinsForNav] = useState<CrewMemberMapPin[]>([]);
   const [owner, setOwner] = useState(false);
-  const [tripStartBusy, setTripStartBusy] = useState(false);
+  const [tripStartOpen, setTripStartOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [commuteStats, setCommuteStats] = useState<{
+    distance_m: number;
+    duration_s: number;
+  } | null>(null);
 
   useEffect(() => {
     void isCrewOwner(crew.id, userId).then(setOwner);
@@ -141,15 +122,37 @@ export function MyCrewRoutineCard({
 
   const loadMapAndRoster = useCallback(async () => {
     setLoadingMap(true);
-    const [pinsMember, rosterRows, pending] = await Promise.all([
+    const [pinsMember, rosterRows, pending, crRes, geomRes] = await Promise.all([
       fetchCrewMemberHomePins(crew.id),
       fetchCrewRoster(crew.id),
       fetchPendingCrewInvitees(crew.id),
+      supabase
+        .from("commute_routes")
+        .select("distance_m, duration_s")
+        .eq("user_id", userId)
+        .eq("direction", "to_work")
+        .maybeSingle(),
+      supabase.rpc("get_crew_routine_map_route_geojson", { p_crew_id: crew.id }),
     ]);
     setRoster(rosterRows);
     setPendingInvitees(pending);
     const pins = mergeMemberAndPendingPins(pinsMember, pending);
     setCrewPinsForNav(pins);
+
+    const cr = crRes.data as { distance_m?: number; duration_s?: number } | null;
+    if (
+      crew.locked_route_distance_m != null &&
+      crew.locked_route_duration_s != null
+    ) {
+      setCommuteStats({
+        distance_m: crew.locked_route_distance_m,
+        duration_s: crew.locked_route_duration_s,
+      });
+    } else if (cr && typeof cr.distance_m === "number" && typeof cr.duration_s === "number") {
+      setCommuteStats({ distance_m: cr.distance_m, duration_s: cr.duration_s });
+    } else {
+      setCommuteStats(null);
+    }
 
     if (!mapboxTokenPresent()) {
       setMapUrl(null);
@@ -162,87 +165,50 @@ export function MyCrewRoutineCard({
 
     let url: string | null = null;
     if (home && work) {
-      const routeInfo = await fetchRouteInfo(home, work);
       const others = pins.filter(
         (p) => p.userId !== userId && distanceMeters({ lat: p.lat, lng: p.lng }, home) > 120
       );
-      url = buildCrewRoutineOverviewMapUrl(home, work, routeInfo, others.map((o) => ({ lat: o.lat, lng: o.lng })));
+      const otherPts = others.map((o) => ({ lat: o.lat, lng: o.lng }));
+      const storedGeom = geomRes.error ? null : geomRes.data;
+      const line = parseStoredLineStringGeometry(storedGeom);
+      if (line && line.length >= 2) {
+        url = buildViewerCommuteStaticMapUrl(home, work, line, otherPts);
+      } else {
+        const routeInfo = await fetchRouteInfo(home, work);
+        url = buildCrewRoutineOverviewMapUrl(home, work, routeInfo, otherPts);
+      }
     } else if (pins.length > 0) {
       url = buildCrewMemberPinsMapUrl(pins.map((p) => ({ lat: p.lat, lng: p.lng })));
     }
     setMapUrl(url);
     setLoadingMap(false);
-  }, [crew.id, profilePins.home_location, profilePins.work_location, userId]);
+  }, [
+    crew.id,
+    crew.locked_route_distance_m,
+    crew.locked_route_duration_s,
+    profilePins.home_location,
+    profilePins.work_location,
+    userId,
+  ]);
 
   useEffect(() => {
     void loadMapAndRoster();
   }, [loadMapAndRoster]);
 
-  async function onTripStart() {
+  function onPressTripStart() {
     const others = crewPinsForNav.filter((p) => p.userId !== userId);
     if (others.length === 0) {
-      showAlert(
-        "No crew pickup pins",
-        "Add crewmates with a saved home pin (Profile → Commute). Then Trip start can pick who is closest to you."
-      );
-      return;
-    }
-
-    setTripStartBusy(true);
-    try {
-      let origin: { lat: number; lng: number } | null = null;
-      const perm = await Location.requestForegroundPermissionsAsync();
-      if (perm.status === Location.PermissionStatus.GRANTED) {
-        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        origin = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      }
-      if (!origin) {
-        const h = parseGeoPoint(profilePins.home_location as unknown);
-        if (h) origin = h;
-      }
-      if (!origin) {
+      const workOnly = parseGeoPoint(profilePins.work_location as unknown);
+      const homeOnly = parseGeoPoint(profilePins.home_location as unknown);
+      if (!workOnly && !homeOnly) {
         showAlert(
-          "Need a starting point",
-          "Allow location for Poolyn in your browser or phone settings, or set your home pin under Profile → Commute."
+          "No crew pickup pins",
+          "Add crewmates with a saved home pin (Profile → Commute), or set your commute pins to navigate solo."
         );
         return;
       }
-
-      const ordered = orderPickupsGreedy(origin, others);
-      const work = parseGeoPoint(profilePins.work_location as unknown);
-
-      if (Platform.OS === "web") {
-        const meta = openGoogleWebCrewPickupRoute(
-          ordered.map((p) => ({ lat: p.lat, lng: p.lng })),
-          work
-        );
-        if (meta.truncated) {
-          showAlert(
-            "Part of the crew is not in this Maps link",
-            `Google Maps only fits so many stops in one trip. This opened the first ${meta.usedCount} of ${meta.totalCount} pickups (then work). Use Pickup order below to open directions for anyone left.`,
-            [{ text: "OK" }]
-          );
-        }
-        return;
-      }
-
-      const first = ordered[0];
-      const firstName = (first.fullName || "First pickup").trim();
-      presentDrivingNavigationPicker(first.lat, first.lng);
-      if (ordered.length > 1 || work) {
-        showAlert(
-          "After each pickup",
-          ordered.length > 1
-            ? `You’re heading to ${firstName} first. When you arrive, finish the stop in your maps app if it asks, then use Pickup order on this screen to open the next person${work ? ", and finally Maps → workplace" : ""}.`
-            : work
-              ? `When you’re done at ${firstName}, open the Navigate tab → To workplace, or use the workplace row under Pickup order.`
-              : "When you arrive, you’re done with this chain unless you add more stops yourself in Maps.",
-          [{ text: "OK" }]
-        );
-      }
-    } finally {
-      setTripStartBusy(false);
     }
+    setTripStartOpen(true);
   }
 
   async function openTodaysChat() {
@@ -306,97 +272,159 @@ export function MyCrewRoutineCard({
     [crewPinsForNav, userId]
   );
 
-  const workPt = parseGeoPoint(profilePins.work_location as unknown);
-
   const orderedLegsPreview = useMemo(() => {
     if (othersPins.length === 0) return [];
     const home = parseGeoPoint(profilePins.home_location as unknown);
-    if (home) return orderPickupsGreedy(home, othersPins);
-    let lat = 0;
-    let lng = 0;
-    for (const p of othersPins) {
-      lat += p.lat;
-      lng += p.lng;
+    const work = parseGeoPoint(profilePins.work_location as unknown);
+    const pattern = crew.commute_pattern ?? "to_work";
+    const activeLeg: ResolvedCommuteLeg = pattern === "to_home" ? "to_home" : "to_work";
+    const g =
+      home && work ? resolveCommuteGeometry({ pattern, activeLeg, home, work }) : null;
+    let origin: { lat: number; lng: number };
+    if (home) origin = home;
+    else {
+      let lat = 0;
+      let lng = 0;
+      for (const p of othersPins) {
+        lat += p.lat;
+        lng += p.lng;
+      }
+      const n = othersPins.length;
+      origin = { lat: lat / n, lng: lng / n };
     }
-    const n = othersPins.length;
-    const centroid = { lat: lat / n, lng: lng / n };
-    return orderPickupsGreedy(centroid, othersPins);
-  }, [othersPins, profilePins.home_location]);
+    if (g) return orderPickupsAlongCommute(origin, othersPins, g.segmentStart, g.segmentEnd);
+    return orderPickupsGreedy(origin, othersPins);
+  }, [othersPins, profilePins.home_location, profilePins.work_location, crew.commute_pattern]);
+
+  const finalNavPoint = useMemo(() => {
+    const pattern = crew.commute_pattern ?? "to_work";
+    if (pattern === "to_home") return parseGeoPoint(profilePins.home_location as unknown);
+    return parseGeoPoint(profilePins.work_location as unknown);
+  }, [crew.commute_pattern, profilePins.home_location, profilePins.work_location]);
+
+  const finalNavLabel =
+    (crew.commute_pattern ?? "to_work") === "to_home"
+      ? "Home (after pickups)"
+      : crew.commute_pattern === "round_trip"
+        ? "Workplace (pick leg in Start Poolyn)"
+        : "Workplace (after pickups)";
 
   const invitedShown = Math.max(pendingInviteCount, pendingInvitees.length);
-  const metaParts: string[] = [
-    `${memberCount} in crew`,
-    ...(invitedShown > 0 ? [`${invitedShown} invited`] : []),
-    `code ${crew.invite_code}`,
-  ];
+  const legSummary =
+    crew.commute_pattern === "to_home"
+      ? "Work → Home"
+      : crew.commute_pattern === "round_trip"
+        ? "Round trip"
+        : "Home → Work";
+  const commuteSummary =
+    commuteStats != null
+      ? `${(commuteStats.distance_m / 1000).toFixed(1)} km · ~${Math.round(commuteStats.duration_s / 60)} min`
+      : null;
+
+  const riderCostPreview = useMemo(() => {
+    if (!commuteStats?.distance_m) return null;
+    const poolRiders = memberCount - 1;
+    if (poolRiders < 1) return null;
+    const bd = computeCrewEqualCorridorRiderBreakdown({
+      lockedRouteDistanceM: commuteStats.distance_m,
+      lockedRouteDurationS: commuteStats.duration_s,
+      poolRiderCount: poolRiders,
+    });
+    if (!bd) return null;
+    return { poolRiders, cents: bd.total_contribution };
+  }, [commuteStats, memberCount]);
+
+  function openMapExternal() {
+    if (!mapUrl) return;
+    void Linking.openURL(mapUrl);
+  }
 
   return (
     <View style={styles.card}>
-      <View style={styles.headerRow}>
+      {crew.sticker_image_url ? (
+        <Image source={{ uri: crew.sticker_image_url }} style={styles.banner} resizeMode="cover" />
+      ) : crew.sticker_emoji ? (
+        <View style={styles.bannerEmoji}>
+          <Text style={styles.bannerEmojiText}>{crew.sticker_emoji}</Text>
+        </View>
+      ) : null}
+
+      <View style={styles.cardPad}>
+      <View style={styles.compactHeader}>
         <View style={styles.titleBlock}>
           <Text style={styles.crewLabel}>Your crew</Text>
           <Text style={styles.crewName} numberOfLines={2}>
             {crew.name}
           </Text>
-          <Text style={styles.meta}>{metaParts.join(" · ")}</Text>
+          <View style={styles.chipRow}>
+            <View style={styles.infoChip}>
+              <Text style={styles.infoChipText}>{memberCount} in crew</Text>
+            </View>
+            {invitedShown > 0 ? (
+              <View style={styles.infoChipMuted}>
+                <Text style={styles.infoChipTextMuted}>{invitedShown} invited</Text>
+              </View>
+            ) : null}
+            <View style={styles.infoChipMuted}>
+              <Text style={styles.infoChipTextMuted} numberOfLines={1}>
+                {crew.invite_code}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.patternRow}>
+            <View style={styles.patternBadge}>
+              <Ionicons
+                name={
+                  crew.commute_pattern === "round_trip" ? "git-compare-outline" : "arrow-forward"
+                }
+                size={14}
+                color={Colors.primaryDark}
+              />
+              <Text style={styles.patternBadgeText}>{legSummary}</Text>
+            </View>
+          </View>
+          {commuteSummary ? <Text style={styles.commuteSummary}>{commuteSummary}</Text> : null}
+          {riderCostPreview ? (
+            <View style={styles.riderCostBlock}>
+              <PassengerPaymentCostLines
+                contributionCents={riderCostPreview.cents}
+                passengerHasWorkplaceOrgOnProfile={hasWorkplaceNetworkOnProfile}
+                context="crew"
+                textStyle="meta"
+                primaryLine={`Est. rider share (${riderCostPreview.poolRiders} rider${
+                  riderCostPreview.poolRiders === 1 ? "" : "s"
+                }): ~$${(riderCostPreview.cents / 100).toFixed(2)} (incl. $1 stop fee)`}
+              />
+            </View>
+          ) : null}
         </View>
-        <Pressable
-          style={styles.manageBtn}
-          onPress={() => router.push("/(tabs)/profile/crews")}
-          hitSlop={8}
-        >
-          <Text style={styles.manageBtnText}>Manage</Text>
-          <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            style={styles.iconBtn}
+            onPress={() => router.push(`/(tabs)/profile/crew-settings/${crew.id}`)}
+            hitSlop={8}
+            accessibilityLabel="Crew settings"
+          >
+            <Ionicons name="settings-outline" size={22} color={Colors.primary} />
+          </Pressable>
+          <Pressable
+            style={styles.manageBtn}
+            onPress={() => router.push("/(tabs)/profile/crews")}
+            hitSlop={8}
+          >
+            <Text style={styles.manageBtnText}>Manage</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+          </Pressable>
+        </View>
       </View>
 
-      {roster.length > 0 || pendingInvitees.length > 0 ? (
-        <View style={styles.membersBlock}>
-          {roster.length > 0 ? (
-            <>
-              <Text style={styles.membersLabel}>In this crew</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.memberChips}>
-                {roster.map((m) => (
-                  <View key={m.userId} style={styles.memberChip}>
-                    <Ionicons name="person" size={14} color={Colors.primaryDark} />
-                    <Text style={styles.memberChipText} numberOfLines={1}>
-                      {(m.fullName || "Member").trim()}
-                      {m.userId === userId ? " (you)" : ""}
-                    </Text>
-                  </View>
-                ))}
-              </ScrollView>
-            </>
-          ) : null}
-          {pendingInvitees.length > 0 ? (
-            <>
-              <Text style={[styles.membersLabel, styles.invitedLabel]}>Invited (pending)</Text>
-              <Text style={styles.invitedHint}>
-                They appear here after you invite them in-app; they join the roster when they accept or use the code.
-              </Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.memberChips}>
-                {pendingInvitees.map((p) => (
-                  <View key={p.userId} style={[styles.memberChip, styles.memberChipPending]}>
-                    <Ionicons name="mail-outline" size={14} color={Colors.textSecondary} />
-                    <Text style={[styles.memberChipText, styles.memberChipTextMuted]} numberOfLines={1}>
-                      {(p.fullName || "Invited").trim()}
-                      {p.userId === userId ? " (you)" : ""}
-                    </Text>
-                  </View>
-                ))}
-              </ScrollView>
-            </>
-          ) : null}
-        </View>
-      ) : null}
-
-      <Text style={styles.hint}>
-        Green/red pins: your saved home and work with your commute route (when Mapbox can route). Smaller pins:
-        other members&apos; and invited people&apos;s home areas (when they&apos;ve saved a home pin). Open chat to
-        pick today&apos;s driver pool and roll dice.
-      </Text>
-
-      <View style={styles.mapWrap}>
+      <Pressable
+        style={styles.mapWrap}
+        onPress={() => openMapExternal()}
+        disabled={!mapUrl || loadingMap}
+        accessibilityRole="button"
+        accessibilityLabel="Open route map"
+      >
         {loadingMap ? (
           <ActivityIndicator color={Colors.primary} style={styles.mapLoader} />
         ) : mapUrl ? (
@@ -411,112 +439,180 @@ export function MyCrewRoutineCard({
             </Text>
           </View>
         )}
-      </View>
+      </Pressable>
+      {mapUrl && !loadingMap ? (
+        <Text style={styles.mapHint}>Tap map to open a zoomable preview in the browser.</Text>
+      ) : null}
 
-      <View style={styles.actions}>
-        <Pressable
-          style={[styles.primaryBtn, opening && styles.btnDisabled]}
-          onPress={() => void openTodaysChat()}
-          disabled={opening}
-        >
-          {opening ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <>
-              <Ionicons name="chatbubbles" size={20} color="#fff" />
-              <Text style={styles.primaryBtnText}>Group chat &amp; driver</Text>
-            </>
-          )}
-        </Pressable>
-        <Pressable
-          style={[styles.tripStartBtn, tripStartBusy && styles.btnDisabled]}
-          onPress={() => void onTripStart()}
-          disabled={tripStartBusy}
-        >
-          {tripStartBusy ? (
-            <ActivityIndicator color={Colors.primaryDark} />
-          ) : (
-            <>
-              <Ionicons name="car-sport" size={20} color={Colors.primaryDark} />
-              <View style={styles.tripStartTextCol}>
-                <Text style={styles.tripStartBtnTitle}>Trip start</Text>
-                <Text style={styles.tripStartBtnSub}>
-                  Orders every crew pickup (nearest-first from GPS or home). Web/PWA opens one Google Maps trip with
-                  those stops, then work. The list below is for the next leg or the phone app.
-                </Text>
-              </View>
-            </>
-          )}
-        </Pressable>
+      <Pressable style={styles.startPoolynBtn} onPress={() => onPressTripStart()}>
+        <Ionicons name="car-sport" size={22} color="#fff" />
+        <Text style={styles.startPoolynBtnText}>Start Poolyn</Text>
+      </Pressable>
 
-        {orderedLegsPreview.length > 0 ? (
-          <View style={styles.legsBlock}>
-            <Text style={styles.legsTitle}>Pickup order &amp; legs</Text>
-            <Text style={styles.legsExplainer}>
-              Poolyn cannot see when you arrive — only your maps app does. In Google Maps with several stops, finish
-              or confirm each pickup; the app normally advances to the next stop, then your workplace. If it does not,
-              open the next row here. Use Group chat to coordinate “outside / running late.”
+      <Pressable
+        style={styles.detailsToggle}
+        onPress={() => setDetailsOpen((v) => !v)}
+        hitSlop={8}
+      >
+        <Text style={styles.detailsToggleText}>{detailsOpen ? "Hide details" : "Details"}</Text>
+        <Ionicons
+          name={detailsOpen ? "chevron-up" : "chevron-down"}
+          size={18}
+          color={Colors.primary}
+        />
+      </Pressable>
+
+      {detailsOpen ? (
+        <View style={styles.detailsBody}>
+          <View style={styles.detailBubble}>
+            <Text style={styles.detailBubbleText}>
+              Pins: your home and work with your saved commute line (when Mapbox can route). Smaller pins are
+              crewmates&apos; home areas. Use Start Poolyn for today&apos;s Google route and optional rider drops.
             </Text>
-            {orderedLegsPreview.map((p, i) => (
-              <View key={p.userId} style={styles.legRow}>
-                <Text style={styles.legIdx}>{i + 1}</Text>
-                <Text style={styles.legName} numberOfLines={2}>
-                  {(p.fullName || "Crewmate").trim()}
-                </Text>
-                <Pressable
-                  style={styles.legNavBtn}
-                  onPress={() => presentDrivingNavigationPicker(p.lat, p.lng)}
-                  hitSlop={6}
-                >
-                  <Ionicons name="navigate" size={16} color={Colors.primary} />
-                  <Text style={styles.legNavBtnText}>Maps</Text>
-                </Pressable>
-              </View>
-            ))}
-            {workPt ? (
-              <View style={[styles.legRow, styles.legRowFinal]}>
-                <Text style={styles.legIdx}>★</Text>
-                <Text style={styles.legName} numberOfLines={2}>
-                  Workplace (after pickups)
-                </Text>
-                <Pressable
-                  style={styles.legNavBtn}
-                  onPress={() => presentDrivingNavigationPicker(workPt.lat, workPt.lng)}
-                  hitSlop={6}
-                >
-                  <Ionicons name="navigate" size={16} color={Colors.primary} />
-                  <Text style={styles.legNavBtnText}>Maps</Text>
-                </Pressable>
-              </View>
-            ) : null}
           </View>
-        ) : null}
 
-        <Pressable
-          style={styles.secondaryBtn}
-          onPress={() => void loadMapAndRoster().then(() => onRefresh?.())}
-        >
-          <Ionicons name="refresh" size={18} color={Colors.primary} />
-          <Text style={styles.secondaryBtnText}>Refresh map</Text>
-        </Pressable>
-        {owner ? (
           <Pressable
-            style={[styles.deleteCrewBtn, deleting && styles.btnDisabled]}
-            onPress={() => promptDeleteCrew()}
-            disabled={deleting}
-            hitSlop={8}
+            style={[styles.chatBtn, opening && styles.btnDisabled]}
+            onPress={() => void openTodaysChat()}
+            disabled={opening}
           >
-            {deleting ? (
-              <ActivityIndicator color={Colors.error} size="small" />
+            {opening ? (
+              <ActivityIndicator color="#fff" />
             ) : (
               <>
-                <Ionicons name="trash-outline" size={18} color={Colors.error} />
-                <Text style={styles.deleteCrewBtnText}>Delete crew</Text>
+                <Ionicons name="chatbubbles" size={20} color="#fff" />
+                <Text style={styles.chatBtnText}>Group chat &amp; driver</Text>
               </>
             )}
           </Pressable>
-        ) : null}
+
+          {roster.length > 0 || pendingInvitees.length > 0 ? (
+            <View style={styles.membersBlock}>
+              {roster.length > 0 ? (
+                <>
+                  <Text style={styles.membersLabel}>In this crew</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.memberChips}
+                  >
+                    {roster.map((m) => (
+                      <View key={m.userId} style={styles.memberChip}>
+                        <Ionicons name="person" size={14} color={Colors.primaryDark} />
+                        <Text style={styles.memberChipText} numberOfLines={1}>
+                          {(m.fullName || "Member").trim()}
+                          {m.userId === userId ? " (you)" : ""}
+                        </Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                </>
+              ) : null}
+              {pendingInvitees.length > 0 ? (
+                <>
+                  <Text style={[styles.membersLabel, styles.invitedLabel]}>Invited (pending)</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.memberChips}
+                  >
+                    {pendingInvitees.map((p) => (
+                      <View key={p.userId} style={[styles.memberChip, styles.memberChipPending]}>
+                        <Ionicons name="mail-outline" size={14} color={Colors.textSecondary} />
+                        <Text style={[styles.memberChipText, styles.memberChipTextMuted]} numberOfLines={1}>
+                          {(p.fullName || "Invited").trim()}
+                          {p.userId === userId ? " (you)" : ""}
+                        </Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                </>
+              ) : null}
+            </View>
+          ) : null}
+
+          {orderedLegsPreview.length > 0 ? (
+            <View style={styles.legsBlock}>
+              <Text style={styles.legsTitle}>Pickup order &amp; legs</Text>
+              <Text style={styles.legsExplainer}>
+                Poolyn does not track arrivals — confirm stops in Google Maps. If Maps does not advance, open the next
+                row here.
+              </Text>
+              {orderedLegsPreview.map((p, i) => (
+                <View key={p.userId} style={styles.legRow}>
+                  <Text style={styles.legIdx}>{i + 1}</Text>
+                  <Text style={styles.legName} numberOfLines={2}>
+                    {(p.fullName || "Crewmate").trim()}
+                  </Text>
+                  <Pressable
+                    style={styles.legNavBtn}
+                    onPress={() => presentDrivingNavigationPicker(p.lat, p.lng)}
+                    hitSlop={6}
+                  >
+                    <Ionicons name="navigate" size={16} color={Colors.primary} />
+                    <Text style={styles.legNavBtnText}>Maps</Text>
+                  </Pressable>
+                </View>
+              ))}
+              {finalNavPoint ? (
+                <View style={[styles.legRow, styles.legRowFinal]}>
+                  <Text style={styles.legIdx}>★</Text>
+                  <Text style={styles.legName} numberOfLines={2}>
+                    {finalNavLabel}
+                  </Text>
+                  <Pressable
+                    style={styles.legNavBtn}
+                    onPress={() =>
+                      presentDrivingNavigationPicker(finalNavPoint.lat, finalNavPoint.lng)
+                    }
+                    hitSlop={6}
+                  >
+                    <Ionicons name="navigate" size={16} color={Colors.primary} />
+                    <Text style={styles.legNavBtnText}>Maps</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          <Pressable
+            style={styles.secondaryBtn}
+            onPress={() => void loadMapAndRoster().then(() => onRefresh?.())}
+          >
+            <Ionicons name="refresh" size={18} color={Colors.primary} />
+            <Text style={styles.secondaryBtnText}>Refresh map</Text>
+          </Pressable>
+          {owner ? (
+            <Pressable
+              style={[styles.deleteCrewBtn, deleting && styles.btnDisabled]}
+              onPress={() => promptDeleteCrew()}
+              disabled={deleting}
+              hitSlop={8}
+            >
+              {deleting ? (
+                <ActivityIndicator color={Colors.error} size="small" />
+              ) : (
+                <>
+                  <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                  <Text style={styles.deleteCrewBtnText}>Delete crew</Text>
+                </>
+              )}
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
       </View>
+
+      <CrewTripStartSummaryModal
+        visible={tripStartOpen}
+        onClose={() => setTripStartOpen(false)}
+        crew={crew}
+        userId={userId}
+        profilePins={profilePins}
+        crewPins={crewPinsForNav}
+        onTripOpened={() => void loadMapAndRoster().then(() => onRefresh?.())}
+      />
     </View>
   );
 }
@@ -525,12 +621,30 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "#F0FDF4",
     borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    overflow: "hidden",
     borderWidth: 1,
     borderColor: "rgba(11, 132, 87, 0.2)",
     ...Shadow.sm,
   },
-  headerRow: {
+  banner: {
+    width: "100%",
+    height: 88,
+    backgroundColor: Colors.border,
+  },
+  bannerEmoji: {
+    width: "100%",
+    height: 56,
+    backgroundColor: "rgba(11, 132, 87, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bannerEmojiText: { fontSize: 28 },
+  cardPad: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.lg,
+    paddingTop: Spacing.md,
+  },
+  compactHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
@@ -538,6 +652,54 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
   },
   titleBlock: { flex: 1 },
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  infoChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.full,
+    backgroundColor: "rgba(11, 132, 87, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(11, 132, 87, 0.22)",
+  },
+  infoChipText: { fontSize: 10, fontWeight: FontWeight.bold, color: Colors.primaryDark },
+  infoChipMuted: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    maxWidth: 140,
+  },
+  infoChipTextMuted: { fontSize: 10, fontWeight: FontWeight.semibold, color: Colors.textSecondary },
+  commuteSummary: {
+    marginTop: 6,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+  },
+  riderCostHint: {
+    marginTop: 4,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
+    color: Colors.textSecondary,
+    lineHeight: 16,
+  },
+  riderCostBlock: { marginTop: 4, alignSelf: "stretch" },
+  patternRow: { marginTop: 6 },
+  patternBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(11, 132, 87, 0.12)",
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.md,
+  },
+  patternBadgeText: { fontSize: 11, fontWeight: FontWeight.semibold, color: Colors.primaryDark },
+  headerActions: { alignItems: "flex-end", gap: Spacing.xs },
+  iconBtn: { padding: 4 },
   crewLabel: {
     fontSize: 10,
     fontWeight: FontWeight.bold,
@@ -550,11 +712,8 @@ const styles = StyleSheet.create({
     fontSize: FontSize.lg,
     fontWeight: FontWeight.bold,
     color: Colors.text,
-  },
-  meta: {
-    fontSize: FontSize.xs,
-    color: Colors.textSecondary,
-    marginTop: 4,
+    flex: 1,
+    minWidth: 0,
   },
   manageBtn: { flexDirection: "row", alignItems: "center", gap: 2, paddingVertical: 4 },
   manageBtnText: {
@@ -584,33 +743,21 @@ const styles = StyleSheet.create({
   },
   memberChipText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium, color: Colors.text, flexShrink: 1 },
   invitedLabel: { marginTop: Spacing.sm },
-  invitedHint: {
-    fontSize: 11,
-    color: Colors.textTertiary,
-    lineHeight: 16,
-    marginBottom: Spacing.xs,
-  },
   memberChipPending: {
     backgroundColor: Colors.background,
     borderStyle: "dashed",
   },
   memberChipTextMuted: { color: Colors.textSecondary },
-  hint: {
-    fontSize: FontSize.xs,
-    color: Colors.textSecondary,
-    lineHeight: 18,
-    marginBottom: Spacing.sm,
-  },
   mapWrap: {
     borderRadius: BorderRadius.md,
     overflow: "hidden",
     backgroundColor: Colors.borderLight,
-    minHeight: 180,
+    minHeight: 140,
   },
-  mapImg: { width: "100%", height: 180 },
-  mapLoader: { paddingVertical: 56 },
+  mapImg: { width: "100%", height: 140 },
+  mapLoader: { paddingVertical: 48 },
   mapPlaceholder: {
-    minHeight: 180,
+    minHeight: 140,
     alignItems: "center",
     justifyContent: "center",
     padding: Spacing.lg,
@@ -621,45 +768,68 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
     textAlign: "center",
   },
-  actions: { marginTop: Spacing.md, gap: Spacing.sm },
-  primaryBtn: {
+  mapHint: {
+    fontSize: 10,
+    color: Colors.textTertiary,
+    marginTop: 4,
+    marginBottom: Spacing.sm,
+  },
+  startPoolynBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: Colors.primary,
+    paddingVertical: 14,
+    borderRadius: BorderRadius.lg,
+    ...Shadow.sm,
+  },
+  startPoolynBtnText: {
+    color: "#fff",
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+  },
+  detailsToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  detailsToggleText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primary,
+  },
+  detailsBody: { marginTop: Spacing.sm, gap: Spacing.sm },
+  detailBubble: {
+    backgroundColor: "rgba(255,255,255,0.75)",
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: "rgba(11, 132, 87, 0.2)",
+    padding: Spacing.sm,
+  },
+  detailBubbleText: {
+    fontSize: 11,
+    color: Colors.textSecondary,
+    lineHeight: 16,
+  },
+  chatBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.primary,
-    paddingVertical: 14,
+    backgroundColor: Colors.primaryDark,
+    paddingVertical: 12,
     borderRadius: BorderRadius.lg,
   },
-  btnDisabled: { opacity: 0.75 },
-  primaryBtnText: {
+  chatBtnText: {
     color: "#fff",
-    fontSize: FontSize.base,
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
   },
-  tripStartBtn: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: Spacing.md,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 2,
-    borderColor: Colors.primary,
-    backgroundColor: "#fff",
-  },
-  tripStartTextCol: { flex: 1, minWidth: 0 },
-  tripStartBtnTitle: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.bold,
-    color: Colors.primaryDark,
-  },
-  tripStartBtnSub: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-    marginTop: 4,
-  },
+  btnDisabled: { opacity: 0.75 },
   legsBlock: {
     borderRadius: BorderRadius.md,
     borderWidth: 1,
