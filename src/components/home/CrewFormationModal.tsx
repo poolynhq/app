@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -22,10 +22,22 @@ import {
   setCrewDesignatedDriver,
   updateCrewSettings,
   type CrewCommutePattern,
+  type CrewMemberMapPin,
+  type CrewScheduleMode,
 } from "@/lib/crewMessaging";
 import { prepareAvatarJpegBuffer } from "@/lib/avatarUpload";
+import { resolveAvatarDisplayUrl } from "@/lib/avatarStorage";
 import { getCrewStickerPublicUrl, uploadCrewStickerJpeg } from "@/lib/crewStickerUpload";
 import { fetchPeerDetourPreview } from "@/lib/crewDetourPreview";
+import {
+  computeCrewSchedulePlan,
+  formatMinutesAsTime,
+} from "@/lib/crewSchedulePlan";
+import {
+  orderPickupsAlongCommute,
+  resolveCommuteGeometry,
+  type ResolvedCommuteLeg,
+} from "@/lib/crewRouteOrdering";
 import { mapboxTokenPresent } from "@/lib/mapboxCommutePreview";
 import { isPlausibleWgs84LatLng, parseGeoPoint, parseRpcFiniteNumber } from "@/lib/parseGeoPoint";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
@@ -41,6 +53,17 @@ import {
 } from "@/constants/theme";
 
 const FIRST_OPEN_KEY = "poolyn_crew_formation_intro_v1";
+
+function scheduleStopVerb(pattern: CrewCommutePattern): "Pickup" | "Drop-off" {
+  return pattern === "to_home" ? "Drop-off" : "Pickup";
+}
+
+function originDestinationCopy(pattern: CrewCommutePattern): { origin: string; destination: string } {
+  if (pattern === "to_home") {
+    return { origin: "Workplace (origin)", destination: "Home (destination)" };
+  }
+  return { origin: "Home (origin)", destination: "Workplace (destination)" };
+}
 
 type Peer = {
   id: string;
@@ -64,7 +87,7 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
   const [loading, setLoading] = useState(false);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [detourMins, setDetourMins] = useState(
-    Math.min(30, Math.max(5, profile.detour_tolerance_mins ?? 12))
+    Math.min(35, Math.max(2, profile.detour_tolerance_mins ?? 12))
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [crewName, setCrewName] = useState("My commute crew");
@@ -72,7 +95,12 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
   const [submitting, setSubmitting] = useState(false);
   const [inviteNote, setInviteNote] = useState("");
   const [commutePattern, setCommutePattern] = useState<CrewCommutePattern>("to_work");
+  const [scheduleMode, setScheduleMode] = useState<CrewScheduleMode>("arrival");
+  /** Minutes from midnight for anchor time (arrival at destination, or driver departure if mode is start). */
+  const [anchorMinutes, setAnchorMinutes] = useState(540);
+  const [baseRouteMin, setBaseRouteMin] = useState(25);
   const [stickerUri, setStickerUri] = useState<string | null>(null);
+  const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [peerDetailOpen, setPeerDetailOpen] = useState<Set<string>>(new Set());
   const [peerDetourById, setPeerDetourById] = useState<
     Record<
@@ -135,6 +163,10 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
   }, [profile.id]);
 
   useEffect(() => {
+    if (!visible) setSchedulePickerOpen(false);
+  }, [visible]);
+
+  useEffect(() => {
     if (!visible) return;
     void AsyncStorage.getItem(FIRST_OPEN_KEY).then((v) => {
       setIntroSeen(v === "1");
@@ -143,10 +175,13 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
     setSelected(new Set());
     setInviteNote("");
     setCommutePattern("to_work");
+    setScheduleMode("arrival");
+    setAnchorMinutes(540);
+    setBaseRouteMin(25);
     setStickerUri(null);
     setPeerDetailOpen(new Set());
     setPeerDetourById({});
-    setDetourMins(Math.min(30, Math.max(5, profile.detour_tolerance_mins ?? 12)));
+    setDetourMins(Math.min(35, Math.max(2, profile.detour_tolerance_mins ?? 12)));
   }, [visible, loadSeatsCap, profile.detour_tolerance_mins]);
 
   useEffect(() => {
@@ -156,6 +191,40 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
     }, 280);
     return () => clearTimeout(t);
   }, [visible, orgId, profile.id, detourMins, loadPeers]);
+
+  useEffect(() => {
+    if (!visible || !profile.id) return;
+    let cancelled = false;
+    void (async () => {
+      const dir = commutePattern === "to_home" ? "from_work" : "to_work";
+      const { data } = await supabase
+        .from("commute_routes")
+        .select("duration_s")
+        .eq("user_id", profile.id)
+        .eq("direction", dir)
+        .maybeSingle();
+      if (cancelled) return;
+      const s = data?.duration_s;
+      setBaseRouteMin(
+        typeof s === "number" && s > 0 ? Math.max(1, Math.round(s / 60)) : 25
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, profile.id, commutePattern]);
+
+  useEffect(() => {
+    if (!visible) return;
+    for (const id of selected) {
+      const p = peers.find((x) => x.id === id);
+      if (!p?.coordsOk) continue;
+      const cur = peerDetourById[id];
+      if (cur === undefined) {
+        void loadPeerDetour(id, peers);
+      }
+    }
+  }, [visible, selected, peers, detourMins]);
 
   async function persistDetour() {
     await supabase.from("users").update({ detour_tolerance_mins: detourMins }).eq("id", profile.id);
@@ -221,6 +290,64 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
     });
   }
 
+  const schedulePlan = useMemo(() => {
+    const home = parseGeoPoint(profile.home_location as unknown);
+    const work = parseGeoPoint(profile.work_location as unknown);
+    if (!home || !work) return null;
+    const activeLeg: ResolvedCommuteLeg =
+      commutePattern === "to_home" ? "to_home" : "to_work";
+    const geometry = resolveCommuteGeometry({
+      pattern: commutePattern,
+      activeLeg,
+      home,
+      work,
+    });
+    const pins: CrewMemberMapPin[] = peers
+      .filter((p) => selected.has(p.id) && p.coordsOk)
+      .map((p) => ({
+        userId: p.id,
+        fullName: p.full_name,
+        lat: p.home_lat,
+        lng: p.home_lng,
+      }));
+    const ordered = geometry
+      ? orderPickupsAlongCommute(
+          home,
+          pins,
+          geometry.segmentStart,
+          geometry.segmentEnd
+        )
+      : pins;
+    const orderedPickups = ordered.map((pin) => {
+      const det = peerDetourById[pin.userId];
+      const extraMin =
+        typeof det === "object" && det !== null && "extraMin" in det
+          ? (det as { extraMin: number }).extraMin
+          : 12;
+      return { pin, extraMin };
+    });
+    return computeCrewSchedulePlan({
+      mode: scheduleMode,
+      anchorMinutes,
+      baseCorridorMinutes: baseRouteMin,
+      orderedPickups,
+    });
+  }, [
+    profile.home_location,
+    profile.work_location,
+    commutePattern,
+    peers,
+    selected,
+    peerDetourById,
+    scheduleMode,
+    anchorMinutes,
+    baseRouteMin,
+  ]);
+
+  function bumpAnchorMinutes(delta: number) {
+    setAnchorMinutes((m) => ((m + delta) % 1440 + 1440) % 1440);
+  }
+
   async function pickCrewStickerImage() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
@@ -248,6 +375,9 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
         userId: profile.id,
         orgId,
         commutePattern: commutePattern,
+        scheduleMode,
+        scheduleAnchorMinutes: anchorMinutes,
+        estimatedPoolDriveMinutes: Math.max(1, schedulePlan?.totalDriveMin ?? 45),
       });
       if (!created.ok) {
         showAlert("Could not create crew", created.reason);
@@ -339,6 +469,7 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
   }
 
   return (
+    <>
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.sheetRoot}>
         <Pressable style={styles.sheetBackdrop} onPress={onClose} />
@@ -411,11 +542,122 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
               })}
             </View>
 
+            <Text style={styles.label}>Schedule</Text>
+            <Text style={styles.hint}>
+              Times follow your device clock. Select people below to refine stops and detour times.
+            </Text>
+            <View style={styles.scheduleTopRow}>
+              <Pressable
+                style={styles.scheduleDropdown}
+                onPress={() => setSchedulePickerOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Schedule type"
+              >
+                <Text style={styles.scheduleDropdownText} numberOfLines={1}>
+                  {scheduleMode === "arrival" ? "Arrive at destination" : "Departing from origin"}
+                </Text>
+                <Ionicons name="chevron-down" size={20} color={Colors.primaryDark} />
+              </Pressable>
+              <View style={styles.scheduleTimeStepper}>
+                <Pressable
+                  style={styles.stepBtn}
+                  onPress={() => bumpAnchorMinutes(-15)}
+                  accessibilityLabel="Earlier by 15 minutes"
+                >
+                  <Ionicons name="remove" size={22} color={Colors.primary} />
+                </Pressable>
+                <Text style={styles.scheduleTimeValue}>{formatMinutesAsTime(anchorMinutes)}</Text>
+                <Pressable
+                  style={styles.stepBtn}
+                  onPress={() => bumpAnchorMinutes(15)}
+                  accessibilityLabel="Later by 15 minutes"
+                >
+                  <Ionicons name="add" size={22} color={Colors.primary} />
+                </Pressable>
+              </View>
+            </View>
+            {schedulePlan ? (
+              <View style={styles.scheduleHero}>
+                {scheduleMode === "arrival" ? (
+                  <View style={styles.scheduleHeroPrimary}>
+                    <Text style={styles.scheduleHeroKicker}>Depart by</Text>
+                    <Text style={styles.scheduleHeroTime}>
+                      {formatMinutesAsTime(schedulePlan.driverDepartMinutes)}
+                    </Text>
+                    <Text style={styles.scheduleHeroSecondary}>
+                      ETA at destination {formatMinutesAsTime(schedulePlan.destinationArrivalMinutes)} · pool
+                      drive about {schedulePlan.totalDriveMin} min
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.scheduleHeroPrimary}>
+                    <Text style={styles.scheduleHeroKicker}>ETA at destination</Text>
+                    <Text style={styles.scheduleHeroTime}>
+                      {formatMinutesAsTime(schedulePlan.destinationArrivalMinutes)}
+                    </Text>
+                    <Text style={styles.scheduleHeroSecondary}>
+                      Depart by {formatMinutesAsTime(schedulePlan.driverDepartMinutes)} · pool drive about{" "}
+                      {schedulePlan.totalDriveMin} min
+                    </Text>
+                  </View>
+                )}
+                <View style={styles.timeline}>
+                  {(() => {
+                    const od = originDestinationCopy(commutePattern);
+                    const verb = scheduleStopVerb(commutePattern);
+                    const readyHint = verb === "Pickup" ? "Be ready (pickup)" : "Drop off";
+                    const nodes: { key: string; title: string; time: string; hint: string }[] = [
+                      {
+                        key: "origin",
+                        title: od.origin,
+                        time: formatMinutesAsTime(schedulePlan.driverDepartMinutes),
+                        hint: "Driver leaves",
+                      },
+                      ...schedulePlan.riderLines.map((r) => ({
+                        key: r.userId,
+                        title: `${verb} · ${r.label}`,
+                        time: formatMinutesAsTime(r.readyByMinutes),
+                        hint: readyHint,
+                      })),
+                      {
+                        key: "dest",
+                        title: od.destination,
+                        time: formatMinutesAsTime(schedulePlan.destinationArrivalMinutes),
+                        hint: "Arrive",
+                      },
+                    ];
+                    return nodes.map((node, i) => (
+                      <View key={node.key} style={styles.timelineRow}>
+                        <View style={styles.timelineGutter}>
+                          <View style={styles.timelineDot} />
+                          {i < nodes.length - 1 ? <View style={styles.timelineConnector} /> : null}
+                        </View>
+                        <View style={styles.timelineContent}>
+                          <Text style={styles.timelineTitle}>{node.title}</Text>
+                          <Text style={styles.timelineTime}>{node.time}</Text>
+                          <Text style={styles.timelineHint}>{node.hint}</Text>
+                        </View>
+                      </View>
+                    ));
+                  })()}
+                </View>
+                <Text style={styles.scheduleHeroFootnote}>
+                  Times are approximate. Road conditions and other factors are not fully reflected. Watch for
+                  changes and allow extra time. Poolyn is not responsible for delays from these estimates. Use
+                  them as suggestions only.
+                </Text>
+              </View>
+            ) : (
+              <Text style={styles.hint}>
+                Save home and workplace under Profile → Commute to unlock schedule math for this crew.
+              </Text>
+            )}
+
             <Text style={styles.label}>Detour you&apos;ll accept (minutes)</Text>
             <View style={styles.stepper}>
               <Pressable
                 style={styles.stepBtn}
-                onPress={() => setDetourMins((m) => Math.max(5, m - 1))}
+                onPress={() => setDetourMins((m) => Math.max(2, m - 1))}
                 accessibilityLabel="Decrease detour"
               >
                 <Ionicons name="remove" size={22} color={Colors.primary} />
@@ -459,6 +701,7 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
                 const disabled = !on && selected.size >= maxPick;
                 const detail = peerDetailOpen.has(p.id);
                 const det = peerDetourById[p.id];
+                const peerAvatarUri = resolveAvatarDisplayUrl(p.avatar_url);
                 return (
                   <View key={p.id} style={styles.peerBlock}>
                     <Pressable
@@ -469,8 +712,8 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
                       <View style={[styles.check, on && styles.checkOn]}>
                         {on ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
                       </View>
-                      {p.avatar_url ? (
-                        <Image source={{ uri: p.avatar_url }} style={styles.peerAvatar} />
+                      {peerAvatarUri ? (
+                        <Image source={{ uri: peerAvatarUri }} style={styles.peerAvatar} />
                       ) : (
                         <View style={styles.peerAvatarPh}>
                           <Ionicons name="person" size={18} color={Colors.textTertiary} />
@@ -613,6 +856,47 @@ export function CrewFormationModal({ visible, onClose, profile, orgId, onCreated
         </View>
       </View>
     </Modal>
+
+    <Modal
+      visible={schedulePickerOpen && visible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setSchedulePickerOpen(false)}
+    >
+      <Pressable
+        style={styles.schedulePickerRoot}
+        onPress={() => setSchedulePickerOpen(false)}
+      >
+        <Pressable style={styles.schedulePickerSheet} onPress={(e) => e.stopPropagation()}>
+          <Text style={styles.schedulePickerTitle}>Schedule type</Text>
+          <Pressable
+            style={styles.schedulePickerOption}
+            onPress={() => {
+              setScheduleMode("arrival");
+              setSchedulePickerOpen(false);
+            }}
+          >
+            <Text style={styles.schedulePickerOptionText}>Arrive at destination</Text>
+            {scheduleMode === "arrival" ? (
+              <Ionicons name="checkmark" size={22} color={Colors.primary} />
+            ) : null}
+          </Pressable>
+          <Pressable
+            style={styles.schedulePickerOption}
+            onPress={() => {
+              setScheduleMode("start");
+              setSchedulePickerOpen(false);
+            }}
+          >
+            <Text style={styles.schedulePickerOptionText}>Departing from origin</Text>
+            {scheduleMode === "start" ? (
+              <Ionicons name="checkmark" size={22} color={Colors.primary} />
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+    </>
   );
 }
 
@@ -755,6 +1039,159 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
   },
   empty: { fontSize: FontSize.sm, color: Colors.textTertiary, fontStyle: "italic", marginTop: Spacing.sm },
+  scheduleTopRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: Spacing.sm,
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.md,
+  },
+  scheduleDropdown: {
+    flex: 1,
+    minWidth: 160,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.lg,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.background,
+  },
+  scheduleDropdownText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+  },
+  scheduleTimeStepper: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  scheduleTimeValue: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    minWidth: 100,
+    textAlign: "center",
+  },
+  scheduleHero: {
+    backgroundColor: "rgba(11, 132, 87, 0.07)",
+    borderWidth: 1,
+    borderColor: "rgba(11, 132, 87, 0.22)",
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    marginBottom: Spacing.md,
+  },
+  scheduleHeroPrimary: { marginBottom: Spacing.lg },
+  scheduleHeroKicker: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    color: Colors.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  scheduleHeroTime: {
+    fontSize: 34,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryDark,
+    marginTop: 4,
+  },
+  scheduleHeroSecondary: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    marginTop: Spacing.sm,
+    lineHeight: 20,
+  },
+  timeline: { marginTop: Spacing.xs },
+  timelineRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    minHeight: 56,
+  },
+  timelineGutter: {
+    width: 22,
+    alignItems: "center",
+    alignSelf: "stretch",
+    flexDirection: "column",
+  },
+  timelineDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: Colors.primary,
+    borderWidth: 2,
+    borderColor: Colors.surface,
+  },
+  timelineConnector: {
+    width: 3,
+    flex: 1,
+    minHeight: 24,
+    backgroundColor: Colors.border,
+    marginTop: 2,
+  },
+  timelineContent: {
+    flex: 1,
+    paddingLeft: Spacing.md,
+    paddingBottom: Spacing.md,
+  },
+  timelineTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+  },
+  timelineTime: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryDark,
+    marginTop: 2,
+  },
+  timelineHint: {
+    fontSize: 11,
+    color: Colors.textTertiary,
+    marginTop: 2,
+  },
+  scheduleHeroFootnote: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: Colors.textTertiary,
+    marginTop: Spacing.sm,
+  },
+  schedulePickerRoot: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.45)",
+    justifyContent: "center",
+    padding: Spacing.lg,
+  },
+  schedulePickerSheet: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+    ...Shadow.lg,
+  },
+  schedulePickerTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.sm,
+  },
+  schedulePickerOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.border,
+  },
+  schedulePickerOptionText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.medium,
+    color: Colors.text,
+  },
   patternRow: {
     flexDirection: "row",
     flexWrap: "wrap",

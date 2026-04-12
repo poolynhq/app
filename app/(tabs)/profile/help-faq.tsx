@@ -44,7 +44,7 @@ const FAQ_SECTIONS: FaqSection[] = [
       },
       {
         q: "Can I be both a driver and a passenger?",
-        a: "Yes. Set your role to 'Both' in your profile. You can drive on some days and ride as a passenger on others. The app will surface relevant matches for each role depending on your availability.",
+        a: "Yes. On Home, under Routine commute, open Mingle Poolyn and tap Driving or Riding. That choice is saved until you change it, so you can switch day to day or after crew trips. The app surfaces matches for how you are commuting today.",
       },
       {
         q: "What if my plans change last minute?",

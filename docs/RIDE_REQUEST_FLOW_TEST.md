@@ -40,6 +40,7 @@ The orange map dot is **demand heat**, not the driver alert. Drivers are notifie
 
 1. Deploy `supabase/functions/send-expo-push` and set secrets: `EXPO_ACCESS_TOKEN` (from [expo.dev](https://expo.dev) access tokens), plus default `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 2. Add a **Database Webhook** on `public.notifications` **INSERT** (filter `type = ride_request_pending` if you want) that POSTs the new row’s `user_id`, `title`, `body` to the function body expected by `send-expo-push/index.ts`.
+3. **Crew Poolyn** (`0077_crew_trip_rider_pickup_ready_notify.sql`): when the driver records trip start, pickup riders get an in-app notification (`type = crew_trip_driver_started`). Include that type in the webhook filter (or omit the filter) so riders get the same Expo push + sound when the app is backgrounded.
 
 ## Driver: in-app
 

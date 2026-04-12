@@ -10,6 +10,7 @@ import { Session, AuthError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types/database";
 import { getRolePalette } from "@/constants/theme";
+import { effectiveCommuteMode, rolePaletteForProfile } from "@/lib/commuteRoleIntent";
 import { usePushNotificationsAndRideAlerts } from "@/hooks/usePushNotificationsAndRideAlerts";
 
 interface AuthState {
@@ -267,18 +268,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // ── Derived role/mode values ────────────────────────────────────────────────
 
-  const activeMode = useMemo<"driver" | "passenger" | null>(() => {
-    if (!state.profile) return null;
-    const { role, active_mode } = state.profile;
-    if (role === "driver") return "driver";
-    if (role === "passenger") return "passenger";
-    // 'both' role — use stored active_mode (may be null = flexible/not-yet-set)
-    return active_mode ?? null;
-  }, [state.profile]);
+  const activeMode = useMemo<"driver" | "passenger" | null>(
+    () => effectiveCommuteMode(state.profile),
+    [state.profile]
+  );
 
   const rolePalette = useMemo(
-    () => getRolePalette(state.profile?.role ?? "both", activeMode),
-    [state.profile?.role, activeMode]
+    () => (state.profile ? rolePaletteForProfile(state.profile) : getRolePalette("both", null)),
+    [state.profile]
   );
 
   const toggleMode = useCallback(

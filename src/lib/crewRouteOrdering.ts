@@ -15,7 +15,7 @@ export function distanceMeters(
 }
 
 /** 0–1 position of P projected onto segment A→B (clamped). */
-function projectionT(
+export function projectionT(
   a: { lat: number; lng: number },
   b: { lat: number; lng: number },
   p: { lat: number; lng: number }
@@ -57,6 +57,18 @@ export function orderPickupsAlongCommute(
     return a.d0 - b.d0;
   });
   return scored.map((s) => s.pin);
+}
+
+/** Shortest distance from P to segment A→B (geodesic via plane approximation on small segments). */
+export function distancePointToSegmentMeters(
+  p: { lat: number; lng: number },
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number }
+): number {
+  const t = projectionT(a, b, p);
+  const ix = a.lng + t * (b.lng - a.lng);
+  const iy = a.lat + t * (b.lat - a.lat);
+  return distanceMeters(p, { lat: iy, lng: ix });
 }
 
 /** Nearest-neighbor from origin (legacy fallback when commute segment unknown). */

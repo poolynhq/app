@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types/database";
 
@@ -14,6 +14,9 @@ const emptyFeatureCollection: GeoJSON.FeatureCollection = {
 };
 
 export function useDiscoverMapLayers(profile: User | null) {
+  /** Avoid flashing the map to empty on background refresh once we have shown data. */
+  const hadLayerDataRef = useRef(false);
+
   const [demandPoints, setDemandPoints] = useState<GeoJSON.FeatureCollection>(
     emptyFeatureCollection
   );
@@ -32,6 +35,10 @@ export function useDiscoverMapLayers(profile: User | null) {
   }, []);
 
   useEffect(() => {
+    hadLayerDataRef.current = false;
+  }, [profile?.id, profile?.visibility_mode]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadMapLayers() {
@@ -41,10 +48,13 @@ export function useDiscoverMapLayers(profile: User | null) {
         setRouteLines(emptyFeatureCollection);
         setLoading(false);
         setError(null);
+        hadLayerDataRef.current = false;
         return;
       }
 
-      setLoading(true);
+      if (!hadLayerDataRef.current) {
+        setLoading(true);
+      }
       setError(null);
 
       const { data, error: rpcError } = await supabase.rpc("get_map_layers_for_discover", {
@@ -55,18 +65,26 @@ export function useDiscoverMapLayers(profile: User | null) {
       if (cancelled) return;
 
       if (rpcError || !data) {
-        setDemandPoints(emptyFeatureCollection);
-        setSupplyPoints(emptyFeatureCollection);
-        setRouteLines(emptyFeatureCollection);
+        if (!hadLayerDataRef.current) {
+          setDemandPoints(emptyFeatureCollection);
+          setSupplyPoints(emptyFeatureCollection);
+          setRouteLines(emptyFeatureCollection);
+        }
         setError(rpcError?.message ?? "Could not load map");
         setLoading(false);
         return;
       }
 
       const payload = data as unknown as MapLayerPayload;
-      setDemandPoints(payload.demand_points ?? emptyFeatureCollection);
-      setSupplyPoints(payload.supply_points ?? emptyFeatureCollection);
-      setRouteLines(payload.route_lines ?? emptyFeatureCollection);
+      const d = payload.demand_points ?? emptyFeatureCollection;
+      const s = payload.supply_points ?? emptyFeatureCollection;
+      const r = payload.route_lines ?? emptyFeatureCollection;
+      setDemandPoints(d);
+      setSupplyPoints(s);
+      setRouteLines(r);
+      const any =
+        d.features.length > 0 || s.features.length > 0 || r.features.length > 0;
+      if (any) hadLayerDataRef.current = true;
       setLoading(false);
     }
 

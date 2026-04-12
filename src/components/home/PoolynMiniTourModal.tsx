@@ -39,7 +39,7 @@ const PAGES: {
   {
     icon: "chatbubbles-outline",
     title: "Messages & rides",
-    body: "Post a pickup from Home when you need a lift; drivers get a push. Coordinate details in ride chat from Messages.",
+    body: "Regular commute, Mingle Poolyn, riding: post a pickup when you need a lift. Drivers get a push. Ride details stay in Messages.",
   },
   {
     icon: "flash-outline",

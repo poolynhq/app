@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -10,14 +10,15 @@ import {
   Platform,
   ActivityIndicator,
 } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useNavigation } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { showAlert } from "@/lib/platformAlert";
 import {
-  fetchRideMessages,
+  fetchRideMessagesWithContext,
   sendRideMessage,
   type RideMessageRow,
 } from "@/lib/rideMessaging";
@@ -33,6 +34,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 export default function RideChatScreen() {
   const { rideId: rideIdParam } = useLocalSearchParams<{ rideId: string | string[] }>();
   const rideId = Array.isArray(rideIdParam) ? rideIdParam[0] : rideIdParam;
+  const navigation = useNavigation();
   const { profile } = useAuth();
   const headerHeight = useHeaderHeight();
   const [messages, setMessages] = useState<RideMessageRow[]>([]);
@@ -40,29 +42,67 @@ export default function RideChatScreen() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList<RideMessageRow>>(null);
+  const didInitialLoadForRideRef = useRef<string | null>(null);
 
-  const reload = useCallback(async () => {
-    if (!rideId) return;
-    const rows = await fetchRideMessages(rideId);
+  const loadThread = useCallback(async () => {
+    if (!rideId || !profile?.id) return;
+    const rows = await fetchRideMessagesWithContext(rideId, profile.id);
     setMessages(rows);
-    setLoading(false);
+  }, [rideId, profile?.id]);
+
+  useLayoutEffect(() => {
+    if (!rideId) return;
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from("rides")
+        .select("adhoc_trip_title, poolyn_context")
+        .eq("id", rideId)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error || !data) {
+        navigation.setOptions({ title: "Ride chat" });
+        return;
+      }
+      const titled = data.poolyn_context === "adhoc" ? data.adhoc_trip_title?.trim() : "";
+      navigation.setOptions({ title: titled || "Ride chat" });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rideId, navigation]);
+
+  useEffect(() => {
+    didInitialLoadForRideRef.current = null;
   }, [rideId]);
 
-  useEffect(() => {
-    if (!rideId) return;
-    setLoading(true);
-    void reload();
-  }, [rideId, reload]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!rideId || !profile?.id) return;
+      const firstForThisRide = didInitialLoadForRideRef.current !== rideId;
+      if (firstForThisRide) {
+        setLoading(true);
+      }
+      void (async () => {
+        try {
+          await loadThread();
+          didInitialLoadForRideRef.current = rideId;
+        } finally {
+          if (firstForThisRide) setLoading(false);
+        }
+      })();
+    }, [rideId, profile?.id, loadThread])
+  );
 
   useEffect(() => {
-    if (!rideId) return;
+    if (!rideId || !profile?.id) return;
 
-    const onInsert = (row: RideMessageRow) => {
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === row.id)) return prev;
-        return [...prev, row];
-      });
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleRefresh = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        void loadThread();
+      }, 200);
     };
 
     const channel: RealtimeChannel = supabase
@@ -75,35 +115,15 @@ export default function RideChatScreen() {
           table: "messages",
           filter: `ride_id=eq.${rideId}`,
         },
-        (payload) => {
-          const r = payload.new as {
-            id: string;
-            sender_id: string;
-            body: string;
-            sent_at: string;
-          };
-          void (async () => {
-            const { data: u } = await supabase
-              .from("users")
-              .select("full_name")
-              .eq("id", r.sender_id)
-              .maybeSingle();
-            onInsert({
-              id: r.id,
-              sender_id: r.sender_id,
-              body: r.body,
-              sent_at: r.sent_at,
-              sender_name: u?.full_name ?? null,
-            });
-          })();
-        }
+        scheduleRefresh
       )
       .subscribe();
 
     return () => {
+      clearTimeout(debounceTimer);
       void supabase.removeChannel(channel);
     };
-  }, [rideId]);
+  }, [rideId, profile?.id, loadThread]);
 
   async function onSend() {
     if (!rideId || !profile?.id || sending) return;
@@ -118,7 +138,7 @@ export default function RideChatScreen() {
       return;
     }
     setDraft("");
-    await reload();
+    await loadThread();
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
   }
 
@@ -147,6 +167,7 @@ export default function RideChatScreen() {
       <FlatList
         ref={listRef}
         data={messages}
+        extraData={messages}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}

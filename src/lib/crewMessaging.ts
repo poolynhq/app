@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import type { Json } from "@/types/database";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
+import { computeCrewEqualCorridorRiderBreakdown } from "@/lib/costModel";
 
 const MAX_BODY_LEN = 2000;
 
@@ -9,6 +10,9 @@ const MAX_BODY_LEN = 2000;
 export const MAX_CREWS_PER_USER = 3;
 
 export type CrewCommutePattern = "to_work" | "to_home" | "round_trip";
+
+/** Daily schedule anchor saved on the crew (local clock, minutes from midnight). */
+export type CrewScheduleMode = "arrival" | "start";
 
 export type CrewListRow = {
   id: string;
@@ -21,6 +25,9 @@ export type CrewListRow = {
   /** Snapshot from crew creation; map/stats ignore later profile route changes. */
   locked_route_distance_m?: number | null;
   locked_route_duration_s?: number | null;
+  schedule_mode?: CrewScheduleMode;
+  schedule_anchor_minutes?: number;
+  estimated_pool_drive_minutes?: number;
 };
 
 export type CrewTripInstanceRow = {
@@ -29,6 +36,111 @@ export type CrewTripInstanceRow = {
   trip_date: string;
   designated_driver_user_id: string | null;
   excluded_pickup_user_ids: string[];
+  trip_started_at: string | null;
+  trip_finished_at: string | null;
+  poolyn_credits_settled_at: string | null;
+  settlement_summary: Json | null;
+  /** First user who recorded trip start (for notify/ack when driver is known). */
+  trip_started_by_user_id: string | null;
+  /** Map of user id to ISO time when they tapped ready for pickup. */
+  rider_pickup_ready_at: Json | null;
+  departure_readiness_reminder_sent_at: string | null;
+};
+
+/** Driver or trip starter: not expected to send rider pickup ack. */
+export function crewTripPickupAckDriverishId(trip: CrewTripInstanceRow): string | null {
+  return trip.designated_driver_user_id ?? trip.trip_started_by_user_id ?? null;
+}
+
+export function parseRiderPickupReadyMap(raw: Json | null | undefined): Record<string, string> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const o = raw as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * True when this member should see "I am ready for pickup" during an active trip.
+ *
+ * The rider readiness window is open while trip_started_at is set and trip_finished_at is null.
+ * Within that window, every non-excluded, non-driver crew member is expected to acknowledge.
+ * The ack is one-way: once tapped it cannot be retracted (server merges the timestamp into
+ * rider_pickup_ready_at, never removes it). The driver/starter is never asked to ack their
+ * own trip start; they are identified by crewTripPickupAckDriverishId (designated driver first,
+ * then the user who pressed Start Poolyn if no designated driver was set before start).
+ */
+export function viewerShouldAckPickupReady(trip: CrewTripInstanceRow, viewerId: string): boolean {
+  // Window check: trip must be live (started, not finished).
+  if (!trip.trip_started_at || trip.trip_finished_at) return false;
+  const ex = new Set(trip.excluded_pickup_user_ids ?? []);
+  // Excluded riders do not receive the prompt.
+  if (ex.has(viewerId)) return false;
+  const d = crewTripPickupAckDriverishId(trip);
+  // If no driverish user is known, ack system is not yet active.
+  if (!d) return false;
+  // Driver/starter does not ack their own trip.
+  if (viewerId === d) return false;
+  const map = parseRiderPickupReadyMap(trip.rider_pickup_ready_at);
+  // Already acked - do not show the prompt again.
+  if (map[viewerId]) return false;
+  return true;
+}
+
+/**
+ * Count of pickup riders who have not yet acknowledged readiness during an active trip.
+ * Used by the driver (and the finish-trip flow) to surface a warning before settling credits.
+ *
+ * Returns 0 when the trip is not in progress, has no applicable riders, or all riders have acked.
+ */
+export function countPendingPickupAcks(
+  trip: CrewTripInstanceRow,
+  rosterUserIds: string[]
+): number {
+  // Window check mirrors viewerShouldAckPickupReady.
+  if (!trip.trip_started_at || trip.trip_finished_at) return 0;
+  const driverish = crewTripPickupAckDriverishId(trip);
+  const ex = new Set(trip.excluded_pickup_user_ids ?? []);
+  const ready = parseRiderPickupReadyMap(trip.rider_pickup_ready_at);
+  return rosterUserIds.filter(
+    (uid) => uid !== driverish && !ex.has(uid) && !ready[uid]
+  ).length;
+}
+
+export type CrewTripSettlementRiderLine = {
+  user_id: string;
+  full_name?: string;
+  credits_contribution?: number;
+  credits_crew_admin_fee?: number;
+  credits_total_debited?: number;
+  is_org_member?: boolean;
+};
+
+export type CrewTripSettlementSummary = {
+  crew_name?: string;
+  trip_date?: string;
+  route_label?: string;
+  commute_pattern?: string;
+  distance_km?: number | null;
+  duration_mins?: number | null;
+  contribution_credits_per_rider?: number;
+  crew_explorer_admin_fee_rate?: number;
+  riders?: CrewTripSettlementRiderLine[];
+  driver_user_id?: string;
+  driver_full_name?: string;
+  driver_credits_earned?: number;
+  total_crew_admin_credits_from_explorers?: number;
+};
+
+export type CompletedCrewTripHistoryRow = {
+  id: string;
+  crewId: string;
+  crewName: string;
+  tripDate: string;
+  tripFinishedAt: string;
+  settlementSummary: CrewTripSettlementSummary | null;
 };
 
 export type CrewMessageRow = {
@@ -247,7 +359,7 @@ export async function listMyCrews(userId: string): Promise<CrewListRow[]> {
   const { data: crews, error: e2 } = await supabase
     .from("crews")
     .select(
-      "id, name, invite_code, org_id, commute_pattern, sticker_emoji, sticker_image_url, locked_route_distance_m, locked_route_duration_s"
+      "id, name, invite_code, org_id, commute_pattern, sticker_emoji, sticker_image_url, locked_route_distance_m, locked_route_duration_s, schedule_mode, schedule_anchor_minutes, estimated_pool_drive_minutes"
     )
     .in("id", ids)
     .order("name");
@@ -266,6 +378,12 @@ export async function listMyCrews(userId: string): Promise<CrewListRow[]> {
         typeof c.locked_route_distance_m === "number" ? c.locked_route_distance_m : null,
       locked_route_duration_s:
         typeof c.locked_route_duration_s === "number" ? c.locked_route_duration_s : null,
+      schedule_mode:
+        c.schedule_mode === "start" || c.schedule_mode === "arrival" ? c.schedule_mode : "arrival",
+      schedule_anchor_minutes:
+        typeof c.schedule_anchor_minutes === "number" ? c.schedule_anchor_minutes : 540,
+      estimated_pool_drive_minutes:
+        typeof c.estimated_pool_drive_minutes === "number" ? c.estimated_pool_drive_minutes : 45,
     };
   });
 }
@@ -297,6 +415,9 @@ export async function createCrew(params: {
   userId: string;
   orgId: string | null;
   commutePattern?: CrewCommutePattern;
+  scheduleMode?: CrewScheduleMode;
+  scheduleAnchorMinutes?: number;
+  estimatedPoolDriveMinutes?: number;
 }): Promise<{ ok: true; crewId: string } | { ok: false; reason: string }> {
   const name = params.name.trim();
   if (!name) return { ok: false, reason: "Name is required." };
@@ -307,6 +428,20 @@ export async function createCrew(params: {
       reason: `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave one under Profile → Poolyn Crews before creating another.`,
     };
   }
+  const mode: CrewScheduleMode = params.scheduleMode === "start" ? "start" : "arrival";
+  const anchor =
+    typeof params.scheduleAnchorMinutes === "number" &&
+    params.scheduleAnchorMinutes >= 0 &&
+    params.scheduleAnchorMinutes < 1440
+      ? Math.floor(params.scheduleAnchorMinutes)
+      : 540;
+  const estDrive =
+    typeof params.estimatedPoolDriveMinutes === "number" &&
+    params.estimatedPoolDriveMinutes >= 1 &&
+    params.estimatedPoolDriveMinutes <= 600
+      ? Math.floor(params.estimatedPoolDriveMinutes)
+      : 45;
+
   const { data: crew, error: e1 } = await supabase
     .from("crews")
     .insert({
@@ -314,6 +449,9 @@ export async function createCrew(params: {
       created_by: params.userId,
       org_id: params.orgId,
       commute_pattern: params.commutePattern ?? "to_work",
+      schedule_mode: mode,
+      schedule_anchor_minutes: anchor,
+      estimated_pool_drive_minutes: estDrive,
     })
     .select("id")
     .single();
@@ -350,42 +488,10 @@ export async function joinCrewByCode(
   return { ok: false, reason: human[reason] ?? reason };
 }
 
-export async function getOrCreateTripInstance(
-  crewId: string,
-  tripDate: string
-): Promise<{ ok: true; row: CrewTripInstanceRow } | { ok: false; reason: string }> {
-  const { data, error } = await supabase
-    .from("crew_trip_instances")
-    .upsert({ crew_id: crewId, trip_date: tripDate }, { onConflict: "crew_id,trip_date" })
-    .select("id, crew_id, trip_date, designated_driver_user_id, excluded_pickup_user_ids")
-    .single();
-  if (error || !data) return { ok: false, reason: error?.message ?? "trip_instance_failed" };
-  const row = data as Record<string, unknown>;
-  const excluded = row.excluded_pickup_user_ids;
-  return {
-    ok: true,
-    row: {
-      id: row.id as string,
-      crew_id: row.crew_id as string,
-      trip_date: row.trip_date as string,
-      designated_driver_user_id: (row.designated_driver_user_id as string | null) ?? null,
-      excluded_pickup_user_ids: Array.isArray(excluded)
-        ? (excluded as string[])
-        : [],
-    },
-  };
-}
+const CREW_TRIP_INSTANCE_SELECT =
+  "id, crew_id, trip_date, designated_driver_user_id, excluded_pickup_user_ids, trip_started_at, trip_finished_at, poolyn_credits_settled_at, settlement_summary, trip_started_by_user_id, rider_pickup_ready_at, departure_readiness_reminder_sent_at";
 
-export async function fetchCrewTripInstance(
-  tripInstanceId: string
-): Promise<CrewTripInstanceRow | null> {
-  const { data, error } = await supabase
-    .from("crew_trip_instances")
-    .select("id, crew_id, trip_date, designated_driver_user_id, excluded_pickup_user_ids")
-    .eq("id", tripInstanceId)
-    .maybeSingle();
-  if (error || !data) return null;
-  const row = data as Record<string, unknown>;
+function crewTripInstanceFromRow(row: Record<string, unknown>): CrewTripInstanceRow {
   const excluded = row.excluded_pickup_user_ids;
   return {
     id: row.id as string,
@@ -393,7 +499,88 @@ export async function fetchCrewTripInstance(
     trip_date: row.trip_date as string,
     designated_driver_user_id: (row.designated_driver_user_id as string | null) ?? null,
     excluded_pickup_user_ids: Array.isArray(excluded) ? (excluded as string[]) : [],
+    trip_started_at: (row.trip_started_at as string | null) ?? null,
+    trip_finished_at: (row.trip_finished_at as string | null) ?? null,
+    poolyn_credits_settled_at: (row.poolyn_credits_settled_at as string | null) ?? null,
+    settlement_summary: (row.settlement_summary as Json | null) ?? null,
+    trip_started_by_user_id: (row.trip_started_by_user_id as string | null) ?? null,
+    rider_pickup_ready_at: (row.rider_pickup_ready_at as Json | null) ?? null,
+    departure_readiness_reminder_sent_at:
+      (row.departure_readiness_reminder_sent_at as string | null) ?? null,
   };
+}
+
+/**
+ * Ensures a row exists for (crew, local date) without touching existing columns.
+ * A plain PostgREST upsert with only crew_id + trip_date can overwrite other fields (e.g. trip_started_at) on conflict.
+ */
+export async function getOrCreateTripInstance(
+  crewId: string,
+  tripDate: string
+): Promise<{ ok: true; row: CrewTripInstanceRow } | { ok: false; reason: string }> {
+  const { data: existing, error: selErr } = await supabase
+    .from("crew_trip_instances")
+    .select(CREW_TRIP_INSTANCE_SELECT)
+    .eq("crew_id", crewId)
+    .eq("trip_date", tripDate)
+    .maybeSingle();
+
+  if (selErr) return { ok: false, reason: selErr.message };
+  if (existing) {
+    return { ok: true, row: crewTripInstanceFromRow(existing as Record<string, unknown>) };
+  }
+
+  const { data: inserted, error: insErr } = await supabase
+    .from("crew_trip_instances")
+    .insert({ crew_id: crewId, trip_date: tripDate })
+    .select(CREW_TRIP_INSTANCE_SELECT)
+    .single();
+
+  if (!insErr && inserted) {
+    return { ok: true, row: crewTripInstanceFromRow(inserted as Record<string, unknown>) };
+  }
+
+  const dup =
+    insErr?.code === "23505" ||
+    (typeof insErr?.message === "string" && /duplicate|unique/i.test(insErr.message));
+  if (dup) {
+    const { data: again, error: againErr } = await supabase
+      .from("crew_trip_instances")
+      .select(CREW_TRIP_INSTANCE_SELECT)
+      .eq("crew_id", crewId)
+      .eq("trip_date", tripDate)
+      .maybeSingle();
+    if (!againErr && again) {
+      return { ok: true, row: crewTripInstanceFromRow(again as Record<string, unknown>) };
+    }
+  }
+
+  return { ok: false, reason: insErr?.message ?? "trip_instance_failed" };
+}
+
+export async function fetchCrewTripInstance(
+  tripInstanceId: string
+): Promise<CrewTripInstanceRow | null> {
+  const { data, error } = await supabase
+    .from("crew_trip_instances")
+    .select(CREW_TRIP_INSTANCE_SELECT)
+    .eq("id", tripInstanceId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return crewTripInstanceFromRow(data as Record<string, unknown>);
+}
+
+/** Notify riders once when local time is near the planned driver departure (see migration 0078). */
+export async function tryDepartureReadinessReminder(params: {
+  tripInstanceId: string;
+  localMinutesFromMidnight: number;
+  tripLocalDate: string;
+}): Promise<void> {
+  await supabase.rpc("poolyn_try_departure_readiness_reminder", {
+    p_trip_instance_id: params.tripInstanceId,
+    p_local_minutes: params.localMinutesFromMidnight,
+    p_trip_local_date: params.tripLocalDate,
+  });
 }
 
 export async function updateCrewSettings(params: {
@@ -456,7 +643,7 @@ export async function fetchCrewRow(crewId: string): Promise<CrewListRow | null> 
   const { data, error } = await supabase
     .from("crews")
     .select(
-      "id, name, invite_code, org_id, commute_pattern, sticker_emoji, sticker_image_url, locked_route_distance_m, locked_route_duration_s"
+      "id, name, invite_code, org_id, commute_pattern, sticker_emoji, sticker_image_url, locked_route_distance_m, locked_route_duration_s, schedule_mode, schedule_anchor_minutes, estimated_pool_drive_minutes"
     )
     .eq("id", crewId)
     .maybeSingle();
@@ -474,6 +661,12 @@ export async function fetchCrewRow(crewId: string): Promise<CrewListRow | null> 
       typeof c.locked_route_distance_m === "number" ? c.locked_route_distance_m : null,
     locked_route_duration_s:
       typeof c.locked_route_duration_s === "number" ? c.locked_route_duration_s : null,
+    schedule_mode:
+      c.schedule_mode === "start" || c.schedule_mode === "arrival" ? c.schedule_mode : "arrival",
+    schedule_anchor_minutes:
+      typeof c.schedule_anchor_minutes === "number" ? c.schedule_anchor_minutes : 540,
+    estimated_pool_drive_minutes:
+      typeof c.estimated_pool_drive_minutes === "number" ? c.estimated_pool_drive_minutes : 45,
   };
 }
 
@@ -540,6 +733,196 @@ export async function setCrewDesignatedDriver(
     return { ok: true, driverId: o.designated_driver_user_id };
   }
   return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "set_driver_failed" };
+}
+
+export async function recordCrewTripStarted(
+  tripInstanceId: string
+): Promise<{ ok: true; idempotent?: boolean } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_crew_trip_record_started", {
+    p_trip_instance_id: tripInstanceId,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) return { ok: true, idempotent: o.idempotent === true };
+  return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "start_failed" };
+}
+
+const ACK_PICKUP_REASONS: Record<string, string> = {
+  not_authenticated: "Sign in again.",
+  trip_not_found: "This trip is no longer available.",
+  not_in_crew: "You are not in this crew.",
+  trip_not_started: "The trip has not started yet.",
+  trip_finished: "This trip is already finished.",
+  excluded_from_pickup: "You were excluded from pickups today.",
+  driver_no_ack: "Only riders confirm pickup readiness.",
+  ack_unavailable: "Pickup confirmation is not available for this trip.",
+};
+
+export async function ackCrewTripPickupReady(
+  tripInstanceId: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_crew_trip_ack_pickup_ready", {
+    p_trip_instance_id: tripInstanceId,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) return { ok: true };
+  const raw = typeof o?.reason === "string" ? o.reason : "ack_failed";
+  return { ok: false, reason: ACK_PICKUP_REASONS[raw] ?? raw };
+}
+
+export async function finishAndSettleCrewTripCredits(params: {
+  tripInstanceId: string;
+  contributionCreditsPerRider: number;
+}): Promise<
+  | { ok: true; idempotent?: boolean; settlementSummary: CrewTripSettlementSummary | null }
+  | { ok: false; reason: string; needed?: number; balance?: number }
+> {
+  const { data, error } = await supabase.rpc("poolyn_crew_trip_finish_and_settle_credits", {
+    p_trip_instance_id: params.tripInstanceId,
+    p_contribution_credits_per_rider: params.contributionCreditsPerRider,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) {
+    const raw = o.settlement_summary;
+    const settlementSummary =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as CrewTripSettlementSummary)
+        : null;
+    return {
+      ok: true,
+      idempotent: o.idempotent === true,
+      settlementSummary,
+    };
+  }
+  if (o?.reason === "insufficient_credits") {
+    return {
+      ok: false,
+      reason: "insufficient_credits",
+      needed: typeof o.needed === "number" ? o.needed : undefined,
+      balance: typeof o.balance === "number" ? o.balance : undefined,
+    };
+  }
+  return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "settle_failed" };
+}
+
+/**
+ * Same rider share as the crew card (locked corridor split). Credits use the same integer units as cents.
+ */
+export async function fetchCrewTripContributionForSettlement(params: {
+  crewId: string;
+  viewerUserId: string;
+  /** Crew members paying today: not the designated driver and not in excluded pickups. */
+  payingRiderCount: number;
+}): Promise<
+  | {
+      ok: true;
+      contributionCredits: number;
+      poolRiders: number;
+      distanceM: number | null;
+      durationS: number | null;
+    }
+  | { ok: false; reason: string }
+> {
+  const { data: crew, error: e1 } = await supabase
+    .from("crews")
+    .select("locked_route_distance_m, locked_route_duration_s")
+    .eq("id", params.crewId)
+    .maybeSingle();
+  if (e1 || !crew) return { ok: false, reason: "crew_not_found" };
+
+  const poolRiders = Math.max(0, Math.floor(params.payingRiderCount));
+  if (poolRiders < 1) {
+    return { ok: true, contributionCredits: 0, poolRiders: 0, distanceM: null, durationS: null };
+  }
+
+  let distanceM =
+    typeof crew.locked_route_distance_m === "number" ? crew.locked_route_distance_m : null;
+  let durationS =
+    typeof crew.locked_route_duration_s === "number" ? crew.locked_route_duration_s : null;
+
+  if (distanceM == null || durationS == null) {
+    const { data: cr } = await supabase
+      .from("commute_routes")
+      .select("distance_m, duration_s")
+      .eq("user_id", params.viewerUserId)
+      .eq("direction", "to_work")
+      .maybeSingle();
+    if (cr) {
+      if (distanceM == null && typeof cr.distance_m === "number") distanceM = cr.distance_m;
+      if (durationS == null && typeof cr.duration_s === "number") durationS = cr.duration_s;
+    }
+  }
+
+  if (distanceM == null || durationS == null) {
+    return { ok: false, reason: "no_route_stats" };
+  }
+
+  const bd = computeCrewEqualCorridorRiderBreakdown({
+    lockedRouteDistanceM: distanceM,
+    lockedRouteDurationS: durationS,
+    poolRiderCount: poolRiders,
+  });
+  if (!bd) return { ok: false, reason: "pricing_unavailable" };
+
+  return {
+    ok: true,
+    contributionCredits: bd.total_contribution,
+    poolRiders,
+    distanceM,
+    durationS,
+  };
+}
+
+export async function listMyCompletedCrewTripsForHistory(
+  userId: string
+): Promise<CompletedCrewTripHistoryRow[]> {
+  const { data: links, error: e1 } = await supabase
+    .from("crew_members")
+    .select("crew_id")
+    .eq("user_id", userId);
+  if (e1 || !links?.length) return [];
+  const crewIds = [...new Set(links.map((l) => l.crew_id as string))];
+
+  const { data, error: e2 } = await supabase
+    .from("crew_trip_instances")
+    .select("id, crew_id, trip_date, trip_finished_at, settlement_summary")
+    .in("crew_id", crewIds)
+    .not("trip_finished_at", "is", null)
+    .order("trip_finished_at", { ascending: false })
+    .limit(40);
+
+  if (e2) {
+    if (__DEV__) console.warn("[listMyCompletedCrewTripsForHistory]", e2.message);
+    return [];
+  }
+  if (!data?.length) return [];
+
+  const nameIds = [...new Set(data.map((r) => r.crew_id as string))];
+  const { data: crewRows } = await supabase.from("crews").select("id, name").in("id", nameIds);
+  const nameBy = new Map((crewRows ?? []).map((c) => [c.id as string, (c.name as string)?.trim() || "Crew"]));
+
+  const out: CompletedCrewTripHistoryRow[] = [];
+  for (const row of data as Record<string, unknown>[]) {
+    const crewName = nameBy.get(row.crew_id as string) ?? "Crew";
+    const finished = row.trip_finished_at as string | null;
+    if (!finished) continue;
+    const sumRaw = row.settlement_summary;
+    const settlementSummary =
+      sumRaw && typeof sumRaw === "object" && !Array.isArray(sumRaw)
+        ? (sumRaw as CrewTripSettlementSummary)
+        : null;
+    out.push({
+      id: row.id as string,
+      crewId: row.crew_id as string,
+      crewName,
+      tripDate: row.trip_date as string,
+      tripFinishedAt: finished,
+      settlementSummary,
+    });
+  }
+  return out;
 }
 
 export async function rollCrewDriverDice(

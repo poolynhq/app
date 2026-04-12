@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
@@ -26,39 +26,64 @@ import {
   type CrewInvitePendingRow,
 } from "@/lib/crewMessaging";
 import { showAlert } from "@/lib/platformAlert";
+import { MinglePoolynHomePanel } from "@/components/home/MinglePoolynHomePanel";
+import { useAuth } from "@/contexts/AuthContext";
+import { effectiveCommuteMode } from "@/lib/commuteRoleIntent";
 
 const MINGLE_AMBER = "#D97706";
 const MINGLE_AMBER_SOFT = "#FEF3C7";
 const MINGLE_CARD_BG = "#FFFBEB";
 const MINGLE_CARD_BORDER = "rgba(217, 119, 6, 0.22)";
 
+const MIN_DRIVER_DETOUR = 2;
+const MIN_RIDER_DRIVER_DETOUR = 5;
+
+function clampDriverDetour(n: number) {
+  return Math.min(35, Math.max(MIN_DRIVER_DETOUR, n));
+}
+function clampRiderDriverDetour(n: number) {
+  return Math.min(35, Math.max(MIN_RIDER_DRIVER_DETOUR, n));
+}
+
 export type RoutinePoolynMode = "crew" | "mingle";
+
+/** When set, Mingle + passenger uses “Post pickup” instead of Start Poolyn (Home passes pickup state). */
+export type MinglePassengerPickupCTA = {
+  hasPendingRequest: boolean;
+  onOpenPostRequest: () => void;
+};
 
 type Props = {
   profile: User;
   orgId: string | null;
-  visibilityMode: "network" | "nearby" | string | null | undefined;
   setVisibilityMode: (mode: "network" | "nearby") => void;
   /** From home commute route panel: saved route chosen (or not required). */
   commuteRouteReady: boolean;
+  minglePassengerPickup?: MinglePassengerPickupCTA;
   onCrewCreated?: () => void;
 };
 
 export function RoutinePoolynCrewMingleBlock({
   profile,
   orgId,
-  visibilityMode,
   setVisibilityMode,
   commuteRouteReady,
+  minglePassengerPickup,
   onCrewCreated,
 }: Props) {
   const router = useRouter();
+  const { refreshProfile } = useAuth();
   const isFocused = useIsFocused();
   const [mode, setMode] = useState<RoutinePoolynMode>("crew");
   const [crewModalOpen, setCrewModalOpen] = useState(false);
-  const [detourMins, setDetourMins] = useState(
-    Math.min(30, Math.max(5, profile.detour_tolerance_mins ?? 12))
+  const [driverDetourMins, setDriverDetourMins] = useState(() =>
+    clampDriverDetour(profile.detour_tolerance_mins ?? 12)
   );
+  const [riderDriverDetourCapMins, setRiderDriverDetourCapMins] = useState(() => {
+    const cap =
+      profile.passenger_max_driver_detour_mins ?? profile.detour_tolerance_mins ?? 12;
+    return clampRiderDriverDetour(cap);
+  });
   const [myCrews, setMyCrews] = useState<CrewListRow[]>([]);
   const [pendingInvites, setPendingInvites] = useState<CrewInvitePendingRow[]>([]);
   const [routineLoading, setRoutineLoading] = useState(true);
@@ -107,14 +132,28 @@ export function RoutinePoolynCrewMingleBlock({
     void loadRoutineData();
   }, [isFocused, loadRoutineData]);
 
-  const persistDetour = useCallback(async () => {
-    await supabase.from("users").update({ detour_tolerance_mins: detourMins }).eq("id", profile.id);
-  }, [detourMins, profile.id]);
+  useEffect(() => {
+    setDriverDetourMins(clampDriverDetour(profile.detour_tolerance_mins ?? 12));
+    const cap =
+      profile.passenger_max_driver_detour_mins ?? profile.detour_tolerance_mins ?? 12;
+    setRiderDriverDetourCapMins(clampRiderDriverDetour(cap));
+  }, [profile.id, profile.detour_tolerance_mins, profile.passenger_max_driver_detour_mins]);
+
+  const persistDetours = useCallback(async () => {
+    await supabase
+      .from("users")
+      .update({
+        detour_tolerance_mins: driverDetourMins,
+        passenger_max_driver_detour_mins: riderDriverDetourCapMins,
+      })
+      .eq("id", profile.id);
+    await refreshProfile();
+  }, [driverDetourMins, riderDriverDetourCapMins, profile.id, refreshProfile]);
 
   const startMingle = useCallback(async () => {
-    await persistDetour();
+    await persistDetours();
     router.push("/(tabs)/navigate?poolynMingle=1");
-  }, [persistDetour, router]);
+  }, [persistDetours, router]);
 
   async function onInviteRespond(invitationId: string, accept: boolean) {
     setInviteBusyId(invitationId);
@@ -138,6 +177,31 @@ export function RoutinePoolynCrewMingleBlock({
 
   return (
     <View style={styles.wrap}>
+      <View style={styles.toggleRow}>
+        <Pressable
+          style={[styles.toggleChip, mode === "crew" && styles.toggleChipOn]}
+          onPress={() => setMode("crew")}
+        >
+          <Ionicons
+            name="people"
+            size={18}
+            color={mode === "crew" ? "#fff" : Colors.primary}
+          />
+          <Text style={[styles.toggleText, mode === "crew" && styles.toggleTextOn]}>Crew Poolyn</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.toggleChip, mode === "mingle" && styles.toggleChipOnMingle]}
+          onPress={() => setMode("mingle")}
+        >
+          <Ionicons
+            name="git-network-outline"
+            size={18}
+            color={mode === "mingle" ? "#fff" : MINGLE_AMBER}
+          />
+          <Text style={[styles.toggleText, mode === "mingle" && styles.toggleTextOn]}>Mingle Poolyn</Text>
+        </Pressable>
+      </View>
+
       {pendingInvites.length > 0 ? (
         <View style={styles.invitesBlock}>
           <Text style={styles.invitesEyebrow}>Crew invitations</Text>
@@ -171,32 +235,6 @@ export function RoutinePoolynCrewMingleBlock({
           ))}
         </View>
       ) : null}
-
-      <Text style={styles.sectionLabel}>How do you want to Poolyn today?</Text>
-      <View style={styles.toggleRow}>
-        <Pressable
-          style={[styles.toggleChip, mode === "crew" && styles.toggleChipOn]}
-          onPress={() => setMode("crew")}
-        >
-          <Ionicons
-            name="people"
-            size={18}
-            color={mode === "crew" ? "#fff" : Colors.primary}
-          />
-          <Text style={[styles.toggleText, mode === "crew" && styles.toggleTextOn]}>Crew Poolyn</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.toggleChip, mode === "mingle" && styles.toggleChipOnMingle]}
-          onPress={() => setMode("mingle")}
-        >
-          <Ionicons
-            name="git-network-outline"
-            size={18}
-            color={mode === "mingle" ? "#fff" : MINGLE_AMBER}
-          />
-          <Text style={[styles.toggleText, mode === "mingle" && styles.toggleTextOn]}>Mingle Poolyn</Text>
-        </Pressable>
-      </View>
 
       {mode === "crew" ? (
         routineLoading && !hasCrew ? (
@@ -270,51 +308,132 @@ export function RoutinePoolynCrewMingleBlock({
         )
       ) : (
         <View style={[styles.card, styles.cardMingle]}>
-          <Text style={styles.cardTitle}>Open matching on your corridor</Text>
+          <Text style={styles.cardTitle}>Mingle Poolyn</Text>
           <Text style={styles.cardBody}>
-            Set how far you&apos;ll detour, then choose who can see you on the map. Start opens turn-by-turn
-            toward work from your saved pins.
+            Choose driving or riding, who can see you, then open the map when you head out.
           </Text>
 
-          <Text style={styles.miniLabel}>Detour tolerance (minutes)</Text>
-          <View style={styles.stepper}>
-            <Pressable style={styles.stepBtn} onPress={() => setDetourMins((m) => Math.max(5, m - 1))}>
-              <Ionicons name="remove" size={20} color={MINGLE_AMBER} />
-            </Pressable>
-            <Text style={styles.stepVal}>{detourMins} min</Text>
-            <Pressable style={styles.stepBtn} onPress={() => setDetourMins((m) => Math.min(35, m + 1))}>
-              <Ionicons name="add" size={20} color={MINGLE_AMBER} />
-            </Pressable>
-          </View>
+          <MinglePoolynHomePanel setVisibilityMode={setVisibilityMode} />
 
-          <Text style={styles.miniLabel}>Who can match with you</Text>
-          <View style={styles.scopeRow}>
-            <Pressable
-              style={[styles.scopeChip, visibilityMode !== "nearby" && styles.scopeChipOn]}
-              onPress={() => setVisibilityMode("network")}
-            >
-              <Text
-                style={[styles.scopeChipText, visibilityMode !== "nearby" && styles.scopeChipTextOn]}
-              >
-                My organisation only
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[styles.scopeChip, visibilityMode === "nearby" && styles.scopeChipOnMingle]}
-              onPress={() => setVisibilityMode("nearby")}
-            >
-              <Text
-                style={[styles.scopeChipText, visibilityMode === "nearby" && styles.scopeChipTextOn]}
-              >
-                Anyone on my route
-              </Text>
-            </Pressable>
-          </View>
+          <TouchableOpacity
+            style={styles.locationsRow}
+            onPress={() => router.push("/(tabs)/profile/commute-locations")}
+            activeOpacity={0.75}
+          >
+            <Ionicons name="location-outline" size={20} color={MINGLE_AMBER} />
+            <View style={styles.locationsRowText}>
+              <Text style={styles.locationsRowTitle}>Home, work &amp; pickup locations</Text>
+              <Text style={styles.locationsRowSub}>Edit in Profile. Map refreshes after you save.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
+          </TouchableOpacity>
 
-          <Pressable style={styles.mingleGo} onPress={() => void startMingle()}>
-            <Ionicons name="navigate" size={20} color="#fff" />
-            <Text style={styles.mingleGoText}>Start Poolyn</Text>
-          </Pressable>
+          {(() => {
+            const mingleIntent = effectiveCommuteMode(profile);
+            const driverStepper = (
+              <View style={styles.stepper}>
+                <Pressable
+                  style={styles.stepBtn}
+                  onPress={() => setDriverDetourMins((m) => clampDriverDetour(m - 1))}
+                >
+                  <Ionicons name="remove" size={20} color={MINGLE_AMBER} />
+                </Pressable>
+                <Text style={styles.stepVal}>{driverDetourMins} min</Text>
+                <Pressable
+                  style={styles.stepBtn}
+                  onPress={() => setDriverDetourMins((m) => clampDriverDetour(m + 1))}
+                >
+                  <Ionicons name="add" size={20} color={MINGLE_AMBER} />
+                </Pressable>
+              </View>
+            );
+            const riderStepper = (
+              <View style={styles.stepper}>
+                <Pressable
+                  style={styles.stepBtn}
+                  onPress={() => setRiderDriverDetourCapMins((m) => clampRiderDriverDetour(m - 1))}
+                >
+                  <Ionicons name="remove" size={20} color={MINGLE_AMBER} />
+                </Pressable>
+                <Text style={styles.stepVal}>{riderDriverDetourCapMins} min</Text>
+                <Pressable
+                  style={styles.stepBtn}
+                  onPress={() => setRiderDriverDetourCapMins((m) => clampRiderDriverDetour(m + 1))}
+                >
+                  <Ionicons name="add" size={20} color={MINGLE_AMBER} />
+                </Pressable>
+              </View>
+            );
+            if (mingleIntent === null) {
+              return (
+                <View>
+                  <Text style={styles.miniLabel}>Driving: detour you accept (min)</Text>
+                  {driverStepper}
+                  <Text style={[styles.miniLabel, styles.miniLabelSpaced]}>
+                    Riding: max driver detour to reach you (min)
+                  </Text>
+                  {riderStepper}
+                </View>
+              );
+            }
+            if (mingleIntent === "passenger") {
+              return (
+                <View>
+                  <Text style={styles.miniLabel}>Max driver detour to reach you (min)</Text>
+                  {riderStepper}
+                </View>
+              );
+            }
+            return (
+              <View>
+                <Text style={styles.miniLabel}>Detour you accept when driving (min)</Text>
+                {driverStepper}
+              </View>
+            );
+          })()}
+
+          {(() => {
+            const mingleIntent = effectiveCommuteMode(profile);
+            const usePostPickup =
+              minglePassengerPickup &&
+              mingleIntent === "passenger";
+            if (usePostPickup) {
+              if (minglePassengerPickup.hasPendingRequest) {
+                return (
+                  <View style={styles.minglePickupPending}>
+                    <Ionicons name="radio-outline" size={20} color={MINGLE_AMBER} />
+                    <Text style={styles.minglePickupPendingText}>
+                      Request active. Status is in the banner at the top.
+                    </Text>
+                  </View>
+                );
+              }
+              return (
+                <TouchableOpacity
+                  style={styles.postPickupMingleBtn}
+                  onPress={() => {
+                    void (async () => {
+                      await persistDetours();
+                      minglePassengerPickup.onOpenPostRequest();
+                    })();
+                  }}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Post a pickup request"
+                >
+                  <Ionicons name="megaphone-outline" size={20} color="#D97706" />
+                  <Text style={styles.postPickupMingleBtnText}>Post a pickup request</Text>
+                  <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
+                </TouchableOpacity>
+              );
+            }
+            return (
+              <Pressable style={styles.mingleGo} onPress={() => void startMingle()}>
+                <Ionicons name="navigate" size={20} color="#fff" />
+                <Text style={styles.mingleGoText}>Start Poolyn</Text>
+              </Pressable>
+            );
+          })()}
         </View>
       )}
 
@@ -334,7 +453,7 @@ export function RoutinePoolynCrewMingleBlock({
 
 const styles = StyleSheet.create({
   wrap: { marginBottom: Spacing.lg },
-  invitesBlock: { marginBottom: Spacing.md },
+  invitesBlock: { marginTop: Spacing.md, marginBottom: Spacing.md },
   invitesEyebrow: {
     fontSize: FontSize.xs,
     fontWeight: FontWeight.bold,
@@ -372,15 +491,17 @@ const styles = StyleSheet.create({
   inviteAcceptText: { color: "#fff", fontWeight: FontWeight.semibold, fontSize: FontSize.sm },
   inviteDecline: { backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border },
   inviteDeclineText: { color: Colors.textSecondary, fontWeight: FontWeight.semibold, fontSize: FontSize.sm },
-  sectionLabel: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    color: Colors.textSecondary,
-    letterSpacing: 0.6,
-    marginBottom: Spacing.sm,
-    textTransform: "uppercase",
+  toggleRow: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+    zIndex: 2,
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: "rgba(255,255,255,0.88)",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
   },
-  toggleRow: { flexDirection: "row", gap: Spacing.sm, marginBottom: Spacing.md },
   toggleChip: {
     flex: 1,
     flexDirection: "row",
@@ -455,19 +576,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   stepVal: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.text, minWidth: 64 },
-  scopeRow: { flexDirection: "row", gap: Spacing.sm, flexWrap: "wrap" },
-  scopeChip: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: BorderRadius.full,
-    backgroundColor: "#fff",
+  locationsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: BorderRadius.lg,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: MINGLE_CARD_BORDER,
+    backgroundColor: "#fff",
   },
-  scopeChipOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  scopeChipOnMingle: { backgroundColor: MINGLE_AMBER, borderColor: "#B45309" },
-  scopeChipText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, color: Colors.text },
-  scopeChipTextOn: { color: "#fff" },
+  locationsRowText: { flex: 1, minWidth: 0 },
+  locationsRowTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.text },
+  locationsRowSub: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: 2,
+    lineHeight: 16,
+  },
   mingleGo: {
     marginTop: Spacing.lg,
     flexDirection: "row",
@@ -480,6 +607,43 @@ const styles = StyleSheet.create({
     ...Shadow.sm,
   },
   mingleGoText: { color: "#fff", fontSize: FontSize.base, fontWeight: FontWeight.bold },
+  postPickupMingleBtn: {
+    marginTop: Spacing.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(217, 119, 6, 0.35)",
+    backgroundColor: "#FFFBEB",
+  },
+  postPickupMingleBtnText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+  },
+  minglePickupPending: {
+    marginTop: Spacing.lg,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: MINGLE_CARD_BORDER,
+    backgroundColor: "#fff",
+  },
+  minglePickupPendingText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+  },
+  miniLabelSpaced: { marginTop: Spacing.md },
   crewCtaDisabled: { opacity: 0.55 },
   secondaryCrewCta: {
     flexDirection: "row",

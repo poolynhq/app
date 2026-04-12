@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -12,15 +13,23 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
+  ackCrewTripPickupReady,
+  crewTripPickupAckDriverishId,
   deleteCrewAsOwner,
   fetchCrewMemberHomePins,
   fetchCrewRoster,
+  fetchCrewTripInstance,
   fetchPendingCrewInvitees,
   getOrCreateTripInstance,
   isCrewOwner,
+  parseRiderPickupReadyMap,
+  rollCrewDriverDice,
+  tryDepartureReadinessReminder,
+  viewerShouldAckPickupReady,
   type CrewListRow,
   type CrewMemberMapPin,
   type CrewRosterMember,
+  type CrewTripInstanceRow,
   type PendingCrewInvitee,
 } from "@/lib/crewMessaging";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
@@ -36,6 +45,7 @@ import { supabase } from "@/lib/supabase";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
 import { showAlert } from "@/lib/platformAlert";
 import { presentDrivingNavigationPicker } from "@/lib/navigationUrls";
+import { computeCrewDriverDiceEligibility } from "@/lib/crewDriverDicePool";
 import {
   distanceMeters,
   orderPickupsAlongCommute,
@@ -110,6 +120,9 @@ export function MyCrewRoutineCard({
   const [crewPinsForNav, setCrewPinsForNav] = useState<CrewMemberMapPin[]>([]);
   const [owner, setOwner] = useState(false);
   const [tripStartOpen, setTripStartOpen] = useState(false);
+  const [todayTrip, setTodayTrip] = useState<CrewTripInstanceRow | null>(null);
+  const [rollingDice, setRollingDice] = useState(false);
+  const [pickupAckBusy, setPickupAckBusy] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [commuteStats, setCommuteStats] = useState<{
     distance_m: number;
@@ -154,6 +167,9 @@ export function MyCrewRoutineCard({
       setCommuteStats(null);
     }
 
+    const inst = await getOrCreateTripInstance(crew.id, localDateKey());
+    setTodayTrip(inst.ok ? inst.row : null);
+
     if (!mapboxTokenPresent()) {
       setMapUrl(null);
       setLoadingMap(false);
@@ -191,9 +207,80 @@ export function MyCrewRoutineCard({
     userId,
   ]);
 
+  useFocusEffect(
+    useCallback(() => {
+      void loadMapAndRoster();
+    }, [loadMapAndRoster])
+  );
+
   useEffect(() => {
-    void loadMapAndRoster();
-  }, [loadMapAndRoster]);
+    const id = todayTrip?.id;
+    if (!id || todayTrip?.trip_finished_at) return;
+    const channel = supabase
+      .channel(`crew-trip-inst:${id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "crew_trip_instances",
+          filter: `id=eq.${id}`,
+        },
+        () => {
+          void fetchCrewTripInstance(id).then((row) => {
+            if (row) setTodayTrip(row);
+          });
+        }
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [todayTrip?.id, todayTrip?.trip_finished_at]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!todayTrip?.id) return;
+      if (todayTrip.trip_started_at || todayTrip.trip_finished_at) return;
+      if (todayTrip.departure_readiness_reminder_sent_at) return;
+      if (todayTrip.trip_date !== localDateKey()) return;
+      const now = new Date();
+      const d = localDateKey(now);
+      const mins = now.getHours() * 60 + now.getMinutes();
+      void (async () => {
+        await tryDepartureReadinessReminder({
+          tripInstanceId: todayTrip.id,
+          localMinutesFromMidnight: mins,
+          tripLocalDate: d,
+        });
+        const row = await fetchCrewTripInstance(todayTrip.id);
+        if (row) setTodayTrip(row);
+      })();
+    }, [
+      todayTrip?.id,
+      todayTrip?.trip_date,
+      todayTrip?.trip_started_at,
+      todayTrip?.trip_finished_at,
+      todayTrip?.departure_readiness_reminder_sent_at,
+    ])
+  );
+
+  async function onAckPickupReady() {
+    if (!todayTrip?.id || pickupAckBusy) return;
+    setPickupAckBusy(true);
+    try {
+      const r = await ackCrewTripPickupReady(todayTrip.id);
+      if (!r.ok) {
+        showAlert("Could not confirm", r.reason);
+        return;
+      }
+      const row = await fetchCrewTripInstance(todayTrip.id);
+      if (row) setTodayTrip(row);
+      void loadMapAndRoster().then(() => onRefresh?.());
+    } finally {
+      setPickupAckBusy(false);
+    }
+  }
 
   function onPressTripStart() {
     const others = crewPinsForNav.filter((p) => p.userId !== userId);
@@ -208,7 +295,54 @@ export function MyCrewRoutineCard({
         return;
       }
     }
+    // Opens CrewTripStartSummaryModal. When tripInProgress is true (trip_started_at already set),
+    // the modal title and primary button read "Resume trip" / "Resume in Google Maps" so the driver
+    // knows they are reopening Maps after a navigation app loss, not starting a second trip.
     setTripStartOpen(true);
+  }
+
+  /**
+   * Handles the "Finish Poolyn" card button.
+   *
+   * The button becomes active (filled amber) as soon as the trip starts. Pressing it navigates
+   * to the crew chat where the actual "Finish trip and settle Poolyn Credits" action lives.
+   *
+   * If the trip is active and some riders have not yet acknowledged pickup readiness, a warning
+   * dialog is shown first. The driver can wait for them or proceed to chat anyway. The final
+   * credit-settlement guard lives in the chat screen's onFinishTrip() function.
+   *
+   * PRODUCTION TODO: Before allowing navigation to the settle screen, add a minimum elapsed-time
+   * check (e.g. trip_started_at must be >= 10 minutes ago). This prevents repeated start-finish
+   * cycles that transfer credits without a real trip occurring. The gate should live server-side
+   * in poolyn_crew_trip_finish_and_settle_credits so it cannot be bypassed by the client.
+   */
+  function onPressFinishPoolyn() {
+    if (!todayTrip) return;
+    const dest = {
+      pathname: "/(tabs)/profile/crew-chat/[tripInstanceId]" as const,
+      params: { tripInstanceId: todayTrip.id },
+    };
+
+    // Only warn during an active trip (not before it starts, not after it is finished).
+    if (finishTripActive && expectedPickupRiders.length > 0) {
+      const unready = expectedPickupRiders.filter((m) => !riderReadyMap[m.userId]);
+      if (unready.length > 0) {
+        const shown = unready.slice(0, 3);
+        const nameList = shown.map((m) => (m.fullName || "A rider").trim()).join(", ");
+        const overflow = unready.length > 3 ? ` and ${unready.length - 3} more` : "";
+        showAlert(
+          "Riders not yet ready",
+          `${nameList}${overflow} ${unready.length === 1 ? "has" : "have"} not confirmed pickup readiness yet. You can wait for them to tap ready, or go to chat now to finish and settle.`,
+          [
+            { text: "Wait", style: "cancel" },
+            { text: "Go to chat", style: "default", onPress: () => router.push(dest) },
+          ]
+        );
+        return;
+      }
+    }
+
+    router.push(dest);
   }
 
   async function openTodaysChat() {
@@ -310,6 +444,151 @@ export function MyCrewRoutineCard({
         : "Workplace (after pickups)";
 
   const invitedShown = Math.max(pendingInviteCount, pendingInvitees.length);
+  const driverDice = useMemo(
+    () =>
+      computeCrewDriverDiceEligibility({
+        memberPins: crewPinsForNav,
+        commutePattern: crew.commute_pattern ?? "to_work",
+        viewerHome: profilePins.home_location,
+        viewerWork: profilePins.work_location,
+      }),
+    [crewPinsForNav, crew.commute_pattern, profilePins.home_location, profilePins.work_location]
+  );
+
+  const designatedDriverId = todayTrip?.designated_driver_user_id ?? null;
+  const isTodaysDriver = !!(designatedDriverId && userId === designatedDriverId);
+  const pickupDriverishId = todayTrip ? crewTripPickupAckDriverishId(todayTrip) : null;
+  const riderReadyMap = useMemo(
+    () => parseRiderPickupReadyMap(todayTrip?.rider_pickup_ready_at),
+    [todayTrip?.rider_pickup_ready_at]
+  );
+  const expectedPickupRiders = useMemo(() => {
+    if (!pickupDriverishId) return [];
+    const ex = new Set(todayTrip?.excluded_pickup_user_ids ?? []);
+    return roster.filter((m) => !ex.has(m.userId) && m.userId !== pickupDriverishId);
+  }, [roster, todayTrip?.excluded_pickup_user_ids, pickupDriverishId]);
+  const showDriverPickupReady =
+    !!todayTrip?.trip_started_at &&
+    !todayTrip?.trip_finished_at &&
+    expectedPickupRiders.length > 0 &&
+    !!pickupDriverishId &&
+    userId === pickupDriverishId;
+  const showRiderPickupAck = !!(
+    todayTrip &&
+    viewerShouldAckPickupReady(todayTrip, userId)
+  );
+  // The person who pressed "Start Poolyn" (recorded as trip_started_by_user_id) is the de-facto
+  // driver for that run even when no designated_driver_user_id was set via dice/chat. They must
+  // be able to see both the Resume and Finish buttons for the trip they are running.
+  const isTripStarter = !!(todayTrip?.trip_started_by_user_id && todayTrip.trip_started_by_user_id === userId);
+
+  /** Until a driver is picked, any member may start; after that, only the designated driver OR the
+   *  person who already started the trip (so they can resume navigation if Maps was lost). */
+  const canUseStartPoolyn = designatedDriverId == null || isTodaysDriver || isTripStarter;
+
+  /** Finish button is visible to the designated driver, crew owner, or whoever started this run. */
+  const canUseFinishPoolyn =
+    !!todayTrip && !todayTrip.trip_finished_at && (isTodaysDriver || owner || isTripStarter);
+
+  const finishTripActive = !!(todayTrip?.trip_started_at && !todayTrip?.trip_finished_at);
+
+  const onRollDriverDice = useCallback(async () => {
+    if (rollingDice || driverDice.eligibleUserIds.length < 2) return;
+    setRollingDice(true);
+    try {
+      const inst = await getOrCreateTripInstance(crew.id, localDateKey());
+      if (!inst.ok) {
+        showAlert("Could not roll", inst.reason);
+        return;
+      }
+      const res = await rollCrewDriverDice(inst.row.id, driverDice.eligibleUserIds);
+      if (!res.ok) {
+        showAlert("Driver dice", res.reason.replace(/_/g, " "));
+        return;
+      }
+      const row = await fetchCrewTripInstance(inst.row.id);
+      if (row) setTodayTrip(row);
+      void loadMapAndRoster().then(() => onRefresh?.());
+    } finally {
+      setRollingDice(false);
+    }
+  }, [rollingDice, driverDice.eligibleUserIds, crew.id, loadMapAndRoster, onRefresh]);
+
+  const driverDiceHint = useMemo(() => {
+    if (driverDice.reason === "ok" && driverDice.eligibleUserIds.length >= 2) {
+      return "Only the two homes farthest along your commute corridor (within ~15 km of the line), not mid-route.";
+    }
+    if (driverDice.reason === "no_geometry") {
+      return "Save home and work on your profile to enable driver dice.";
+    }
+    if (driverDice.reason === "too_few_pins") {
+      return "Need at least two members with saved home pins in this crew.";
+    }
+    if (driverDice.reason === "too_few_near_corridor") {
+      return "Need two or more homes near the commute line.";
+    }
+    return "Homes sit between the ends along the route; pick a driver in chat instead.";
+  }, [driverDice.eligibleUserIds.length, driverDice.reason]);
+
+  const tripStatus = useMemo(() => {
+    if (!todayTrip) {
+      return {
+        title: "Today’s trip",
+        subtitle: loadingMap ? "Loading…" : "Refresh the card or open group chat.",
+        icon: "time-outline" as const,
+        variant: "muted" as const,
+      };
+    }
+    if (todayTrip.trip_finished_at) {
+      return {
+        title: "Trip ended",
+        subtitle: "Today’s run is done. This resets tomorrow.",
+        icon: "checkmark-circle-outline" as const,
+        variant: "done" as const,
+      };
+    }
+    if (todayTrip.trip_started_at) {
+      const mins =
+        commuteStats?.duration_s != null
+          ? Math.max(1, Math.round(commuteStats.duration_s / 60))
+          : null;
+      let startedAt = "";
+      try {
+        startedAt = new Date(todayTrip.trip_started_at).toLocaleTimeString(undefined, {
+          hour: "numeric",
+          minute: "2-digit",
+        });
+      } catch {
+        /* ignore */
+      }
+      const etaPart =
+        mins != null
+          ? `~${mins} min (locked corridor estimate)`
+          : "Corridor time unavailable";
+      return {
+        title: "Trip in progress",
+        subtitle: `${etaPart}${startedAt ? ` · Started ${startedAt}` : ""}`,
+        icon: "navigate-circle-outline" as const,
+        variant: "active" as const,
+      };
+    }
+    const driverName = designatedDriverId
+      ? (roster.find((m) => m.userId === designatedDriverId)?.fullName ?? "").trim() ||
+        "Today’s driver"
+      : null;
+    const subtitle = designatedDriverId
+      ? `Waiting for ${driverName} to start Poolyn.`
+      : "Pick today’s driver with the dice on this card (route ends only) or claim in group chat.";
+    return {
+      title: "Trip not started",
+      subtitle,
+      icon: "ellipse-outline" as const,
+      variant: "idle" as const,
+    };
+  }, [todayTrip, loadingMap, commuteStats, designatedDriverId, roster]);
+
+  const tripInProgress = tripStatus.variant === "active";
+
   const legSummary =
     crew.commute_pattern === "to_home"
       ? "Work → Home"
@@ -444,10 +723,149 @@ export function MyCrewRoutineCard({
         <Text style={styles.mapHint}>Tap map to open a zoomable preview in the browser.</Text>
       ) : null}
 
-      <Pressable style={styles.startPoolynBtn} onPress={() => onPressTripStart()}>
-        <Ionicons name="car-sport" size={22} color="#fff" />
-        <Text style={styles.startPoolynBtnText}>Start Poolyn</Text>
-      </Pressable>
+      <View
+        style={[
+          styles.tripStatusBox,
+          tripStatus.variant === "active" && styles.tripStatusBoxActive,
+          tripStatus.variant === "done" && styles.tripStatusBoxDone,
+        ]}
+        accessibilityLabel={`${tripStatus.title}. ${tripStatus.subtitle}`}
+      >
+        <Ionicons
+          name={tripStatus.icon}
+          size={22}
+          color={
+            tripStatus.variant === "active"
+              ? Colors.primaryDark
+              : tripStatus.variant === "done"
+                ? Colors.textSecondary
+                : Colors.textSecondary
+          }
+        />
+        <View style={styles.tripStatusTextCol}>
+          <Text style={styles.tripStatusTitle}>{tripStatus.title}</Text>
+          <Text style={styles.tripStatusSubtitle}>{tripStatus.subtitle}</Text>
+        </View>
+      </View>
+
+      {showRiderPickupAck ? (
+        <View style={styles.riderAckBanner}>
+          <Ionicons name="car-outline" size={22} color={Colors.primaryDark} />
+          <View style={styles.riderAckTextCol}>
+            <Text style={styles.riderAckTitle}>Driver started the trip</Text>
+            <Text style={styles.riderAckSub}>
+              Tap when you are ready for pickup. If you are not riding, say so in chat so the driver can skip your
+              stop.
+            </Text>
+            <Pressable
+              style={[styles.riderAckBtn, pickupAckBusy && styles.btnDisabled]}
+              onPress={() => void onAckPickupReady()}
+              disabled={pickupAckBusy}
+            >
+              {pickupAckBusy ? (
+                <ActivityIndicator color={Colors.textOnPrimary} size="small" />
+              ) : (
+                <Text style={styles.riderAckBtnText}>I am ready for pickup</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {showDriverPickupReady ? (
+        <View style={styles.driverReadyBox}>
+          <Text style={styles.driverReadyTitle}>Pickup readiness</Text>
+          {expectedPickupRiders.map((m) => {
+            const ok = !!riderReadyMap[m.userId];
+            return (
+              <View key={m.userId} style={styles.driverReadyRow}>
+                <Ionicons
+                  name={ok ? "checkmark-circle" : "time-outline"}
+                  size={20}
+                  color={ok ? Colors.primary : Colors.textTertiary}
+                />
+                <Text style={styles.driverReadyName} numberOfLines={1}>
+                  {(m.fullName || "Member").trim()}
+                </Text>
+                <Text style={ok ? styles.driverReadyOk : styles.driverReadyWait}>
+                  {ok ? "Ready" : "Waiting"}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+
+      {!designatedDriverId && !todayTrip?.trip_finished_at ? (
+        <View style={styles.driverDiceBlock}>
+          <Pressable
+            style={[
+              styles.driverDiceBtn,
+              (driverDice.eligibleUserIds.length < 2 || rollingDice) && styles.driverDiceBtnOff,
+            ]}
+            disabled={driverDice.eligibleUserIds.length < 2 || rollingDice}
+            onPress={() => void onRollDriverDice()}
+            accessibilityRole="button"
+            accessibilityLabel="Pick driver at random from corridor ends"
+          >
+            {rollingDice ? (
+              <ActivityIndicator color={Colors.textOnPrimary} />
+            ) : (
+              <>
+                <Ionicons name="dice-outline" size={20} color={Colors.textOnPrimary} />
+                <Text style={styles.driverDiceBtnText}>Pick driver (dice)</Text>
+              </>
+            )}
+          </Pressable>
+          <Text style={styles.driverDiceHint}>{driverDiceHint}</Text>
+        </View>
+      ) : null}
+
+      {canUseStartPoolyn ? (
+        <Pressable
+          style={styles.startPoolynBtn}
+          onPress={() => onPressTripStart()}
+          accessibilityRole="button"
+          accessibilityLabel={tripInProgress ? "Resume trip in Google Maps" : "Start Poolyn"}
+        >
+          <Ionicons name={tripInProgress ? "navigate-circle" : "car-sport"} size={22} color="#fff" />
+          <Text style={styles.startPoolynBtnText}>{tripInProgress ? "Resume trip" : "Start Poolyn"}</Text>
+        </Pressable>
+      ) : null}
+
+      {canUseFinishPoolyn && todayTrip && finishTripActive ? (
+        <>
+          <Pressable
+            style={[
+              styles.finishPoolynBtnBase,
+              finishTripActive ? styles.finishPoolynBtnFilled : styles.finishPoolynBtnOutline,
+            ]}
+            onPress={() => onPressFinishPoolyn()}
+          >
+            <Ionicons
+              name="flag-outline"
+              size={22}
+              color={finishTripActive ? "#fff" : "#B45309"}
+            />
+            <Text
+              style={finishTripActive ? styles.finishPoolynBtnTextFilled : styles.finishPoolynBtnTextOutline}
+            >
+              Finish Poolyn
+            </Text>
+          </Pressable>
+          {finishTripActive ? (
+            <Text style={styles.finishHint}>
+              Maps does not report back to Poolyn. In chat, use{" "}
+              <Text style={styles.finishHintBold}>Finish trip and settle Poolyn Credits</Text>.
+            </Text>
+          ) : (
+            <Text style={styles.finishHintMuted}>
+              Outline until today&apos;s run has started; then this highlights so you can close the day and move
+              credits.
+            </Text>
+          )}
+        </>
+      ) : null}
 
       <Pressable
         style={styles.detailsToggle}
@@ -467,7 +885,8 @@ export function MyCrewRoutineCard({
           <View style={styles.detailBubble}>
             <Text style={styles.detailBubbleText}>
               Pins: your home and work with your saved commute line (when Mapbox can route). Smaller pins are
-              crewmates&apos; home areas. Use Start Poolyn for today&apos;s Google route and optional rider drops.
+              crewmates&apos; home areas. In Start Poolyn, turn off anyone not riding today so they are not charged
+              at settlement. Automated pickup checks against saved addresses are planned later.
             </Text>
           </View>
 
@@ -611,7 +1030,15 @@ export function MyCrewRoutineCard({
         userId={userId}
         profilePins={profilePins}
         crewPins={crewPinsForNav}
-        onTripOpened={() => void loadMapAndRoster().then(() => onRefresh?.())}
+        resumeTrip={tripInProgress}
+        onTripOpened={(tripInstanceId) =>
+          void (async () => {
+            const row = await fetchCrewTripInstance(tripInstanceId);
+            if (row) setTodayTrip(row);
+            await loadMapAndRoster();
+            onRefresh?.();
+          })()
+        }
       />
     </View>
   );
@@ -788,6 +1215,173 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: FontSize.base,
     fontWeight: FontWeight.bold,
+  },
+  finishPoolynBtnBase: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingVertical: 14,
+    borderRadius: BorderRadius.lg,
+    marginTop: Spacing.sm,
+    borderWidth: 2,
+  },
+  finishPoolynBtnOutline: {
+    backgroundColor: Colors.surface,
+    borderColor: "#B45309",
+  },
+  finishPoolynBtnFilled: {
+    backgroundColor: "#B45309",
+    borderColor: "#B45309",
+    ...Shadow.sm,
+  },
+  finishPoolynBtnTextOutline: {
+    color: "#B45309",
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+  },
+  finishPoolynBtnTextFilled: {
+    color: "#fff",
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.bold,
+  },
+  tripStatusBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  tripStatusBoxActive: {
+    borderColor: "rgba(11, 132, 87, 0.35)",
+    backgroundColor: "rgba(11, 132, 87, 0.06)",
+  },
+  tripStatusBoxDone: {
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  tripStatusTextCol: { flex: 1, minWidth: 0 },
+  tripStatusTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    marginBottom: 4,
+  },
+  tripStatusSubtitle: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+  },
+  riderAckBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "rgba(11, 132, 87, 0.35)",
+  },
+  riderAckTextCol: { flex: 1, minWidth: 0 },
+  riderAckTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    marginBottom: 4,
+  },
+  riderAckSub: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 17,
+    marginBottom: Spacing.sm,
+  },
+  riderAckBtn: {
+    alignSelf: "flex-start",
+    backgroundColor: Colors.primary,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md,
+  },
+  riderAckBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.textOnPrimary,
+  },
+  driverReadyBox: {
+    marginTop: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  driverReadyTitle: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.sm,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  driverReadyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingVertical: 6,
+  },
+  driverReadyName: { flex: 1, minWidth: 0, fontSize: FontSize.sm, color: Colors.text },
+  driverReadyOk: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: Colors.primary },
+  driverReadyWait: { fontSize: FontSize.xs, color: Colors.textTertiary },
+  driverDiceBlock: {
+    marginTop: Spacing.sm,
+    alignSelf: "stretch",
+  },
+  driverDiceBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    paddingVertical: 12,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: "#7C3AED",
+  },
+  driverDiceBtnOff: {
+    opacity: 0.45,
+  },
+  driverDiceBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.textOnPrimary,
+  },
+  driverDiceHint: {
+    fontSize: 10,
+    color: Colors.textTertiary,
+    textAlign: "center",
+    marginTop: Spacing.xs,
+    lineHeight: 15,
+    paddingHorizontal: Spacing.xs,
+  },
+  finishHint: {
+    fontSize: 11,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    marginTop: Spacing.sm,
+    lineHeight: 16,
+    paddingHorizontal: Spacing.sm,
+  },
+  finishHintBold: { fontWeight: FontWeight.semibold, color: Colors.text },
+  finishHintMuted: {
+    fontSize: 10,
+    color: Colors.textTertiary,
+    textAlign: "center",
+    marginTop: Spacing.xs,
+    lineHeight: 15,
+    paddingHorizontal: Spacing.sm,
   },
   detailsToggle: {
     flexDirection: "row",

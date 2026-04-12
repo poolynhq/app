@@ -1,0 +1,10 @@
+---
+description: User-facing copy must not use em dashes; remove them when editing.
+alwaysApply: true
+---
+
+# Copy: no em dashes
+
+- Do not use the em dash character (Unicode U+2014) in any user-visible string: UI labels, alerts, notifications, modal body text, tooltips, or empty states.
+- When you touch a file for other work, replace any em dashes in user-facing strings in that file with shorter punctuation (period, comma, colon, or parentheses) or split into two sentences.
+- Code comments and internal docs may use normal hyphens (-) where needed; keep comments readable without em dashes when you edit them.

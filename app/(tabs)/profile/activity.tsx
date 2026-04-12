@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -20,6 +21,8 @@ import {
   FontSize,
   FontWeight,
 } from "@/constants/theme";
+
+const ACTIVITY_DISMISSED_KEY = "poolyn_activity_dismissed_notification_ids";
 
 function inviteCodeFromData(data: unknown): string {
   if (!data || typeof data !== "object" || Array.isArray(data)) return "";
@@ -34,6 +37,39 @@ export default function ActivityScreen() {
   const [rows, setRows] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    void AsyncStorage.getItem(ACTIVITY_DISMISSED_KEY).then((raw) => {
+      try {
+        const arr = JSON.parse(raw ?? "[]") as unknown;
+        if (Array.isArray(arr)) {
+          setDismissedIds(new Set(arr.filter((x): x is string => typeof x === "string")));
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  }, []);
+
+  const visibleRows = useMemo(
+    () => rows.filter((r) => !dismissedIds.has(r.id)),
+    [rows, dismissedIds]
+  );
+
+  async function dismissNotification(id: string) {
+    setDismissedIds((prev) => new Set([...prev, id]));
+    let arr: string[] = [];
+    try {
+      const raw = await AsyncStorage.getItem(ACTIVITY_DISMISSED_KEY);
+      const parsed = JSON.parse(raw ?? "[]");
+      arr = Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      arr = [];
+    }
+    if (!arr.includes(id)) arr.push(id);
+    await AsyncStorage.setItem(ACTIVITY_DISMISSED_KEY, JSON.stringify(arr));
+  }
 
   const load = useCallback(async () => {
     const { data, error } = await supabase
@@ -80,7 +116,7 @@ export default function ActivityScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <FlatList
-        data={rows}
+        data={visibleRows}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -106,29 +142,56 @@ export default function ActivityScreen() {
           const isJoinInvite = item.type === "network_join_invite";
           const isRideRequest = item.type === "ride_request_pending";
           const isRideAccepted = item.type === "ride_request_accepted";
+          const isCrewTripStarted = item.type === "crew_trip_driver_started";
+          const isContributionUpdated = item.type === "ride_contribution_updated";
+          const isAdhocSeatOrTrip =
+            item.type === "adhoc_seat_request" ||
+            item.type === "adhoc_seat_accepted" ||
+            item.type === "adhoc_seat_declined" ||
+            item.type === "adhoc_seat_cancelled" ||
+            item.type === "adhoc_passenger_cancelled_seat" ||
+            item.type === "adhoc_driver_removed_you" ||
+            item.type === "adhoc_trip_cancelled_by_driver" ||
+            item.type === "adhoc_you_cancelled_seat";
           return (
-            <TouchableOpacity
-              style={[styles.row, !item.read && styles.rowUnread]}
-              onPress={() => {
-                if (isJoinInvite) {
-                  openJoinInvite(item);
-                  return;
-                }
-                if (isRideRequest) {
+            <View style={[styles.row, !item.read && styles.rowUnread]}>
+              {!item.read ? <View style={styles.unreadDot} /> : null}
+              <TouchableOpacity
+                style={styles.rowTextCol}
+                onPress={() => {
+                  if (isJoinInvite) {
+                    openJoinInvite(item);
+                    return;
+                  }
+                  if (isRideRequest) {
+                    void markRead(item.id);
+                    router.push("/(tabs)/rides?tab=open");
+                    return;
+                  }
+                  if (isRideAccepted) {
+                    void markRead(item.id);
+                    router.push("/(tabs)/rides");
+                    return;
+                  }
+                  if (isCrewTripStarted) {
+                    void markRead(item.id);
+                    router.push("/(tabs)/home");
+                    return;
+                  }
+                  if (isContributionUpdated) {
+                    void markRead(item.id);
+                    router.push("/(tabs)/rides");
+                    return;
+                  }
+                  if (isAdhocSeatOrTrip) {
+                    void markRead(item.id);
+                    router.push("/(tabs)/rides");
+                    return;
+                  }
                   void markRead(item.id);
-                  router.push("/(tabs)/rides?tab=open");
-                  return;
-                }
-                if (isRideAccepted) {
-                  void markRead(item.id);
-                  router.push("/(tabs)/rides");
-                  return;
-                }
-                void markRead(item.id);
-              }}
-              activeOpacity={0.75}
-            >
-              <View style={styles.rowTextCol}>
+                }}
+                activeOpacity={0.75}
+              >
                 <Text style={styles.rowTitle}>{item.title}</Text>
                 {item.body ? <Text style={styles.rowBody}>{item.body}</Text> : null}
                 <Text style={styles.rowMeta}>{new Date(item.created_at).toLocaleString()}</Text>
@@ -138,9 +201,26 @@ export default function ActivityScreen() {
                 {isRideRequest ? (
                   <Text style={styles.rowCta}>Tap to open Respond on My Rides →</Text>
                 ) : null}
-              </View>
-              {!item.read ? <View style={styles.unreadDot} /> : null}
-            </TouchableOpacity>
+                {isCrewTripStarted ? (
+                  <Text style={styles.rowCta}>Tap to open Home and confirm pickup readiness</Text>
+                ) : null}
+                {isContributionUpdated ? (
+                  <Text style={styles.rowCta}>Tap to open My Rides for pricing details →</Text>
+                ) : null}
+                {isAdhocSeatOrTrip ? (
+                  <Text style={styles.rowCta}>Tap to open My Rides →</Text>
+                ) : null}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.dismissBtn}
+                onPress={() => void dismissNotification(item.id)}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss"
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close-circle-outline" size={22} color={Colors.textTertiary} />
+              </TouchableOpacity>
+            </View>
           );
         }}
       />
@@ -163,7 +243,8 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
   },
   rowUnread: { borderColor: Colors.primary },
-  rowTextCol: { flex: 1 },
+  rowTextCol: { flex: 1, minWidth: 0 },
+  dismissBtn: { paddingTop: 2, marginLeft: Spacing.xs },
   rowTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.text },
   rowBody: {
     fontSize: FontSize.sm,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type { User } from "@/types/database";
 import {
   getOrCreateTripInstance,
+  recordCrewTripStarted,
   setTripExcludedPickups,
   type CrewCommutePattern,
   type CrewListRow,
@@ -52,7 +53,10 @@ type Props = {
   userId: string;
   profilePins: ProfilePins;
   crewPins: CrewMemberMapPin[];
-  onTripOpened?: () => void;
+  /** Called after exclusions are saved and Maps opens; use `tripInstanceId` to refresh server state. */
+  onTripOpened?: (tripInstanceId: string) => void;
+  /** True when today’s crew trip already has trip_started_at (driver reopening Maps, not first start). */
+  resumeTrip?: boolean;
 };
 
 function inferRoundTripLeg(
@@ -80,6 +84,7 @@ export function CrewTripStartSummaryModal({
   profilePins,
   crewPins,
   onTripOpened,
+  resumeTrip = false,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [loadingTrip, setLoadingTrip] = useState(false);
@@ -89,6 +94,13 @@ export function CrewTripStartSummaryModal({
   const [locating, setLocating] = useState(false);
   const [activeLeg, setActiveLeg] = useState<ResolvedCommuteLeg>("to_work");
   const [roundTripLegManual, setRoundTripLegManual] = useState(false);
+
+  const onCloseRef = useRef(onClose);
+  const onTripOpenedRef = useRef(onTripOpened);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+    onTripOpenedRef.current = onTripOpened;
+  }, [onClose, onTripOpened]);
 
   const home = parseGeoPoint(profilePins.home_location as unknown);
   const work = parseGeoPoint(profilePins.work_location as unknown);
@@ -143,34 +155,43 @@ export function CrewTripStartSummaryModal({
     return distanceMeters(gps, expectedAnchor) <= START_LOCATION_THRESHOLD_M;
   }, [gps, expectedAnchor]);
 
-  const loadTrip = useCallback(async () => {
+  useEffect(() => {
+    if (!visible) {
+      setLoadingTrip(false);
+      return;
+    }
+    let cancelled = false;
     setLoadingTrip(true);
-    try {
+    void (async () => {
       const inst = await getOrCreateTripInstance(crew.id, localDateKey());
+      if (cancelled) return;
       if (!inst.ok) {
         showAlert("Could not load trip", inst.reason);
-        onClose();
+        onCloseRef.current();
+        setLoadingTrip(false);
         return;
       }
       setTripInstanceId(inst.row.id);
       setExcludedIds(new Set(inst.row.excluded_pickup_user_ids ?? []));
-    } finally {
       setLoadingTrip(false);
-    }
-  }, [crew.id, onClose]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, crew.id]);
 
   useEffect(() => {
     if (!visible) return;
-    void loadTrip();
-  }, [visible, loadTrip]);
-
-  useEffect(() => {
-    if (!visible) return;
+    let cancelled = false;
     setLocating(true);
     void acquireTripStartCoordinates().then((pt) => {
+      if (cancelled) return;
       setGps(pt);
       setLocating(false);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [visible]);
 
   const includedPins = useMemo(
@@ -238,6 +259,13 @@ export function CrewTripStartSummaryModal({
         showAlert("Could not save stops", save.reason);
         return;
       }
+      if (!resumeTrip) {
+        const started = await recordCrewTripStarted(tripInstanceId);
+        if (!started.ok) {
+          showAlert("Could not record trip start", started.reason);
+          return;
+        }
+      }
       const originForMaps = gps ?? expectedAnchor ?? home ?? work;
       const ordered = orderedPreview.map((p) => ({ lat: p.lat, lng: p.lng }));
       const meta = openGoogleCrewDrivingRoute({
@@ -252,24 +280,29 @@ export function CrewTripStartSummaryModal({
           [{ text: "OK" }]
         );
       }
-      onTripOpened?.();
-      onClose();
+      onTripOpenedRef.current?.(tripInstanceId);
+      onCloseRef.current();
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={() => onCloseRef.current()}
+    >
       <View style={styles.root}>
-        <Pressable style={styles.backdrop} onPress={onClose} />
+        <Pressable style={styles.backdrop} onPress={() => onCloseRef.current()} />
         <View style={styles.sheet}>
           <View style={styles.grabRow}>
             <View style={styles.grab} />
           </View>
           <View style={styles.headerRow}>
-            <Text style={styles.title}>Start Poolyn</Text>
-            <Pressable onPress={onClose} hitSlop={12} accessibilityLabel="Close">
+            <Text style={styles.title}>{resumeTrip ? "Resume trip" : "Start Poolyn"}</Text>
+            <Pressable onPress={() => onCloseRef.current()} hitSlop={12} accessibilityLabel="Close">
               <Ionicons name="close" size={26} color={Colors.textSecondary} />
             </Pressable>
           </View>
@@ -297,6 +330,13 @@ export function CrewTripStartSummaryModal({
             <Text style={styles.crewName} numberOfLines={2}>
               {crew.name}
             </Text>
+
+            {resumeTrip ? (
+              <Text style={styles.resumeHint}>
+                This trip is already in progress. We refresh your GPS, then reopen Google Maps with the same stops.
+                Change toggles if someone is no longer riding.
+              </Text>
+            ) : null}
 
             {pattern === "round_trip" && home && work ? (
               <View style={styles.legRow}>
@@ -329,16 +369,16 @@ export function CrewTripStartSummaryModal({
             ) : null}
 
             <View style={styles.locCard}>
-              <Text style={styles.locTitle}>Location</Text>
+              <Text style={styles.locTitle}>{resumeTrip ? "Location (resume)" : "Location"}</Text>
               {locating ? (
                 <ActivityIndicator color={Colors.primary} />
               ) : gps ? (
                 <Text style={styles.locBody}>
                   GPS lock ready
                   {expectedAnchor && !locationOk
-                    ? ` — you are ${Math.round(distanceMeters(gps, expectedAnchor))} m from the usual start (threshold ${START_LOCATION_THRESHOLD_M} m).`
+                    ? `. You are ${Math.round(distanceMeters(gps, expectedAnchor))} m from the usual start (threshold ${START_LOCATION_THRESHOLD_M} m).`
                     : expectedAnchor && locationOk
-                      ? ` — within ${START_LOCATION_THRESHOLD_M} m of the usual start.`
+                      ? `. Within ${START_LOCATION_THRESHOLD_M} m of the usual start.`
                       : "."}
                 </Text>
               ) : (
@@ -385,7 +425,9 @@ export function CrewTripStartSummaryModal({
               Ordered along your commute axis when home and work are set; otherwise nearest-neighbor.
             </Text>
             {orderedPreview.length === 0 ? (
-              <Text style={styles.empty}>No pickups — only the final destination will open in Maps.</Text>
+              <Text style={styles.empty}>
+                No pickups. Only the final destination will open in Maps.
+              </Text>
             ) : (
               orderedPreview.map((p, i) => (
                 <View key={p.userId} style={styles.orderRow}>
@@ -414,7 +456,9 @@ export function CrewTripStartSummaryModal({
             {busy ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.primaryText}>Open in Google Maps</Text>
+              <Text style={styles.primaryText}>
+                {resumeTrip ? "Resume in Google Maps" : "Open in Google Maps"}
+              </Text>
             )}
           </Pressable>
         </View>
@@ -465,6 +509,13 @@ const styles = StyleSheet.create({
   },
   patternBadgeText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.primaryDark },
   crewName: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.text, marginBottom: Spacing.md },
+  resumeHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    marginTop: -Spacing.xs,
+    marginBottom: Spacing.md,
+  },
   legRow: { marginBottom: Spacing.md },
   legLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.text, marginBottom: Spacing.xs },
   legChips: { flexDirection: "row", gap: Spacing.sm },

@@ -1,5 +1,5 @@
 /**
- * Native (iOS / Android) — WebView + MapLibre GL JS (Expo Go friendly).
+ * Native (iOS / Android): WebView + MapLibre GL JS (Expo Go friendly).
  * See DiscoverMapLayers.web.tsx for DOM implementation.
  */
 import { useMemo } from "react";
@@ -47,6 +47,10 @@ interface DiscoverMapLayersProps {
   remoteLoading?: boolean;
   /** Tap an alternate route line (not primary) to promote it to the thick “main” style. */
   onViewerRouteAlternateTap?: (routeKey: string) => void;
+  /**
+   * Home Mingle: drop the title row and footer legend so the map stays visible; shorten in-map hints.
+   */
+  compactMapChrome?: boolean;
 }
 
 const ML_JS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js";
@@ -61,7 +65,8 @@ function buildMapHtml(
   viewerPins: GeoJSON.FeatureCollection,
   viewerRoutes: GeoJSON.FeatureCollection,
   fallbackCenter: [number, number],
-  emphasis: MapLayerEmphasis
+  emphasis: MapLayerEmphasis,
+  compactHints: boolean
 ): string {
   const demandJson = JSON.stringify(demand);
   const supplyJson = JSON.stringify(supply);
@@ -71,6 +76,7 @@ function buildMapHtml(
   const fb = JSON.stringify(fallbackCenter);
   const emphJson = JSON.stringify(emphasis);
   const styleJson = JSON.stringify(DISCOVER_MAP_STYLE_URL);
+  const suppressEmptyOverlay = JSON.stringify(compactHints);
 
   return `<!DOCTYPE html>
 <html>
@@ -103,9 +109,9 @@ var FALLBACK = ${fb};
 var EMPHASIS = ${emphJson};
 
 function applyLayerEmphasis(map, e) {
-  var heatO = e === 'demand' ? 0.88 : e === 'supply' ? 0.36 : 0.72;
-  var supplyDotO = e === 'supply' ? 0.92 : e === 'demand' ? 0.42 : 0.88;
-  var clusterO = e === 'supply' ? 0.88 : e === 'demand' ? 0.52 : 0.82;
+  var heatO = e === 'demand' ? 0.92 : e === 'supply' ? 0.38 : 0.72;
+  var supplyDotO = e === 'supply' ? 0.94 : e === 'demand' ? 0.52 : 0.88;
+  var clusterO = e === 'supply' ? 0.9 : e === 'demand' ? 0.58 : 0.82;
   map.setPaintProperty('demand-heat', 'heatmap-opacity', heatO);
   map.setPaintProperty('supply-circles', 'circle-opacity', supplyDotO);
   map.setPaintProperty('supply-clusters', 'circle-opacity', clusterO);
@@ -137,8 +143,6 @@ var map = new maplibregl.Map({
   zoom: 11,
   attributionControl: false
 });
-
-map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
 map.on('load', function () {
   map.addSource('demand', { type: 'geojson', data: DEMAND });
@@ -281,11 +285,14 @@ map.on('load', function () {
   var hasViewerPins = VIEWER_PINS.features.length > 0;
   var hasViewerRoutes = VIEWER_ROUTES.features.length > 0;
   var emptyEl = document.getElementById('empty');
-  if (!hasPeerData && !hasViewerPins) {
+  var suppressEmptyOverlay = ${suppressEmptyOverlay};
+  if (suppressEmptyOverlay) {
+    emptyEl.style.display = 'none';
+  } else if (!hasPeerData && !hasViewerPins) {
     emptyEl.textContent = 'No commute pins yet. Add home & work under Profile → Commute, or switch to Any commuter. Orange heat = others’ demand; green = drivers; solid blue lines = others’ posted trips (not your alternates).';
     emptyEl.style.display = 'block';
   } else if (!hasPeerData && (hasViewerPins || hasViewerRoutes)) {
-    emptyEl.textContent = 'Your route: dark green = primary; teal / amber / purple = your optional paths when Mapbox is on. Tap an alternate line to make it your main route. Work pin is blue — not a line. Separate solid blue lines = others’ posted trips. Heat = demand in scope.';
+    emptyEl.textContent = 'Your route: dark green = primary; teal / amber / purple = your optional paths when Mapbox is on. Tap an alternate line to make it your main route. Work pin is blue (not a line). Separate solid blue lines = others’ posted trips. Heat = demand in scope.';
     emptyEl.style.display = 'block';
   }
 
@@ -318,6 +325,7 @@ export function DiscoverMapLayers({
   fallbackCenter = DEFAULT_CENTER,
   remoteLoading = false,
   onViewerRouteAlternateTap,
+  compactMapChrome = false,
 }: DiscoverMapLayersProps) {
   const html = useMemo(
     () =>
@@ -328,7 +336,8 @@ export function DiscoverMapLayers({
         viewerPinsGeoJson,
         viewerMyRoutesGeoJson,
         fallbackCenter,
-        layerEmphasis
+        layerEmphasis,
+        compactMapChrome
       ),
     [
       demandGeoJson,
@@ -338,6 +347,7 @@ export function DiscoverMapLayers({
       viewerMyRoutesGeoJson,
       fallbackCenter,
       layerEmphasis,
+      compactMapChrome,
     ]
   );
 
@@ -350,20 +360,31 @@ export function DiscoverMapLayers({
     return `${pins}||${routes}||${routeKeys}`;
   }, [viewerPinsGeoJson, viewerMyRoutesGeoJson]);
 
-  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]},${viewerGeometryKey},${layerEmphasis}`;
+  // Do not include layerEmphasis: remounting the WebView on Driving/Riding toggle wipes layers and flickers.
+  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]},${viewerGeometryKey}`;
+
+  const showMapHeader = !compactMapChrome;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.labelRow}>
-        <Text style={styles.label}>{title}</Text>
-        {remoteLoading ? (
-          <View style={styles.remoteLoading}>
+    <View style={[styles.container, compactMapChrome && styles.containerCompactChrome]}>
+      {showMapHeader ? (
+        <View style={styles.labelRow}>
+          <Text style={styles.label}>{title}</Text>
+          {remoteLoading ? (
+            <View style={styles.remoteLoading}>
+              <ActivityIndicator size="small" color="#0B8457" />
+              <Text style={styles.remoteLoadingText}>Updating…</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+      <View style={styles.mapClip}>
+        {!showMapHeader && remoteLoading ? (
+          <View style={styles.compactUpdatingBar}>
             <ActivityIndicator size="small" color="#0B8457" />
             <Text style={styles.remoteLoadingText}>Updating…</Text>
           </View>
         ) : null}
-      </View>
-      <View style={styles.mapClip}>
         <WebView
           key={centerKey}
           source={{ html }}
@@ -398,41 +419,45 @@ export function DiscoverMapLayers({
           )}
         />
       </View>
-      <View style={styles.legend}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLinePrimary]} />
-          <Text style={styles.legendText}>Your main route</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLineAlt]} />
-          <Text style={styles.legendText}>Your alternates (teal…)</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: "#EA580C" }]} />
-          <Text style={styles.legendText}>Your home</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: "#1D4ED8" }]} />
-          <Text style={styles.legendText}>Your work</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendSwatch, { backgroundColor: "#FDBA74" }]} />
-          <Text style={styles.legendText}>Others’ demand</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: "#0B8457" }]} />
-          <Text style={styles.legendText}>Drivers</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendLine]} />
-          <Text style={styles.legendText}>Others’ trip lines</Text>
-        </View>
-      </View>
-      {Platform.OS === "android" ? (
-        <Text style={styles.panHint}>Pinch and drag inside the map to zoom and pan.</Text>
-      ) : (
-        <Text style={styles.panHint}>Use two fingers to zoom; drag to move the map.</Text>
-      )}
+      {!compactMapChrome ? (
+        <>
+          <View style={styles.legend}>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendLinePrimary]} />
+              <Text style={styles.legendText}>Your main route</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendLineAlt]} />
+              <Text style={styles.legendText}>Your alternates (teal…)</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: "#EA580C" }]} />
+              <Text style={styles.legendText}>Your home</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: "#1D4ED8" }]} />
+              <Text style={styles.legendText}>Your work</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendSwatch, { backgroundColor: "#FDBA74" }]} />
+              <Text style={styles.legendText}>Others’ demand</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: "#0B8457" }]} />
+              <Text style={styles.legendText}>Drivers</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendLine]} />
+              <Text style={styles.legendText}>Others’ trip lines</Text>
+            </View>
+          </View>
+          {Platform.OS === "android" ? (
+            <Text style={styles.panHint}>Pinch and drag inside the map to zoom and pan.</Text>
+          ) : (
+            <Text style={styles.panHint}>Use two fingers to zoom; drag to move the map.</Text>
+          )}
+        </>
+      ) : null}
     </View>
   );
 }
@@ -444,6 +469,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
     backgroundColor: "#FFFFFF",
+  },
+  containerCompactChrome: {
+    paddingTop: 10,
   },
   labelRow: {
     flexDirection: "row",
@@ -471,10 +499,27 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   mapClip: {
+    position: "relative",
     marginHorizontal: 10,
     marginBottom: 4,
     borderRadius: 12,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  compactUpdatingBar: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    right: 8,
+    zIndex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.92)",
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },

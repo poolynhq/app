@@ -34,7 +34,7 @@ export default function NavigateHubScreen() {
 
         {mingleActive ? (
           <LinearGradient
-            colors={["#7C3AED", "#5B21B6"]}
+            colors={["#EA580C", "#D97706", "#F59E0B"]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.mingleHero}
@@ -44,8 +44,8 @@ export default function NavigateHubScreen() {
               <Text style={styles.mingleHeroTitle}>Mingle Poolyn</Text>
             </View>
             <Text style={styles.mingleHeroBody}>
-              Your detour and map scope are saved from Home. Open directions to your workplace to start
-              turn-by-turn, then follow your normal ride flow in My Rides when you match.
+              Corridor map, role, and pickup settings are on Home under Routine → Mingle Poolyn. Use this when you
+              are ready for turn-by-turn to work.
             </Text>
             <TouchableOpacity
               style={styles.mingleHeroBtn}
@@ -53,7 +53,7 @@ export default function NavigateHubScreen() {
               onPress={() => work && presentDrivingNavigationPicker(work.lat, work.lng)}
               activeOpacity={0.85}
             >
-              <Ionicons name="navigate" size={20} color="#5B21B6" />
+              <Ionicons name="navigate" size={20} color="#B45309" />
               <Text style={styles.mingleHeroBtnText}>Open directions to work</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -86,12 +86,12 @@ export default function NavigateHubScreen() {
           onPress={() => router.push("/(tabs)/home")}
           activeOpacity={0.75}
         >
-          <View style={[styles.iconWrap, { backgroundColor: "#EDE9FE" }]}>
-            <Ionicons name="map-outline" size={24} color="#7C3AED" />
+          <View style={[styles.iconWrap, { backgroundColor: "#FFFBEB" }]}>
+            <Ionicons name="home-outline" size={24} color="#D97706" />
           </View>
           <View style={styles.cardBody}>
-            <Text style={styles.cardTitle}>Network map</Text>
-            <Text style={styles.cardSub}>See demand and routes on Home</Text>
+            <Text style={styles.cardTitle}>Home — routine commute</Text>
+            <Text style={styles.cardSub}>Crew vs Mingle, map, and detour live here</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
         </TouchableOpacity>
@@ -206,7 +206,7 @@ const styles = StyleSheet.create({
   mingleHeroBtnText: {
     fontSize: FontSize.base,
     fontWeight: FontWeight.bold,
-    color: "#5B21B6",
+    color: "#B45309",
   },
   mingleDismiss: { alignSelf: "center", marginTop: Spacing.sm, paddingVertical: Spacing.xs },
   mingleDismissText: { fontSize: FontSize.xs, color: "rgba(255,255,255,0.85)" },

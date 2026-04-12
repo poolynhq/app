@@ -84,23 +84,17 @@ export function usePushNotificationsAndRideAlerts(userId: string | null) {
               title?: string;
               body?: string | null;
             };
-            if (
-              row.type !== "ride_request_pending" &&
-              row.type !== "ride_request_accepted" &&
-              row.type !== "ride_request_expired"
-            ) {
-              return;
-            }
             const title = row.title ?? "Poolyn";
             const body = row.body ?? "";
+            if (!title.trim() && !String(body).trim()) return;
             await Notifications.scheduleNotificationAsync({
               content: {
                 title,
                 body,
-                sound: true,
+                sound: Platform.OS === "ios" ? "default" : true,
                 priority: Notifications.AndroidNotificationPriority.MAX,
                 ...(Platform.OS === "android" ? { channelId: RIDE_CHANNEL_ID } : {}),
-                data: { type: row.type },
+                data: { type: row.type ?? "" },
               },
               trigger: null,
             });

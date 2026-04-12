@@ -1,4 +1,5 @@
 import * as ImageManipulator from "expo-image-manipulator";
+import { Platform } from "react-native";
 import { supabase } from "@/lib/supabase";
 
 const AVATAR_MAX_WIDTH = 640;
@@ -61,8 +62,18 @@ function storageStatusCodeField(err: unknown): string | null {
   return null;
 }
 
-/** Prefer raw bytes + Content-Type; multipart Blob uploads often return 400 from the Storage gateway on web. */
-function toStorageFileBody(buffer: ArrayBuffer): Uint8Array {
+/**
+ * Supabase Storage on web often rejects raw ArrayBuffer/Uint8Array with HTTP 400; Blob + image/jpeg is reliable.
+ * Native: Blob when available, else Uint8Array.
+ */
+function toStorageFileBody(buffer: ArrayBuffer): Blob | Uint8Array {
+  if (Platform.OS === "web" || typeof Blob !== "undefined") {
+    try {
+      return new Blob([buffer], { type: "image/jpeg" });
+    } catch {
+      /* fall through */
+    }
+  }
   return new Uint8Array(buffer);
 }
 
@@ -81,22 +92,55 @@ export async function uploadUserAvatarJpeg(
   const path = `${userId}/avatar.jpg`;
   const fileBody = toStorageFileBody(body);
 
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session?.user?.id || session.user.id !== userId) {
+    return {
+      ok: false,
+      message: "Your session expired. Sign in again and retry.",
+      statusCode: "401",
+    };
+  }
+
   let lastMsg = "Upload failed";
   let lastHttp: number | null = null;
   let lastAppCode: string | null = null;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const { error } = await supabase.storage.from("avatars").upload(path, fileBody, {
+  async function uploadOnce(upsert: boolean) {
+    return supabase.storage.from("avatars").upload(path, fileBody, {
       contentType: "image/jpeg",
       cacheControl: "3600",
-      upsert: true,
+      upsert,
     });
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await supabase.storage.from("avatars").remove([path]);
+
+    let { error } = await uploadOnce(false);
     if (!error) {
       return { ok: true, path };
     }
     lastMsg = error.message || lastMsg;
     lastHttp = storageHttpStatus(error);
     lastAppCode = storageStatusCodeField(error);
+
+    const msgLower = lastMsg.toLowerCase();
+    const maybeExists =
+      lastHttp === 409 ||
+      msgLower.includes("duplicate") ||
+      msgLower.includes("already exists");
+
+    if (maybeExists) {
+      ({ error } = await uploadOnce(true));
+      if (!error) {
+        return { ok: true, path };
+      }
+      lastMsg = error.message || lastMsg;
+      lastHttp = storageHttpStatus(error);
+      lastAppCode = storageStatusCodeField(error);
+    }
 
     const retry5xx = lastHttp != null && lastHttp >= 500 && lastHttp < 600;
     if (retry5xx && attempt < 2) {

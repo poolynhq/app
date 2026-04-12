@@ -1,6 +1,5 @@
 import { View, Text, StyleSheet, Platform, TouchableOpacity } from "react-native";
-import { Tabs, useRouter } from "expo-router";
-import type { NavigationState, PartialState } from "@react-navigation/native";
+import { Tabs, useRouter, router as expoRouter } from "expo-router";
 import { useFonts } from "expo-font";
 import {
   Inter_400Regular,
@@ -26,25 +25,21 @@ const TAB_DEFS: {
   { name: "profile", title: "Profile", icon: "person-outline", iconFocused: "person" },
 ];
 
-/** When Profile tab is pressed, pop nested stack to the main profile menu if user was on a sub-screen (e.g. Commute). */
-function profileTabListeners({
-  navigation,
-}: {
-  navigation: {
-    getState: () => NavigationState | PartialState<NavigationState>;
-    navigate: (name: "profile", params: { screen: string }) => void;
-  };
-}) {
+/** Always land on each tab's root screen (My rides listing, Profile menu), not a nested stack route. */
+function ridesTabListeners() {
   return {
     tabPress: (e: { preventDefault: () => void }) => {
-      const state = navigation.getState();
-      const profileRoute = state.routes.find((r) => r.name === "profile");
-      const nested = profileRoute?.state;
-      const idx = nested && "index" in nested ? nested.index : 0;
-      if (typeof idx === "number" && idx > 0) {
-        e.preventDefault();
-        navigation.navigate("profile", { screen: "index" });
-      }
+      e.preventDefault();
+      expoRouter.replace("/(tabs)/rides");
+    },
+  };
+}
+
+function profileTabListeners() {
+  return {
+    tabPress: (e: { preventDefault: () => void }) => {
+      e.preventDefault();
+      expoRouter.replace("/(tabs)/profile");
     },
   };
 }
@@ -122,7 +117,13 @@ export default function TabsLayout() {
           <Tabs.Screen
             key={tab.name}
             name={tab.name}
-            listeners={tab.name === "profile" ? profileTabListeners : undefined}
+            listeners={
+              tab.name === "profile"
+                ? profileTabListeners
+                : tab.name === "rides"
+                  ? ridesTabListeners
+                  : undefined
+            }
             options={{
               title: tab.title,
               tabBarIcon: ({ color, focused, size }) => (

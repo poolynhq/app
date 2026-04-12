@@ -22,6 +22,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { canViewerActAsDriver, canViewerActAsPassenger } from "@/lib/commuteMatching";
 
 export default function MessagesInboxScreen() {
   const router = useRouter();
@@ -31,8 +32,8 @@ export default function MessagesInboxScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const canDrive = profile?.role === "driver" || profile?.role === "both";
-  const isPassengerRole = profile?.role === "passenger" || profile?.role === "both";
+  const canDrive = profile ? canViewerActAsDriver(profile) : false;
+  const isPassengerRole = profile ? canViewerActAsPassenger(profile) : false;
 
   const load = useCallback(async () => {
     if (!profile?.id) {

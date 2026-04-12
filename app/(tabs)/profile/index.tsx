@@ -6,7 +6,6 @@ import {
   StyleSheet,
   ScrollView,
   TextInput,
-  Modal,
   Switch,
   Image,
   ActivityIndicator,
@@ -21,7 +20,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase, extractDomain } from "@/lib/supabase";
 import { resolveAvatarDisplayUrl } from "@/lib/avatarStorage";
-import { UserRole, Gender, Organisation } from "@/types/database";
+import { Gender, Organisation } from "@/types/database";
+import { canViewerActAsDriver } from "@/lib/commuteMatching";
 import {
   Colors,
   Spacing,
@@ -50,12 +50,6 @@ function phoneDigitsOnly(value: string, maxLen = 10): string {
   return value.replace(/\D/g, "").slice(0, maxLen);
 }
 
-const ROLES: { value: UserRole; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { value: "driver", label: "Driver", icon: "car-sport" },
-  { value: "passenger", label: "Passenger", icon: "people" },
-  { value: "both", label: "Both", icon: "swap-horizontal" },
-];
-
 export default function Profile() {
   const router = useRouter();
   const params = useLocalSearchParams<{ edit?: string | string[] }>();
@@ -71,7 +65,6 @@ export default function Profile() {
     profile?.same_gender_pref ?? false
   );
   const [saving, setSaving] = useState(false);
-  const [roleModal, setRoleModal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [phoneError, setPhoneError] = useState("");
   const [nameError, setNameError] = useState("");
@@ -135,11 +128,6 @@ export default function Profile() {
   const avatarDisplayUri = resolveAvatarDisplayUrl(profile?.avatar_url);
 
   const orgDomain = profile?.email ? extractDomain(profile.email) : "";
-
-  const roleLabel =
-    profile?.role === "driver" ? "Driver"
-    : profile?.role === "passenger" ? "Passenger"
-    : "Driver & Passenger";
 
   async function uploadProfileAvatar(localUri: string): Promise<boolean> {
     if (!profile?.id) return false;
@@ -261,14 +249,6 @@ export default function Profile() {
     setTimeout(() => setSaveSuccess(false), 3000);
   }
 
-  async function handleRoleChange(newRole: UserRole) {
-    if (!profile?.id) return;
-    const { error } = await supabase.from("users").update({ role: newRole }).eq("id", profile.id);
-    if (error) { showAlert("Update failed", "Could not change your role. Please try again."); return; }
-    await refreshProfile();
-    setRoleModal(false);
-  }
-
   function handleSignOut() {
     showAlert("Sign out", "Are you sure you want to sign out?", [
       { text: "Cancel", style: "cancel" },
@@ -319,7 +299,7 @@ export default function Profile() {
           label: "Commute & pickup",
           route: "/(tabs)/profile/commute-locations",
         },
-        ...(profile?.role === "driver" || profile?.role === "both"
+        ...(profile && canViewerActAsDriver(profile)
           ? [
               {
                 icon: "options-outline" as const,
@@ -498,22 +478,6 @@ export default function Profile() {
           </View>
         )}
 
-        {/* Role */}
-        <TouchableOpacity style={styles.roleCard} onPress={() => setRoleModal(true)} activeOpacity={0.7}>
-          <View style={styles.roleLeft}>
-            <Ionicons
-              name={profile?.role === "driver" ? "car-sport" : profile?.role === "passenger" ? "people" : "swap-horizontal"}
-              size={22}
-              color={Colors.primary}
-            />
-            <View>
-              <Text style={styles.roleLabel}>Your role</Text>
-              <Text style={styles.roleValue}>{roleLabel}</Text>
-            </View>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
-        </TouchableOpacity>
-
         {profile ? (
           <PoolynCreditsCard balance={profile.commute_credits_balance ?? 0} />
         ) : null}
@@ -621,32 +585,6 @@ export default function Profile() {
 
         <Text style={styles.version}>Poolyn v0.1.0</Text>
 
-        {/* Role switch modal */}
-        <Modal visible={roleModal} transparent animationType="fade" onRequestClose={() => setRoleModal(false)}>
-          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setRoleModal(false)}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Change your role</Text>
-              <Text style={styles.modalDesc}>This affects what actions are available to you. You can switch anytime.</Text>
-              {ROLES.map((role) => {
-                const isActive = profile?.role === role.value;
-                return (
-                  <TouchableOpacity
-                    key={role.value}
-                    style={[styles.modalOption, isActive && styles.modalOptionActive]}
-                    onPress={() => handleRoleChange(role.value)}
-                  >
-                    <Ionicons name={role.icon} size={22} color={isActive ? Colors.primary : Colors.textSecondary} />
-                    <Text style={[styles.modalOptionText, isActive && styles.modalOptionTextActive]}>{role.label}</Text>
-                    {isActive && <Ionicons name="checkmark-circle" size={22} color={Colors.primary} />}
-                  </TouchableOpacity>
-                );
-              })}
-              <TouchableOpacity style={styles.modalClose} onPress={() => setRoleModal(false)}>
-                <Text style={styles.modalCloseText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
       </ScrollView>
     </SafeAreaView>
   );
@@ -728,10 +666,6 @@ const styles = StyleSheet.create({
   editCancelText: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: Colors.textSecondary },
   editSave: { flex: 1, height: 44, borderRadius: BorderRadius.sm, backgroundColor: Colors.primary, justifyContent: "center", alignItems: "center" },
   editSaveText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.textOnPrimary },
-  roleCard: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.base, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.lg, ...Shadow.sm },
-  roleLeft: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
-  roleLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, textTransform: "uppercase", letterSpacing: 0.5 },
-  roleValue: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.text },
   completionCard: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.base, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.lg, ...Shadow.sm },
   completionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: Spacing.sm },
   completionTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.text },
@@ -758,14 +692,4 @@ const styles = StyleSheet.create({
   signOutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: Spacing.sm, paddingVertical: Spacing.base, marginTop: Spacing.sm, borderRadius: BorderRadius.lg, borderWidth: 1, borderColor: Colors.errorLight, backgroundColor: Colors.errorLight },
   signOutText: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.error },
   version: { textAlign: "center", fontSize: FontSize.xs, color: Colors.textTertiary, marginTop: Spacing.xl },
-  modalOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: "center", paddingHorizontal: Spacing["2xl"] },
-  modalContent: { backgroundColor: Colors.surface, borderRadius: BorderRadius.xl, padding: Spacing.xl },
-  modalTitle: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.text, marginBottom: Spacing.xs },
-  modalDesc: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: Spacing.xl, lineHeight: 20 },
-  modalOption: { flexDirection: "row", alignItems: "center", gap: Spacing.md, paddingVertical: Spacing.md, paddingHorizontal: Spacing.base, borderRadius: BorderRadius.md, marginBottom: Spacing.sm, borderWidth: 1.5, borderColor: Colors.border },
-  modalOptionActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
-  modalOptionText: { flex: 1, fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.text },
-  modalOptionTextActive: { color: Colors.primaryDark },
-  modalClose: { alignItems: "center", paddingVertical: Spacing.md, marginTop: Spacing.sm },
-  modalCloseText: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: Colors.textSecondary },
 });

@@ -41,7 +41,7 @@ type Props = {
   primaryLine?: string;
   /** Smaller line under the main amount (e.g. pool split hint). */
   poolHint?: string | null;
-  /** Typography: match HomeNetworkHub `matchMeta` vs `costLine`. */
+  /** Typography: meta (small secondary) vs cost (emphasized). */
   textStyle?: "meta" | "cost";
   containerStyle?: StyleProp<ViewStyle>;
 };

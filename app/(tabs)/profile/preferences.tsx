@@ -23,6 +23,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { canViewerActAsDriver } from "@/lib/commuteMatching";
 
 /** Hide ride atmosphere controls until product governs who sets them (v1). */
 const SHOW_RIDE_ATMOSPHERE_V1 = false;
@@ -117,15 +118,15 @@ export default function PreferencesScreen() {
     );
   }
 
-  if (profile?.role === "passenger") {
+  if (profile && !canViewerActAsDriver(profile)) {
     return (
       <SafeAreaView style={styles.safe} edges={["bottom"]}>
         <ScrollView contentContainerStyle={styles.passengerOnly}>
           <Ionicons name="car-outline" size={40} color={Colors.textTertiary} />
           <Text style={styles.passengerOnlyTitle}>Driver preferences</Text>
           <Text style={styles.passengerOnlyBody}>
-            These settings apply when you offer rides. Change your role to Driver or Both on your
-            profile, then come back here to set detours, auto-accept, and passenger gender rules.
+            These settings apply when you offer rides. On Home, open Routine commute, choose Mingle Poolyn, and tap
+            Driving. Then return here to set detours, auto-accept, and passenger gender rules.
           </Text>
         </ScrollView>
       </SafeAreaView>

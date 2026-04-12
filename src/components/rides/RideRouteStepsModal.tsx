@@ -10,7 +10,7 @@ import {
   Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { parseGeoPoint } from "@/lib/parseGeoPoint";
+import { normalizeRpcGeoJson, parseGeoPoint } from "@/lib/parseGeoPoint";
 import { fetchDrivingRouteWithSteps, type DrivingRouteStep } from "@/lib/mapboxDirections";
 import { presentDrivingNavigationPicker } from "@/lib/navigationUrls";
 import {
@@ -28,6 +28,8 @@ type Props = {
   origin: unknown;
   destination: unknown;
   title?: string;
+  /** Replaces default explainer under the title (e.g. rider leg vs full driver route). */
+  hint?: string;
 };
 
 function formatStepDistance(meters: number): string {
@@ -35,15 +37,22 @@ function formatStepDistance(meters: number): string {
   return `${Math.round(meters)} m`;
 }
 
-export function RideRouteStepsModal({ visible, onClose, origin, destination, title }: Props) {
+export function RideRouteStepsModal({
+  visible,
+  onClose,
+  origin,
+  destination,
+  title,
+  hint,
+}: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<DrivingRouteStep[]>([]);
   const [destPt, setDestPt] = useState<{ lat: number; lng: number } | null>(null);
 
   const load = useCallback(async () => {
-    const o = parseGeoPoint(origin);
-    const d = parseGeoPoint(destination);
+    const o = parseGeoPoint(normalizeRpcGeoJson(origin));
+    const d = parseGeoPoint(normalizeRpcGeoJson(destination));
     if (!o || !d) {
       setError("Missing route points for this ride.");
       setSteps([]);
@@ -76,8 +85,14 @@ export function RideRouteStepsModal({ visible, onClose, origin, destination, tit
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityRole="button">
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+      <View style={styles.backdrop}>
+        <Pressable
+          style={[StyleSheet.absoluteFillObject, styles.backdropDim]}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+        />
+        <View style={styles.sheet}>
           <View style={styles.handleRow}>
             <Text style={styles.sheetTitle}>{title ?? "Route overview"}</Text>
             <TouchableOpacity onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
@@ -85,7 +100,8 @@ export function RideRouteStepsModal({ visible, onClose, origin, destination, tit
             </TouchableOpacity>
           </View>
           <Text style={styles.sheetSub}>
-            Step list from Mapbox (traffic-aware where available). Open your preferred app for live turn-by-turn.
+            {hint ??
+              "Step list from Mapbox (traffic-aware where available). Open your preferred app for live turn-by-turn."}
           </Text>
 
           {loading ? (
@@ -134,8 +150,8 @@ export function RideRouteStepsModal({ visible, onClose, origin, destination, tit
               <Text style={styles.navBtnText}>Navigate to destination</Text>
             </TouchableOpacity>
           ) : null}
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -143,10 +159,14 @@ export function RideRouteStepsModal({ visible, onClose, origin, destination, tit
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
     justifyContent: "flex-end",
   },
+  backdropDim: {
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
   sheet: {
+    zIndex: 2,
+    elevation: 8,
     backgroundColor: Colors.surface,
     borderTopLeftRadius: BorderRadius.xl,
     borderTopRightRadius: BorderRadius.xl,

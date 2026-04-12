@@ -20,21 +20,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { showAlert } from "@/lib/platformAlert";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
-import { useDiscoverMapLayers } from "@/hooks/useDiscoverMapLayers";
-import { DiscoverMapLayers } from "@/components/maps/DiscoverMapLayers";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
-import { useDiscoverViewerLayers } from "@/hooks/useDiscoverViewerLayers";
-import { mapLayerEmphasisForProfile } from "@/lib/mapLayerEmphasis";
-import {
-  countPickupDemandByCorridorDisjoint,
-  filterPointsToViewerCorridors,
-  filterRouteLinesToViewerCorridors,
-  formatDisjointCorridorPickupSummary,
-} from "@/lib/discoverRouteDemand";
-import {
-  DiscoverMapLegend,
-  type DiscoverMapLegendLens,
-} from "@/components/maps/DiscoverMapLegend";
 import { Organisation } from "@/types/database";
 import {
   Colors,
@@ -43,10 +29,9 @@ import {
   FontSize,
   FontWeight,
   Shadow,
-  RoleTheme,
 } from "@/constants/theme";
-import { viewerMyRoutesDisplayCollection } from "@/lib/viewerRoutePrimarySwap";
 import { createCommuteRideRequest, cancelMyPendingRideRequest } from "@/lib/rideRequests";
+import { hasAdhocPostingVehicle } from "@/lib/adhocVehicleGate";
 import {
   incrementRouteConfirmationCount,
   needsRouteDestinationDoubleCheck,
@@ -55,12 +40,14 @@ import {
 import { PoolynMiniTourModal, POOLYN_MINI_TOUR_DONE_KEY } from "@/components/home/PoolynMiniTourModal";
 import { usePassengerPickupState } from "@/hooks/usePassengerPickupState";
 import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
-import { fetchDrivingRoute } from "@/lib/mapboxDirections";
-import { HomeNetworkHub } from "@/components/home/HomeNetworkHub";
 import { RoutinePoolynCrewMingleBlock } from "@/components/home/RoutinePoolynCrewMingle";
+import { HomeNetworkHub } from "@/components/home/HomeNetworkHub";
 import { CommuteRouteChoicePanel } from "@/components/home/CommuteRouteChoicePanel";
 import { RoutePeopleSearchModal } from "@/components/home/RoutePeopleSearchModal";
 import { formatPoolynCreditsBalance } from "@/lib/poolynCreditsUi";
+import { canViewerActAsPassenger } from "@/lib/commuteMatching";
+import { useUnreadNotificationCount } from "@/hooks/useUnreadNotificationCount";
+import { resolveAvatarDisplayUrl } from "@/lib/avatarStorage";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -240,7 +227,6 @@ function PillarSection({
     <View
       style={[styles.pillarShell, variant === "routine" ? styles.pillarShellRoutine : styles.pillarShellAdhoc]}
     >
-      <View style={[styles.pillarAccentBar, { backgroundColor: accent }]} />
       <View style={styles.pillarContent}>
         <Text style={[styles.pillarEyebrow, { color: accent }]}>{eyebrow}</Text>
         <Text style={styles.pillarTitle}>{title}</Text>
@@ -258,116 +244,42 @@ export default function Dashboard() {
   const router = useRouter();
   const { scrollTo: scrollToParam } = useLocalSearchParams<{ scrollTo?: string | string[] }>();
   const scrollToParamNorm = Array.isArray(scrollToParam) ? scrollToParam[0] : scrollToParam;
-  const homeScrollRef = useRef<ScrollView>(null);
-  const networkHubBlockY = useRef(0);
-  const seatsSectionInnerY = useRef(0);
-  const scrollToSeatsOnHome = useCallback(() => {
-    const y = networkHubBlockY.current + seatsSectionInnerY.current - 24;
-    homeScrollRef.current?.scrollTo({ y: Math.max(0, y), animated: true });
-  }, []);
-  const { profile, refreshProfile, activeMode, toggleMode, rolePalette } = useAuth();
-  const [viewerMapRefetchTick, setViewerMapRefetchTick] = useState(0);
-  const [promotedViewerRouteKey, setPromotedViewerRouteKey] = useState<string | null>(null);
+  const { profile, refreshProfile, activeMode } = useAuth();
   const [postRequestOpen, setPostRequestOpen] = useState(false);
   const [postRequestSubmitting, setPostRequestSubmitting] = useState(false);
   const [postRequestDirection, setPostRequestDirection] = useState<"to_work" | "from_work">("to_work");
   const [postRequestTiming, setPostRequestTiming] = useState<PostPickupTiming>("now");
   const routineSectionYRef = useRef(0);
+  const homeScrollRef = useRef<ScrollView>(null);
+  const networkHubBlockY = useRef(0);
   const [miniTourVisible, setMiniTourVisible] = useState(false);
   const [commuteRouteReady, setCommuteRouteReady] = useState(false);
   const [routePeopleModalOpen, setRoutePeopleModalOpen] = useState(false);
 
-  const {
-    demandPoints,
-    supplyPoints,
-    routeLines,
-    reload: reloadMapLayers,
-    loading: homeMapLayersLoading,
-  } = useDiscoverMapLayers(profile ?? null);
-
-  const {
-    viewerPinsGeoJson,
-    viewerMyRoutesGeoJson,
-    routeCorridors,
-    routesLoading,
-  } = useDiscoverViewerLayers(profile ?? null, viewerMapRefetchTick);
+  const { unreadCount, refreshUnreadCount } = useUnreadNotificationCount(profile?.id ?? null);
 
   useFocusEffect(
     useCallback(() => {
-      void (async () => {
-        await refreshProfile();
-        reloadMapLayers();
-        setViewerMapRefetchTick((t) => t + 1);
-      })();
-    }, [refreshProfile, reloadMapLayers])
+      void refreshProfile();
+      void refreshUnreadCount();
+    }, [refreshProfile, refreshUnreadCount])
   );
+
   const [org, setOrg] = useState<Organisation | null>(null);
   const [orgMemberCount, setOrgMemberCount] = useState(0);
 
   const firstName = profile?.full_name?.split(" ")[0] ?? "there";
-  const isFlexible = profile?.role === "both";
-  const effectiveRole = isFlexible ? (activeMode ?? "both") : (profile?.role ?? "both");
-  const showQuickActions = !isFlexible || activeMode != null;
-  const quickDriver = isFlexible ? activeMode === "driver" : profile?.role === "driver";
-  const quickPassenger = isFlexible ? activeMode === "passenger" : profile?.role === "passenger";
-  const showPostRequest = quickPassenger;
-
-  const passengerPickupEnabled =
-    !!profile?.id &&
-    (profile.role === "passenger" || profile.role === "both" || showPostRequest);
+  const heroAvatarUri = resolveAvatarDisplayUrl(profile?.avatar_url);
+  const showPostRequest = activeMode === "passenger";
+  const passengerPickupEnabled = !!profile?.id && canViewerActAsPassenger(profile);
   const pickupState = usePassengerPickupState(profile?.id ?? null, passengerPickupEnabled);
   const pendingExpiryLabel = useExpiryCountdown(pickupState.pending?.expires_at);
-  const [rideTripHint, setRideTripHint] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       if (passengerPickupEnabled && profile?.id) void pickupState.reload();
     }, [passengerPickupEnabled, profile?.id, pickupState.reload])
   );
-
-  useEffect(() => {
-    const r = pickupState.upcomingRides[0];
-    if (!r) {
-      setRideTripHint(null);
-      return;
-    }
-    const o = parseGeoPoint(r.origin);
-    const d = parseGeoPoint(r.destination);
-    if (!o || !d) {
-      setRideTripHint(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      const res = await fetchDrivingRoute([
-        [o.lng, o.lat],
-        [d.lng, d.lat],
-      ]);
-      if (cancelled) return;
-      if (res.ok) {
-        const mins = Math.max(1, Math.round(res.route.durationS / 60));
-        setRideTripHint(`~${mins} min trip (traffic-aware est.)`);
-      } else {
-        setRideTripHint(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [pickupState.upcomingRides]);
-
-  const roleBadgeLabel =
-    isFlexible
-      ? activeMode === "driver"
-        ? "Driving today"
-        : activeMode === "passenger"
-        ? "Riding today"
-        : "Flexible"
-      : profile?.role === "driver"
-      ? "Driver"
-      : profile?.role === "passenger"
-      ? "Passenger"
-      : "Flexible";
 
   async function handleShareWithLeadership() {
     try {
@@ -380,74 +292,6 @@ export default function Dashboard() {
       // ignore
     }
   }
-
-  const homeMapFallbackCenter = useMemo((): [number, number] => {
-    if (!profile) return [138.6, -34.85];
-    const home = parseGeoPoint(profile.home_location as unknown);
-    if (home) return [home.lng, home.lat];
-    const work = parseGeoPoint(profile.work_location as unknown);
-    if (work) return [work.lng, work.lat];
-    return [138.6, -34.85];
-  }, [profile]);
-
-  const homeMapLayerEmphasis = useMemo(
-    () => mapLayerEmphasisForProfile(profile ?? null, activeMode ?? null),
-    [profile, activeMode]
-  );
-
-  const homeMapDemandPoints = useMemo(
-    () => filterPointsToViewerCorridors(demandPoints, routeCorridors),
-    [demandPoints, routeCorridors]
-  );
-  const homeMapSupplyPoints = useMemo(
-    () => filterPointsToViewerCorridors(supplyPoints, routeCorridors),
-    [supplyPoints, routeCorridors]
-  );
-  const homeMapRouteLines = useMemo(
-    () => filterRouteLinesToViewerCorridors(routeLines, routeCorridors),
-    [routeLines, routeCorridors]
-  );
-
-  const homeRouteCorridorDemandLine = useMemo(() => {
-    if (homeMapLayerEmphasis !== "demand" || routeCorridors.length === 0) return "";
-    const r = countPickupDemandByCorridorDisjoint(homeMapDemandPoints, routeCorridors);
-    return formatDisjointCorridorPickupSummary(r);
-  }, [homeMapLayerEmphasis, homeMapDemandPoints, routeCorridors]);
-
-  const viewerRouteBaselineKey = useMemo(
-    () =>
-      viewerMyRoutesGeoJson.features
-        .map((f) => String((f.properties as { route_key?: string } | null)?.route_key ?? ""))
-        .join("|"),
-    [viewerMyRoutesGeoJson]
-  );
-
-  useEffect(() => {
-    setPromotedViewerRouteKey(null);
-  }, [viewerRouteBaselineKey]);
-
-  const homeViewerRoutesDisplayed = useMemo(
-    () => viewerMyRoutesDisplayCollection(viewerMyRoutesGeoJson, promotedViewerRouteKey),
-    [viewerMyRoutesGeoJson, promotedViewerRouteKey]
-  );
-
-  const hasViewerRouteAlternates = useMemo(
-    () =>
-      viewerMyRoutesGeoJson.features.some((f) =>
-        String((f.properties as { route_key?: string } | null)?.route_key ?? "").startsWith("alt_")
-      ),
-    [viewerMyRoutesGeoJson]
-  );
-
-  const homeMapLegendLens = useMemo((): DiscoverMapLegendLens => {
-    if (!profile) return "overview";
-    if (isFlexible && activeMode === null) return "flex_none";
-    if (quickPassenger && !quickDriver) return "passenger";
-    if (quickDriver && !quickPassenger) return "driver";
-    if (profile.role === "passenger") return "passenger";
-    if (profile.role === "driver") return "driver";
-    return "overview";
-  }, [profile, isFlexible, activeMode, quickPassenger, quickDriver]);
 
   useEffect(() => {
     async function loadOrgContext() {
@@ -483,6 +327,20 @@ export default function Dashboard() {
   }, [hasOrg, isEnterpriseOrg, isCommunityOrg]);
 
   const [poolynProgram, setPoolynProgram] = useState<"routine" | "adhoc">("routine");
+
+  useEffect(() => {
+    if (scrollToParamNorm !== "opportunities") return;
+    setPoolynProgram("routine");
+    const t = setTimeout(() => {
+      homeScrollRef.current?.scrollTo({
+        y: Math.max(0, networkHubBlockY.current - 16),
+        animated: true,
+      });
+      router.replace("/(tabs)/home");
+    }, 400);
+    return () => clearTimeout(t);
+  }, [scrollToParamNorm, router]);
+
   const orgAllowsOpenLane = org?.allow_cross_org === true;
 
   let orgLogoPublicUrl: string | null = null;
@@ -501,7 +359,7 @@ export default function Dashboard() {
   function showExplorerInfo() {
     showAlert(
       "Independent commuter",
-      "You are not in a workplace network yet. You can mingle with other independents and any commuter along your corridor.\n\nWhen an organisation on your email domain is set up, they can add you or send an invite code."
+      "No workplace network yet. You still match along your corridor with independents and any commuter.\n\nIf your company joins Poolyn later, they can add you or send an invite."
     );
   }
 
@@ -514,7 +372,7 @@ export default function Dashboard() {
       `Plan: ${plan}`,
       orgMemberCount > 0 ? `About ${orgMemberCount} members in this network` : null,
       "",
-      "Workplace network member. Discover starts with your org; switch scope to include wider pools when you want.",
+      "Workplace network: Discover starts with your org. Widen scope anytime to pull in a bigger pool.",
     ].filter(Boolean);
     showAlert("Your workplace", lines.join("\n"));
   }
@@ -526,7 +384,7 @@ export default function Dashboard() {
       org.domain ? `Domain: ${org.domain}` : null,
       orgMemberCount > 0 ? `${orgMemberCount} colleagues on Poolyn` : null,
       "",
-      "Community network: you share a pool with others on your work email domain. Discover starts with your network; you can widen scope to any commuter when you want.",
+      "Community network: same work email domain. Discover starts with your network; widen to any commuter when you want.",
     ].filter(Boolean);
     showAlert("Your network", lines.join("\n"));
   }
@@ -557,16 +415,14 @@ export default function Dashboard() {
       showAlert(
         "Request sent",
         isNow
-          ? "Nearby drivers with seats are being notified now. Watch for a banner or sound on their phone."
-          : "Drivers get advance notice so they can plan. You will see confirmation when someone accepts."
+          ? "Nearby drivers with seats are notified. This screen updates when someone accepts."
+          : "Drivers get a heads-up to plan. This screen updates when someone accepts."
       );
       setPostRequestOpen(false);
-      setViewerMapRefetchTick((t) => t + 1);
-      void reloadMapLayers();
     } else {
       showAlert("Could not post", res.reason);
     }
-  }, [postRequestTiming, postRequestDirection, pickupState, reloadMapLayers]);
+  }, [postRequestTiming, postRequestDirection, pickupState]);
 
   function handlePostPickupPress() {
     void (async () => {
@@ -574,8 +430,8 @@ export default function Dashboard() {
       const dirLabel = postRequestDirection === "to_work" ? "to work" : "from work";
       if (needConfirm) {
         showAlert(
-          `Confirm your ${dirLabel} trip`,
-          `For your first ${ROUTE_CONFIRMATION_THRESHOLD} pickup posts in each direction, double-check saved home and work so drivers are routed correctly.`,
+          `Confirm ${dirLabel}`,
+          `First ${ROUTE_CONFIRMATION_THRESHOLD} posts each way: check home and work in Profile so routing is right.`,
           [
             {
               text: "Edit commute",
@@ -585,7 +441,7 @@ export default function Dashboard() {
                 router.push("/(tabs)/profile/commute-locations");
               },
             },
-            { text: "Destination OK — post", onPress: () => void runPostPickupRequest() },
+            { text: "Looks good, post", onPress: () => void runPostPickupRequest() },
           ]
         );
         return;
@@ -613,7 +469,7 @@ export default function Dashboard() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Hero — gradient band by explorer / workplace type */}
+        {/* Hero: gradient band by explorer / workplace type */}
         <LinearGradient
           colors={heroGradientColors}
           start={{ x: 0, y: 0 }}
@@ -634,8 +490,8 @@ export default function Dashboard() {
               accessibilityLabel="Profile"
               accessibilityHint="Opens your profile and settings"
             >
-              {profile?.avatar_url ? (
-                <Image source={{ uri: profile.avatar_url }} style={styles.heroAvatarImg} />
+              {heroAvatarUri ? (
+                <Image source={{ uri: heroAvatarUri }} style={styles.heroAvatarImg} />
               ) : (
                 <View style={styles.heroAvatarPlaceholder}>
                   <Ionicons name="person" size={24} color={Colors.textSecondary} />
@@ -725,7 +581,16 @@ export default function Dashboard() {
                 accessibilityRole="button"
                 accessibilityLabel="Activity and messages"
               >
-                <Ionicons name="notifications-outline" size={21} color={Colors.text} />
+                <View style={styles.notifBellWrap}>
+                  <Ionicons name="notifications-outline" size={21} color={Colors.text} />
+                  {unreadCount > 0 ? (
+                    <View style={styles.notifBadge}>
+                      <Text style={styles.notifBadgeText}>
+                        {unreadCount > 99 ? "99+" : String(unreadCount)}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
               </TouchableOpacity>
               {!hasOrg ? (
                 <Pressable
@@ -764,83 +629,52 @@ export default function Dashboard() {
           </View>
         </LinearGradient>
 
-        {passengerPickupEnabled &&
-        (pickupState.pending || pickupState.upcomingRides.length > 0) ? (
+        {passengerPickupEnabled && pickupState.pending ? (
           <View style={styles.pickupBanner}>
-            {pickupState.pending ? (
-              <>
-                <View style={styles.pickupBannerRow}>
-                  <Ionicons name="radio-outline" size={22} color={Colors.primaryDark} />
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.pickupBannerTitle}>Pickup request active</Text>
-                    <Text style={styles.pickupBannerBody}>
-                      Notifying drivers on their phones. You can leave this screen open — we will update when
-                      someone accepts.
-                    </Text>
-                    <Text style={styles.pickupBannerMeta}>
-                      {pickupState.pending.direction === "from_work" ? "From work" : "To work"} ·{" "}
-                      {new Date(pickupState.pending.desired_depart_at).toLocaleString(undefined, {
-                        weekday: "short",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Text>
-                    {pendingExpiryLabel ? (
-                      <Text style={styles.pickupBannerCountdown}>
-                        Auto-cancels in {pendingExpiryLabel} if no one accepts — then you can post again.
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-                <TouchableOpacity
-                  style={styles.pickupCancelBtn}
-                  onPress={() => {
-                    if (!profile?.id) return;
-                    showAlert("Cancel request?", "Drivers will stop seeing this pickup need.", [
-                      { text: "Keep waiting", style: "cancel" },
-                      {
-                        text: "Cancel request",
-                        style: "destructive",
-                        onPress: async () => {
-                          const res = await cancelMyPendingRideRequest(profile.id);
-                          if (res.ok) void pickupState.reload();
-                          else showAlert("Could not cancel", res.reason);
-                        },
-                      },
-                    ]);
-                  }}
-                >
-                  <Text style={styles.pickupCancelBtnText}>Cancel request</Text>
-                </TouchableOpacity>
-              </>
-            ) : pickupState.upcomingRides[0] ? (
+            <>
               <View style={styles.pickupBannerRow}>
-                <Ionicons name="checkmark-circle" size={22} color={Colors.primaryDark} />
+                <Ionicons name="radio-outline" size={22} color={Colors.primaryDark} />
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.pickupBannerTitle}>You are booked</Text>
+                  <Text style={styles.pickupBannerTitle}>Pickup request active</Text>
                   <Text style={styles.pickupBannerBody}>
-                    {pickupState.upcomingRides[0].driverName?.trim() || "Your driver"} accepted your pickup.
-                    {rideTripHint ? ` ${rideTripHint}.` : " Open My Rides → Active for full details."}
+                    Drivers near you are notified. This status updates when someone accepts your pickup.
                   </Text>
                   <Text style={styles.pickupBannerMeta}>
-                    {pickupState.upcomingRides[0].direction === "from_work" ? "From work" : "To work"} ·{" "}
-                    {new Date(pickupState.upcomingRides[0].departAt).toLocaleString(undefined, {
+                    {pickupState.pending.direction === "from_work" ? "From work" : "To work"} ·{" "}
+                    {new Date(pickupState.pending.desired_depart_at).toLocaleString(undefined, {
                       weekday: "short",
                       hour: "2-digit",
                       minute: "2-digit",
                     })}
                   </Text>
-                  <TouchableOpacity
-                    style={styles.pickupRidesLink}
-                    onPress={() => router.push("/(tabs)/rides")}
-                    activeOpacity={0.75}
-                  >
-                    <Text style={styles.pickupRidesLinkText}>Open My Rides</Text>
-                    <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
-                  </TouchableOpacity>
+                  {pendingExpiryLabel ? (
+                    <Text style={styles.pickupBannerCountdown}>
+                      Cancels in {pendingExpiryLabel} if no one accepts. You can post again after that.
+                    </Text>
+                  ) : null}
                 </View>
               </View>
-            ) : null}
+              <TouchableOpacity
+                style={styles.pickupCancelBtn}
+                onPress={() => {
+                  if (!profile?.id) return;
+                  showAlert("Cancel request?", "Drivers will no longer see this request.", [
+                    { text: "Keep waiting", style: "cancel" },
+                    {
+                      text: "Cancel request",
+                      style: "destructive",
+                      onPress: async () => {
+                        const res = await cancelMyPendingRideRequest(profile.id);
+                        if (res.ok) void pickupState.reload();
+                        else showAlert("Could not cancel", res.reason);
+                      },
+                    },
+                  ]);
+                }}
+              >
+                <Text style={styles.pickupCancelBtnText}>Cancel request</Text>
+              </TouchableOpacity>
+            </>
           </View>
         ) : null}
 
@@ -862,7 +696,7 @@ export default function Dashboard() {
           <View style={styles.poolynProgramToggleWrap}>
             <Text style={styles.poolynProgramEyebrow}>YOUR POOLYN</Text>
             <Text style={styles.poolynProgramHint}>
-              Regular commute uses your saved home–work line. Ad-hoc is for dated, one-off trips.
+              Regular commute: your saved home to work route. Ad-hoc: dated one-off trips.
             </Text>
             <View style={styles.poolynProgramSegments}>
               <Pressable
@@ -943,241 +777,29 @@ export default function Dashboard() {
 
         <PillarSection
           variant="routine"
-          eyebrow="ON YOUR CORRIDOR"
-          title="Crew, mingle, and map"
+          eyebrow="ROUTINE COMMUTE"
+          title="Crewmates or the wider pool"
           subtitle={null}
         >
           {profile?.id ? (
             <RoutinePoolynCrewMingleBlock
               profile={profile}
               orgId={profile.org_id}
-              visibilityMode={profile.visibility_mode}
               setVisibilityMode={setVisibilityMode}
               commuteRouteReady={commuteRouteReady}
+              minglePassengerPickup={
+                passengerPickupEnabled && showPostRequest
+                  ? {
+                      hasPendingRequest: !!pickupState.pending,
+                      onOpenPostRequest: () => setPostRequestOpen(true),
+                    }
+                  : undefined
+              }
               onCrewCreated={() => {
-                reloadMapLayers();
-                setViewerMapRefetchTick((t) => t + 1);
                 void refreshProfile();
               }}
             />
           ) : null}
-          <View style={styles.roleWrap}>
-            <View
-              style={[
-                styles.roleBadge,
-                { backgroundColor: rolePalette.light, borderColor: rolePalette.border },
-              ]}
-            >
-              <Ionicons name={rolePalette.icon} size={16} color={rolePalette.primary} />
-              <Text style={[styles.roleBadgeText, { color: rolePalette.text }]}>
-                {roleBadgeLabel}
-              </Text>
-            </View>
-            <View style={styles.visibilityRow}>
-              <TouchableOpacity
-                style={[
-                  styles.visibilityChip,
-                  profile?.visibility_mode !== "nearby" && styles.visibilityChipActive,
-                ]}
-                onPress={() => setVisibilityMode("network")}
-              >
-                <Text
-                  style={[
-                    styles.visibilityText,
-                    profile?.visibility_mode !== "nearby" && styles.visibilityTextActive,
-                  ]}
-                >
-                  Your network
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.visibilityChip,
-                  profile?.visibility_mode === "nearby" && styles.visibilityChipActive,
-                ]}
-                onPress={() => setVisibilityMode("nearby")}
-              >
-                <Text
-                  style={[
-                    styles.visibilityText,
-                    profile?.visibility_mode === "nearby" && styles.visibilityTextActive,
-                  ]}
-                >
-                  Any commuter
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {isFlexible && (
-            <View
-              style={[
-                styles.modeToggleCard,
-                { borderColor: rolePalette.border, backgroundColor: rolePalette.light },
-              ]}
-            >
-              <View style={styles.modeToggleHeader}>
-                <Ionicons name="swap-horizontal" size={18} color={rolePalette.primary} />
-                <Text style={[styles.modeToggleTitle, { color: rolePalette.text }]}>
-                  Today I&apos;m…
-                </Text>
-              </View>
-              <View style={styles.modeToggleRow}>
-                <TouchableOpacity
-                  style={[
-                    styles.modeBtn,
-                    {
-                      backgroundColor:
-                        activeMode === "driver" ? RoleTheme.driver.primary : Colors.surface,
-                      borderColor:
-                        activeMode === "driver" ? RoleTheme.driver.primary : Colors.border,
-                    },
-                  ]}
-                  onPress={() => toggleMode("driver")}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons
-                    name="car-sport-outline"
-                    size={18}
-                    color={activeMode === "driver" ? "#FFFFFF" : Colors.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.modeBtnText,
-                      { color: activeMode === "driver" ? "#FFFFFF" : Colors.textSecondary },
-                    ]}
-                  >
-                    Driving
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.modeBtn,
-                    {
-                      backgroundColor:
-                        activeMode === "passenger"
-                          ? RoleTheme.passenger.primary
-                          : Colors.surface,
-                      borderColor:
-                        activeMode === "passenger"
-                          ? RoleTheme.passenger.primary
-                          : Colors.border,
-                    },
-                  ]}
-                  onPress={() => toggleMode("passenger")}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons
-                    name="people-outline"
-                    size={18}
-                    color={activeMode === "passenger" ? "#FFFFFF" : Colors.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.modeBtnText,
-                      { color: activeMode === "passenger" ? "#FFFFFF" : Colors.textSecondary },
-                    ]}
-                  >
-                    Riding
-                  </Text>
-                </TouchableOpacity>
-              </View>
-              {!activeMode && (
-                <Text style={styles.modeNeutralHint}>
-                  Choose driving or riding so matches and the map align with what you&apos;re doing.
-                </Text>
-              )}
-            </View>
-          )}
-
-          {showQuickActions && (
-            <>
-              <Text style={styles.pillarInlineLabel}>Quick actions</Text>
-              <View style={styles.quickActions}>
-                {quickDriver && (
-                  <TouchableOpacity
-                    style={styles.actionCard}
-                    activeOpacity={0.72}
-                    onPress={() => router.push("/(tabs)/rides")}
-                  >
-                    <View style={styles.actionTitleRow}>
-                      <View style={[styles.actionIcon, { backgroundColor: Colors.primaryLight }]}>
-                        <Ionicons name="add-circle" size={24} color={Colors.primary} />
-                      </View>
-                      <Text style={styles.actionTitle}>Offer a ride</Text>
-                    </View>
-                    <Text style={styles.actionDesc}>
-                      Post your trip in My Rides with time and seats — you show up on the map and in seats others
-                      can book below.
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                {quickPassenger && (
-                  <TouchableOpacity
-                    style={styles.actionCard}
-                    activeOpacity={0.72}
-                    onPress={scrollToSeatsOnHome}
-                  >
-                    <View style={styles.actionTitleRow}>
-                      <View style={[styles.actionIcon, { backgroundColor: "#EFF6FF" }]}>
-                        <Ionicons name="search" size={24} color={Colors.info} />
-                      </View>
-                      <Text style={styles.actionTitle}>Find a ride</Text>
-                    </View>
-                    <Text style={styles.actionDesc}>
-                      Browse posted trips with free seats and reserve one — for when a driver already shared a ride
-                      and you do not need a new pickup request.
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                {showPostRequest && (
-                  <TouchableOpacity
-                    style={styles.actionCard}
-                    activeOpacity={0.72}
-                    onPress={() => setPostRequestOpen(true)}
-                  >
-                    <View style={styles.actionTitleRow}>
-                      <View style={[styles.actionIcon, { backgroundColor: "#FFFBEB" }]}>
-                        <Ionicons name="megaphone-outline" size={24} color="#D97706" />
-                      </View>
-                      <Text style={styles.actionTitle}>Post a request</Text>
-                    </View>
-                    <Text style={styles.actionDesc}>
-                      No posted trip fits? Ping drivers on your corridor — not the same as booking an existing seat.
-                    </Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            </>
-          )}
-
-          <Text style={styles.pillarInlineLabel}>Live map</Text>
-          {profile ? (
-            <DiscoverMapLegend
-              lens={homeMapLegendLens}
-              corridorBandFilter={routeCorridors.length > 0}
-              scopeNetwork={profile.visibility_mode !== "nearby"}
-              compact
-            />
-          ) : null}
-          {homeRouteCorridorDemandLine ? (
-            <Text style={styles.mapCorridorHint}>{homeRouteCorridorDemandLine}</Text>
-          ) : null}
-          <DiscoverMapLayers
-            demandGeoJson={homeMapDemandPoints}
-            supplyGeoJson={homeMapSupplyPoints}
-            routeGeoJson={homeMapRouteLines}
-            viewerPinsGeoJson={viewerPinsGeoJson}
-            viewerMyRoutesGeoJson={homeViewerRoutesDisplayed}
-            layerEmphasis={homeMapLayerEmphasis}
-            title="Corridor map"
-            mapHeight={220}
-            fallbackCenter={homeMapFallbackCenter}
-            remoteLoading={homeMapLayersLoading || routesLoading}
-            onViewerRouteAlternateTap={
-              hasViewerRouteAlternates ? (key) => setPromotedViewerRouteKey(key) : undefined
-            }
-          />
         </PillarSection>
         </View>
         ) : (
@@ -1185,11 +807,24 @@ export default function Dashboard() {
           variant="adhoc"
           eyebrow="AD-HOC POOLYN"
           title="One-off & planned trips"
-          subtitle="Dated trips live in My Rides for now. Richer search is on the way."
+          subtitle="Post a drive with date and seats, or search your workplace for a spare seat."
         >
           <TouchableOpacity
             style={styles.adhocRow}
-            onPress={() => router.push("/(tabs)/rides")}
+            onPress={() => {
+              void (async () => {
+                if (!profile?.id) return;
+                const ok = await hasAdhocPostingVehicle(profile.id);
+                if (!ok) {
+                  showAlert(
+                    "Add a vehicle first",
+                    "Add an active vehicle with at least two total seats under Profile before posting a trip."
+                  );
+                  return;
+                }
+                router.push("/(tabs)/rides/post-dated-trip");
+              })();
+            }}
             activeOpacity={0.75}
           >
             <View style={[styles.adhocIconWrap, { backgroundColor: "#FEF3C7" }]}>
@@ -1204,15 +839,15 @@ export default function Dashboard() {
 
           <TouchableOpacity
             style={styles.adhocRow}
-            onPress={() => router.push("/(tabs)/rides")}
+            onPress={() => router.push("/(tabs)/rides/search-seat")}
             activeOpacity={0.75}
           >
             <View style={[styles.adhocIconWrap, { backgroundColor: Colors.primaryLight }]}>
-              <Ionicons name="albums-outline" size={22} color={Colors.primary} />
+              <Ionicons name="search-outline" size={22} color={Colors.primary} />
             </View>
             <View style={styles.adhocRowText}>
-              <Text style={styles.adhocRowTitle}>My rides &amp; bookings</Text>
-              <Text style={styles.adhocRowSub}>Everything you&apos;re hosting or booked on.</Text>
+              <Text style={styles.adhocRowTitle}>Search for a seat</Text>
+              <Text style={styles.adhocRowSub}>Where to where, date, and baggage needs.</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
           </TouchableOpacity>
@@ -1226,13 +861,7 @@ export default function Dashboard() {
               networkHubBlockY.current = e.nativeEvent.layout.y;
             }}
           >
-            <HomeNetworkHub
-              scrollToParam={scrollToParamNorm}
-              onRequestScrollToSeats={scrollToSeatsOnHome}
-              onSeatsSectionInnerLayout={(y) => {
-                seatsSectionInnerY.current = y;
-              }}
-            />
+            <HomeNetworkHub />
           </View>
         ) : null}
 
@@ -1291,8 +920,7 @@ export default function Dashboard() {
           <Pressable style={postRequestModalStyles.card} onPress={(e) => e.stopPropagation()}>
             <Text style={postRequestModalStyles.modalTitle}>Post pickup request</Text>
             <Text style={postRequestModalStyles.modalSub}>
-              Uses your saved home and work. Drivers who are nearby, on a matching commute, or on a posted ride
-              with free seats get an alert on their phone. You do not need to open My Rides to reach them.
+              Uses your saved home and work. Nearby or matching drivers get an alert. No need to open My Rides first.
             </Text>
             <Text style={postRequestModalStyles.fieldLabel}>Direction</Text>
             <View style={postRequestModalStyles.chipRow}>
@@ -1687,7 +1315,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   pillarShell: {
-    flexDirection: "row",
     borderRadius: BorderRadius.xl,
     borderWidth: 1,
     marginBottom: Spacing["2xl"],
@@ -1702,15 +1329,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFBEB",
     borderColor: "#FDE68A",
   },
-  pillarAccentBar: {
-    width: 5,
-    alignSelf: "stretch",
-  },
   pillarContent: {
     flex: 1,
     paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.base,
-    paddingLeft: Spacing.md,
+    paddingHorizontal: Spacing.lg,
   },
   pillarEyebrow: {
     fontSize: 10,
@@ -1938,6 +1560,31 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.05)",
+    position: "relative",
+  },
+  notifBellWrap: {
+    width: 24,
+    height: 24,
+    justifyContent: "center",
+    alignItems: "center",
+    position: "relative",
+  },
+  notifBadge: {
+    position: "absolute",
+    top: -6,
+    right: -10,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: Colors.primary,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  notifBadgeText: {
+    color: Colors.textOnPrimary,
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
   },
   heroLogoPressable: {
     borderRadius: BorderRadius.md + 2,

@@ -47,7 +47,7 @@ export async function createCommuteRideRequest(params: {
   if (raw === "already_has_pending_request") {
     return {
       ok: false,
-      reason: "You already have an open pickup request. Cancel it on Home before posting another.",
+      reason: "You already have an open pickup request. Cancel it first, then post again.",
     };
   }
   return { ok: false, reason: raw };

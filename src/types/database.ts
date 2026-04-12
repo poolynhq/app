@@ -244,6 +244,8 @@ export interface Database {
           work_location: GeoPoint;
           work_location_label: string | null;
           detour_tolerance_mins: number;
+          /** Present after migration 0074; treat as detour_tolerance_mins when missing. */
+          passenger_max_driver_detour_mins?: number;
           reliability_score: number;
           schedule_flex_mins: number;
           home_geohash: string | null;
@@ -280,6 +282,7 @@ export interface Database {
           work_location?: GeoPoint;
           work_location_label?: string | null;
           detour_tolerance_mins?: number;
+          passenger_max_driver_detour_mins?: number;
           reliability_score?: number;
           schedule_flex_mins?: number;
           home_geohash?: string | null;
@@ -313,6 +316,7 @@ export interface Database {
           work_location?: GeoPoint;
           work_location_label?: string | null;
           detour_tolerance_mins?: number;
+          passenger_max_driver_detour_mins?: number;
           reliability_score?: number;
           schedule_flex_mins?: number;
           home_geohash?: string | null;
@@ -490,6 +494,13 @@ export interface Database {
           trip_date: string;
           designated_driver_user_id: string | null;
           excluded_pickup_user_ids: string[];
+          trip_started_at: string | null;
+          trip_finished_at: string | null;
+          poolyn_credits_settled_at: string | null;
+          settlement_summary: Json | null;
+          trip_started_by_user_id: string | null;
+          rider_pickup_ready_at: Json;
+          departure_readiness_reminder_sent_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -499,12 +510,26 @@ export interface Database {
           trip_date: string;
           designated_driver_user_id?: string | null;
           excluded_pickup_user_ids?: string[];
+          trip_started_at?: string | null;
+          trip_finished_at?: string | null;
+          poolyn_credits_settled_at?: string | null;
+          settlement_summary?: Json | null;
+          trip_started_by_user_id?: string | null;
+          rider_pickup_ready_at?: Json;
+          departure_readiness_reminder_sent_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           designated_driver_user_id?: string | null;
           excluded_pickup_user_ids?: string[];
+          trip_started_at?: string | null;
+          trip_finished_at?: string | null;
+          poolyn_credits_settled_at?: string | null;
+          settlement_summary?: Json | null;
+          trip_started_by_user_id?: string | null;
+          rider_pickup_ready_at?: Json;
+          departure_readiness_reminder_sent_at?: string | null;
           updated_at?: string;
         };
       };
@@ -549,6 +574,9 @@ export interface Database {
           locked_formation_route_geom: unknown | null;
           locked_route_distance_m: number | null;
           locked_route_duration_s: number | null;
+          schedule_mode: string;
+          schedule_anchor_minutes: number;
+          estimated_pool_drive_minutes: number;
           created_at: string;
           updated_at: string;
         };
@@ -564,6 +592,9 @@ export interface Database {
           locked_formation_route_geom?: unknown | null;
           locked_route_distance_m?: number | null;
           locked_route_duration_s?: number | null;
+          schedule_mode?: string;
+          schedule_anchor_minutes?: number;
+          estimated_pool_drive_minutes?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -575,6 +606,9 @@ export interface Database {
           locked_formation_route_geom?: unknown | null;
           locked_route_distance_m?: number | null;
           locked_route_duration_s?: number | null;
+          schedule_mode?: string;
+          schedule_anchor_minutes?: number;
+          estimated_pool_drive_minutes?: number;
           updated_at?: string;
         };
       };
@@ -715,7 +749,12 @@ export interface Database {
           seats_available: number;
           recurrence_rule: string | null;
           notes: string | null;
-          poolyn_context: "mingle" | "crew";
+          poolyn_context: "mingle" | "crew" | "adhoc";
+          baggage_slots_available: number;
+          adhoc_origin_label: string | null;
+          adhoc_destination_label: string | null;
+          adhoc_trip_title: string | null;
+          adhoc_depart_flex_days: number;
           created_at: string;
           updated_at: string;
         };
@@ -736,7 +775,12 @@ export interface Database {
           seats_available: number;
           recurrence_rule?: string | null;
           notes?: string | null;
-          poolyn_context?: "mingle" | "crew";
+          poolyn_context?: "mingle" | "crew" | "adhoc";
+          baggage_slots_available?: number;
+          adhoc_origin_label?: string | null;
+          adhoc_destination_label?: string | null;
+          adhoc_trip_title?: string | null;
+          adhoc_depart_flex_days?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -749,7 +793,12 @@ export interface Database {
           origin?: GeoPoint;
           destination?: GeoPoint;
           route_geometry?: GeoLineString;
-          poolyn_context?: "mingle" | "crew";
+          poolyn_context?: "mingle" | "crew" | "adhoc";
+          baggage_slots_available?: number;
+          adhoc_origin_label?: string | null;
+          adhoc_destination_label?: string | null;
+          adhoc_trip_title?: string | null;
+          adhoc_depart_flex_days?: number;
           origin_cluster?: string | null;
           destination_cluster?: string | null;
           seats_available?: number;
@@ -798,6 +847,44 @@ export interface Database {
           matched_ride_id?: string | null;
           notes?: string | null;
           expires_at?: string;
+        };
+      };
+
+      adhoc_seat_bookings: {
+        Row: {
+          id: string;
+          ride_id: string;
+          passenger_id: string;
+          status: string;
+          passenger_message: string | null;
+          driver_response_message: string | null;
+          passenger_pickup: GeoPoint;
+          needs_checked_bag: boolean;
+          pickup_km_from_ride_origin: number | null;
+          created_at: string;
+          responded_at: string | null;
+          passenger_search_origin_label?: string | null;
+          passenger_search_dest_label?: string | null;
+          passenger_search_dest?: GeoPoint | null;
+        };
+        Insert: {
+          id?: string;
+          ride_id: string;
+          passenger_id: string;
+          status?: string;
+          passenger_message?: string | null;
+          driver_response_message?: string | null;
+          passenger_pickup: GeoPoint;
+          needs_checked_bag?: boolean;
+          pickup_km_from_ride_origin?: number | null;
+          created_at?: string;
+          responded_at?: string | null;
+        };
+        Update: {
+          status?: string;
+          passenger_message?: string | null;
+          driver_response_message?: string | null;
+          responded_at?: string | null;
         };
       };
 
@@ -1578,6 +1665,27 @@ export interface Database {
         Args: { p_invitation_id: string; p_accept: boolean };
         Returns: Json;
       };
+      poolyn_crew_equal_corridor_rider_contribution_cents: {
+        Args: {
+          p_locked_distance_m: number;
+          p_locked_duration_s: number;
+          p_paying_rider_count: number;
+          p_vehicle_class?: string;
+        };
+        Returns: number;
+      };
+      poolyn_crew_trip_record_started: {
+        Args: { p_trip_instance_id: string };
+        Returns: Json;
+      };
+      poolyn_crew_trip_ack_pickup_ready: {
+        Args: { p_trip_instance_id: string };
+        Returns: Json;
+      };
+      poolyn_crew_trip_finish_and_settle_credits: {
+        Args: { p_trip_instance_id: string; p_contribution_credits_per_rider: number };
+        Returns: Json;
+      };
       poolyn_crew_roll_driver: {
         Args: { p_trip_instance_id: string; p_eligible_user_ids?: string[] };
         Returns: Json;
@@ -1606,6 +1714,107 @@ export interface Database {
       };
       get_discover_route_snapshot: {
         Args: { p_user_id: string };
+        Returns: Json;
+      };
+      poolyn_create_adhoc_listing: {
+        Args: {
+          p_depart_at: string;
+          p_origin_lat: number;
+          p_origin_lng: number;
+          p_dest_lat: number;
+          p_dest_lng: number;
+          p_origin_label: string;
+          p_dest_label: string;
+          p_passenger_seats_available: number;
+          p_baggage_slots: number;
+          p_trip_title?: string | null;
+          p_depart_flex_days?: number;
+          p_notes?: string | null;
+        };
+        Returns: Json;
+      };
+      poolyn_search_adhoc_listings: {
+        Args: {
+          p_rider_date_from: string;
+          p_rider_date_to: string;
+          p_near_origin_lat: number;
+          p_near_origin_lng: number;
+          p_near_dest_lat: number;
+          p_near_dest_lng: number;
+          p_radius_km?: number;
+          p_needs_baggage?: boolean;
+          p_depart_tz?: string;
+        };
+        Returns: Json;
+      };
+      poolyn_request_adhoc_seat: {
+        Args: {
+          p_ride_id: string;
+          p_pickup_lat: number;
+          p_pickup_lng: number;
+          p_message: string;
+          p_needs_baggage: boolean;
+          p_dest_lat?: number | null;
+          p_dest_lng?: number | null;
+          p_search_origin_label?: string | null;
+          p_search_dest_label?: string | null;
+        };
+        Returns: Json;
+      };
+      poolyn_respond_adhoc_seat_booking: {
+        Args: {
+          p_booking_id: string;
+          p_accept: boolean;
+          p_message: string;
+        };
+        Returns: Json;
+      };
+      poolyn_list_my_upcoming_driver_rides: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      poolyn_list_my_upcoming_passenger_rides: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      poolyn_list_pending_adhoc_bookings_for_driver: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      poolyn_list_my_pending_adhoc_seat_requests: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      poolyn_cancel_my_adhoc_seat_request: {
+        Args: { p_booking_id: string };
+        Returns: Json;
+      };
+      poolyn_passenger_cancel_confirmed_adhoc_seat: {
+        Args: { p_ride_id: string };
+        Returns: Json;
+      };
+      poolyn_driver_remove_passenger_from_adhoc_ride: {
+        Args: { p_ride_id: string; p_passenger_id: string; p_message: string };
+        Returns: Json;
+      };
+      poolyn_driver_cancel_adhoc_ride: {
+        Args: { p_ride_id: string; p_reason_code: string; p_reason_detail: string };
+        Returns: Json;
+      };
+      poolyn_get_ride_chat_meta: {
+        Args: { p_ride_id: string };
+        Returns: Json;
+      };
+      poolyn_fetch_ride_messages_for_participant: {
+        Args: { p_ride_id: string };
+        Returns: Json;
+      };
+      poolyn_fetch_adhoc_bookings_for_chat: {
+        Args: { p_ride_id: string };
+        Returns: Json;
+      };
+      poolyn_get_my_ride_as_driver: {
+        Args: { p_ride_id: string };
         Returns: Json;
       };
     };

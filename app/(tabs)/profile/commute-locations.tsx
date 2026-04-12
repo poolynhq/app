@@ -33,6 +33,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { canViewerActAsPassenger } from "@/lib/commuteMatching";
 import { estimateIllustrativeCommuteContributionRangeAud } from "@/lib/costModel";
 import { computeClientNetworkFeePreview } from "@/lib/passengerPaymentPreview";
 import { poolynExplorerCashFeeFraction } from "@/lib/poolynPricingConfig";
@@ -75,7 +76,7 @@ export default function CommuteLocationsScreen() {
   const [workLabelGeo, setWorkLabelGeo] = useState<string | null>(null);
   const [pickupLabelGeo, setPickupLabelGeo] = useState<string | null>(null);
 
-  const canRide = profile?.role === "passenger" || profile?.role === "both";
+  const canRide = profile ? canViewerActAsPassenger(profile) : false;
 
   useEffect(() => {
     if (!isFocused || !profile?.id) return;

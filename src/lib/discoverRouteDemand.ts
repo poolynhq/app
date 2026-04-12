@@ -2,7 +2,7 @@ import * as turf from "@turf/turf";
 import type { Feature, FeatureCollection, Point, Polygon, MultiPolygon } from "geojson";
 import type { DiscoverRouteCorridor } from "@/lib/discoverMapViewerRoutes";
 
-/** Same band as matching “corridor” feel — used for map filtering and pickup counts */
+/** Same band as matching “corridor” feel; used for map filtering and pickup counts */
 export const DISCOVER_CORRIDOR_BUFFER_KM = 0.38;
 
 export type CorridorDemandCount = {
@@ -171,7 +171,7 @@ export function formatDisjointCorridorPickupSummary(
   const parts = r.byCorridor.map((p) => `${p.label}: ${p.count}`).join(" · ");
   const n = r.uniqueOnMap;
   const noun = n === 1 ? "rider" : "riders";
-  return `${n} ${noun} on the map — ${parts}`;
+  return `${n} ${noun} on the map. ${parts}`;
 }
 
 /** @deprecated Prefer countPickupDemandByCorridorDisjoint for UI; this double-counts overlaps */

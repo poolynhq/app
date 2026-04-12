@@ -16,6 +16,7 @@ import { POOLYN_MINGLE_MIN_POOL_RIDERS, POOLYN_MAX_POOL_RIDERS_FOR_SPLIT } from 
 import { fairnessSeedUint32, fairnessUnit } from "@/lib/fairnessHash";
 import { getBaselineCommute, type LngLat } from "@/lib/mapboxDirections";
 import { computeDriverPassengerDetourMetrics } from "@/lib/detourRouteEngine";
+import { effectiveCommuteMode } from "@/lib/commuteRoleIntent";
 
 export type RideCardIntent = "passenger" | "driver";
 
@@ -83,15 +84,13 @@ function vehicleClassLabel(c: string): string {
 }
 
 function canActAsPassenger(u: User): boolean {
-  if (u.role === "passenger") return true;
-  if (u.role !== "both") return false;
-  return u.active_mode !== "driver";
+  const m = effectiveCommuteMode(u);
+  return m !== "driver";
 }
 
 function canActAsDriver(u: User): boolean {
-  if (u.role === "driver") return true;
-  if (u.role !== "both") return false;
-  return u.active_mode !== "passenger";
+  const m = effectiveCommuteMode(u);
+  return m !== "passenger";
 }
 
 async function fetchActiveSchedulesForUsers(
@@ -121,6 +120,11 @@ async function fetchActiveSchedulesForUsers(
 /** Discover / UI: whether this profile can see driver-side commute opportunities */
 export function canViewerActAsDriver(u: User): boolean {
   return canActAsDriver(u);
+}
+
+/** Discover / UI: whether this profile can act as a passenger (pickups, ride requests, etc.). */
+export function canViewerActAsPassenger(u: User): boolean {
+  return canActAsPassenger(u);
 }
 
 function formatEta(durationS: number): string {

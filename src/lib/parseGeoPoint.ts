@@ -52,6 +52,25 @@ function parseHexEwkbPoint(raw: string): { lat: number; lng: number } | null {
 }
 
 /**
+ * RPC / nested JSON sometimes returns GeoJSON as a stringified object. Parse when needed before `parseGeoPoint`.
+ */
+export function normalizeRpcGeoJson(value: unknown): unknown {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (t.startsWith("{") || t.startsWith("[")) {
+      try {
+        return JSON.parse(t) as unknown;
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  return value;
+}
+
+/**
  * Parse PostGIS geography(Point) values from Supabase/PostgREST.
  * May arrive as WKT string, hex EWKB, GeoJSON object, or JSON string.
  */

@@ -35,9 +35,9 @@ type MapLayerBundle = {
 
 function applyLayerEmphasis(map: any, e: MapLayerEmphasis) {
   if (!map.getLayer("demand-heat")) return;
-  const heatO = e === "demand" ? 0.88 : e === "supply" ? 0.36 : 0.72;
-  const supplyDotO = e === "supply" ? 0.92 : e === "demand" ? 0.42 : 0.88;
-  const clusterO = e === "supply" ? 0.88 : e === "demand" ? 0.52 : 0.82;
+  const heatO = e === "demand" ? 0.92 : e === "supply" ? 0.38 : 0.72;
+  const supplyDotO = e === "supply" ? 0.94 : e === "demand" ? 0.52 : 0.88;
+  const clusterO = e === "supply" ? 0.9 : e === "demand" ? 0.58 : 0.82;
   map.setPaintProperty("demand-heat", "heatmap-opacity", heatO);
   map.setPaintProperty("supply-circles", "circle-opacity", supplyDotO);
   map.setPaintProperty("supply-clusters", "circle-opacity", clusterO);
@@ -56,6 +56,8 @@ interface DiscoverMapLayersProps {
   fallbackCenter?: [number, number];
   remoteLoading?: boolean;
   onViewerRouteAlternateTap?: (routeKey: string) => void;
+  /** Shorter empty-state copy so the map stays readable (e.g. Home Mingle). */
+  compactMapChrome?: boolean;
 }
 
 const ML_CSS_ID = "maplibre-css-discover";
@@ -151,6 +153,7 @@ export function DiscoverMapLayers({
   fallbackCenter = DEFAULT_CENTER,
   remoteLoading = false,
   onViewerRouteAlternateTap,
+  compactMapChrome = false,
 }: DiscoverMapLayersProps) {
   const containerRef = useRef<any>(null);
   const mapRef = useRef<any>(null);
@@ -212,8 +215,6 @@ export function DiscoverMapLayers({
         attributionControl: false,
       });
       mapRef.current = map;
-
-      map.addControl(new ml.AttributionControl({ compact: true }), "bottom-right");
 
       map.on("load", () => {
         if (!mounted) return;
@@ -518,21 +519,20 @@ export function DiscoverMapLayers({
         </View>
       )}
 
-      {!loading && !hasPeerData && !hasViewerPins && (
+      {!loading && !compactMapChrome && !hasPeerData && !hasViewerPins && (
         <View style={styles.emptyOverlay}>
           <Text style={styles.emptyText}>
-            No commute pins yet. Add home and work under Profile → Commute, or switch to Any commuter.
-            Orange heat = others’ demand; green = drivers; solid blue = others’ posted trips (not your
-            alternates).
+            No commute pins yet. Add home and work under Profile → Commute, or switch to Any commuter. Orange heat
+            = others’ demand; green = drivers; solid blue = others’ posted trips (not your alternates).
           </Text>
         </View>
       )}
-      {!loading && !hasPeerData && (hasViewerPins || hasViewerRoutes) && (
+      {!loading && !compactMapChrome && !hasPeerData && (hasViewerPins || hasViewerRoutes) && (
         <View style={styles.emptyOverlay}>
           <Text style={styles.emptyText}>
-            Your route: dark green = primary; teal / amber / purple = optional paths when Mapbox is on.
-            Tap an alternate line to make it your main route. Work pin is blue. Solid blue lines = others’
-            posted trips. Heat = demand in this scope.
+            Your route: dark green = primary; teal / amber / purple = optional paths when Mapbox is on. Tap an
+            alternate line to make it your main route. Work pin is blue. Solid blue lines = others’ posted trips.
+            Heat = demand in this scope.
           </Text>
         </View>
       )}

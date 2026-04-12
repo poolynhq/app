@@ -185,6 +185,7 @@ export default function ScheduleSetup() {
         .from("users")
         .update({
           detour_tolerance_mins: toleranceMins,
+          passenger_max_driver_detour_mins: toleranceMins,
           reliability_score: reliabilityScore,
           schedule_flex_mins: flexibilityEnabled ? 15 : 0,
         })
@@ -197,6 +198,7 @@ export default function ScheduleSetup() {
           .from("users")
           .update({
             detour_tolerance_mins: toleranceMins,
+            passenger_max_driver_detour_mins: toleranceMins,
           })
           .eq("id", profile.id);
 
