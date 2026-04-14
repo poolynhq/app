@@ -998,8 +998,8 @@ export default function MyRides() {
                 </View>
                 <Text style={styles.emptyTitle}>Ride history</Text>
                 <Text style={styles.emptyBody}>
-                  Finished Crew Poolyn trips appear here with route and Poolyn Credit breakdown. Start a day from
-                  Home → your crew card, then finish and settle from the crew chat when the run is done.
+                  Finished crew trips appear here with route and internal credit breakdown. Start a day from Home,
+                  your crew card, then finish and settle from the crew chat when the run is done.
                 </Text>
               </View>
             ) : null}

@@ -32,3 +32,12 @@ verify_jwt = true
 # Stripe signs the body; no Supabase JWT.
 [functions.stripe-webhook]
 verify_jwt = false
+
+[functions.pricing-quote]
+verify_jwt = true
+
+[functions.stripe-connect-onboard]
+verify_jwt = true
+
+[functions.booking-refund]
+verify_jwt = true

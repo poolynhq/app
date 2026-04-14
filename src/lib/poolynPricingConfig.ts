@@ -46,18 +46,16 @@ export const POOLYN_STOP_FEE_CENTS = 100;
 export type PoolynTripFeeContext = "mingle" | "crew";
 
 /**
- * **Mingle Poolyn**: cash service fee on top of trip share for independent riders (no active workplace
- * subscription). Customer pays `contribution + round(contribution * this)`; driver earns Poolyn Credits
- * equal to contribution (integer, same scale as cents). Keep in sync with
- * `supabase/migrations/0072_mingle_crew_cash_fees_and_ride_context.sql`.
+ * **Mingle / ad-hoc Poolyn**: network fee on trip share for independent riders (no active workplace
+ * subscription). Stripe Connect destination charge: customer pays contribution + fee; application fee
+ * is the platform portion. Keep in sync with `supabase/migrations/0094_stripe_connect_marketplace_fees.sql`.
  */
-export const POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION = 0.1;
+export const POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION = 0.15;
 
 /**
- * **Crew Poolyn**: lower per-rider cash admin fee; each paying rider pays their own share × this rate,
- * so total platform cash can exceed a single Mingle ride while each person pays less than Mingle’s rate.
+ * **Crew Poolyn**: coordination fee per rider on that rider’s share (group travel).
  */
-export const POOLYN_CREW_EXPLORER_ADMIN_FEE_FRACTION = 0.04;
+export const POOLYN_CREW_EXPLORER_ADMIN_FEE_FRACTION = 0.1;
 
 /** @deprecated Use {@link POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION} or crew fraction by context. */
 export const POOLYN_EXPLORER_NETWORK_FEE_FRACTION = POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION;

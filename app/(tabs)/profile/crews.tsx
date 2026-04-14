@@ -17,22 +17,25 @@ import { useAuth } from "@/contexts/AuthContext";
 import { showAlert } from "@/lib/platformAlert";
 import {
   createCrew,
-  joinCrewByCode,
   listMyCrews,
   getOrCreateTripInstance,
   deleteCrewAsOwner,
   isCrewOwner,
-  MAX_CREWS_PER_USER,
   type CrewListRow,
 } from "@/lib/crewMessaging";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
+import { JoinCrewByCodeModal } from "@/components/home/JoinCrewByCodeModal";
+import {
+  CrewPoolynCrewActionButtons,
+  CrewPoolynCrewHintText,
+  CrewPoolynCrewListRows,
+} from "@/components/home/CrewPoolynCrewPicker";
 import {
   Colors,
   Spacing,
   BorderRadius,
   FontSize,
   FontWeight,
-  Shadow,
 } from "@/constants/theme";
 
 export default function PoolynCrewsScreen() {
@@ -46,7 +49,6 @@ export default function PoolynCrewsScreen() {
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const [newName, setNewName] = useState("");
-  const [joinCode, setJoinCode] = useState("");
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -110,25 +112,6 @@ export default function PoolynCrewsScreen() {
     await openTodaysChat(res.crewId);
   }
 
-  async function onJoin() {
-    const code = joinCode.trim();
-    if (!code) {
-      showAlert("Code required", "Enter the invite code from your crew organiser.");
-      return;
-    }
-    setSaving(true);
-    const res = await joinCrewByCode(code);
-    setSaving(false);
-    if (!res.ok) {
-      showAlert("Could not join", res.reason);
-      return;
-    }
-    setJoinCode("");
-    setJoinOpen(false);
-    await load();
-    showAlert("Joined", "Open today’s chat from this list or Messages.");
-  }
-
   function confirmDeleteCrew(c: CrewListRow) {
     showAlert(
       `Delete “${c.name}”?`,
@@ -184,101 +167,28 @@ export default function PoolynCrewsScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <View style={styles.actions}>
-        <TouchableOpacity
-          style={[styles.actionBtn, rows.length >= MAX_CREWS_PER_USER && styles.actionBtnDisabled]}
-          onPress={() => {
-            if (rows.length >= MAX_CREWS_PER_USER) {
-              showAlert(
-                "Crew limit",
-                `You can be in up to ${MAX_CREWS_PER_USER} crews. Delete or leave one here before creating another.`
-              );
-              return;
-            }
-            setCreateOpen(true);
-          }}
-          activeOpacity={0.85}
-        >
-          <Ionicons
-            name="add-circle-outline"
-            size={20}
-            color={rows.length >= MAX_CREWS_PER_USER ? Colors.textTertiary : Colors.primary}
-          />
-          <Text
-            style={[styles.actionBtnText, rows.length >= MAX_CREWS_PER_USER && styles.actionBtnTextDisabled]}
-          >
-            New crew
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionBtn} onPress={() => setJoinOpen(true)} activeOpacity={0.85}>
-          <Ionicons name="enter-outline" size={20} color={Colors.primary} />
-          <Text style={styles.actionBtnText}>Join with code</Text>
-        </TouchableOpacity>
+      <View style={styles.topPad}>
+        <CrewPoolynCrewActionButtons
+          crewCount={rows.length}
+          onNewCrew={() => setCreateOpen(true)}
+          onJoinWithCode={() => setJoinOpen(true)}
+        />
+        <CrewPoolynCrewHintText variant="profile" />
       </View>
-
-      <Text style={styles.hint}>
-        Tap a crew for settings (members, invite). The chat icon opens today&apos;s thread. Each calendar day has its
-        own chat thread — roll the dice in chat to pick today&apos;s driver; they lead coordination for the day.
-      </Text>
 
       {loading ? (
         <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.xl }} />
       ) : (
         <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
-          {rows.length === 0 ? (
-            <View style={styles.empty}>
-              <Ionicons name="people-outline" size={44} color={Colors.textTertiary} />
-              <Text style={styles.emptyTitle}>No crews yet</Text>
-              <Text style={styles.emptyBody}>Create one for your carpool cluster or join with an invite code.</Text>
-            </View>
-          ) : (
-            rows.map((c) => (
-              <View key={c.id} style={styles.card}>
-                <TouchableOpacity
-                  style={styles.cardMain}
-                  onPress={() => router.push(`/(tabs)/profile/crew-settings/${c.id}`)}
-                  activeOpacity={0.75}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${c.name}, crew settings`}
-                >
-                  <View style={styles.cardIcon}>
-                    <Ionicons name="people" size={22} color={Colors.primary} />
-                  </View>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.cardTitle} numberOfLines={1}>
-                      {c.name}
-                    </Text>
-                    <Text style={styles.cardSub}>Settings · invite {c.invite_code}</Text>
-                  </View>
-                </TouchableOpacity>
-                <Pressable
-                  style={styles.cardChat}
-                  onPress={() => void openTodaysChat(c.id)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open today’s chat for ${c.name}`}
-                  hitSlop={10}
-                >
-                  <Ionicons name="chatbubbles-outline" size={22} color={Colors.primary} />
-                </Pressable>
-                {ownerByCrewId[c.id] ? (
-                  <Pressable
-                    style={styles.cardDelete}
-                    onPress={() => confirmDeleteCrew(c)}
-                    disabled={deletingCrewId !== null}
-                    accessibilityRole="button"
-                    accessibilityLabel="Delete crew"
-                    hitSlop={10}
-                  >
-                    {deletingCrewId === c.id ? (
-                      <ActivityIndicator color={Colors.error} size="small" />
-                    ) : (
-                      <Ionicons name="trash-outline" size={22} color={Colors.error} />
-                    )}
-                  </Pressable>
-                ) : null}
-              </View>
-            ))
-          )}
+          <CrewPoolynCrewListRows
+            mode="profile"
+            crews={rows}
+            ownerByCrewId={ownerByCrewId}
+            deletingCrewId={deletingCrewId}
+            onCrewMainPress={(c) => router.push(`/(tabs)/profile/crew-settings/${c.id}`)}
+            onOpenChat={(crewId) => void openTodaysChat(crewId)}
+            onDeleteOwner={(c) => confirmDeleteCrew(c)}
+          />
         </ScrollView>
       )}
 
@@ -310,34 +220,7 @@ export default function PoolynCrewsScreen() {
         </Pressable>
       </Modal>
 
-      <Modal visible={joinOpen} transparent animationType="fade" onRequestClose={() => setJoinOpen(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => !saving && setJoinOpen(false)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>Join crew</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Invite code"
-              placeholderTextColor={Colors.textTertiary}
-              value={joinCode}
-              onChangeText={setJoinCode}
-              autoCapitalize="none"
-              editable={!saving}
-            />
-            <View style={styles.modalRow}>
-              <TouchableOpacity style={styles.modalCancel} onPress={() => setJoinOpen(false)} disabled={saving}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.modalOk} onPress={() => void onJoin()} disabled={saving}>
-                {saving ? (
-                  <ActivityIndicator color={Colors.textOnPrimary} />
-                ) : (
-                  <Text style={styles.modalOkText}>Join</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <JoinCrewByCodeModal visible={joinOpen} onClose={() => setJoinOpen(false)} onJoined={() => load()} />
     </SafeAreaView>
   );
 }
@@ -358,95 +241,11 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
     color: Colors.text,
   },
-  actions: {
-    flexDirection: "row",
-    gap: Spacing.sm,
+  topPad: {
     paddingHorizontal: Spacing.xl,
     marginBottom: Spacing.md,
-  },
-  actionBtn: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: Spacing.xs,
-    paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryLight,
-  },
-  actionBtnText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.primaryDark,
-  },
-  actionBtnDisabled: { opacity: 0.65, borderColor: Colors.border },
-  actionBtnTextDisabled: { color: Colors.textTertiary },
-  hint: {
-    fontSize: FontSize.xs,
-    color: Colors.textSecondary,
-    paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing.md,
-    lineHeight: 18,
   },
   list: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing["3xl"] },
-  card: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.sm,
-    paddingVertical: Spacing.sm,
-    paddingLeft: Spacing.md,
-    paddingRight: Spacing.xs,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surface,
-    marginBottom: Spacing.sm,
-    ...Shadow.sm,
-  },
-  cardMain: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.md,
-    minWidth: 0,
-    paddingVertical: Spacing.xs,
-  },
-  cardChat: {
-    padding: Spacing.sm,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  cardDelete: {
-    padding: Spacing.sm,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  cardIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: Colors.primaryLight,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.text },
-  cardSub: { fontSize: FontSize.xs, color: Colors.textTertiary, marginTop: 2 },
-  empty: { alignItems: "center", paddingTop: Spacing["2xl"] },
-  emptyTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-    color: Colors.text,
-    marginTop: Spacing.md,
-  },
-  emptyBody: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    textAlign: "center",
-    marginTop: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
-  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: Colors.overlay,

@@ -96,7 +96,7 @@ export function CrewTripHistoryCard({ row }: { row: CompletedCrewTripHistoryRow 
         <View style={styles.block}>
           <Text style={styles.blockTitle}>Driver</Text>
           <Text style={styles.line}>
-            {(s?.driver_full_name || "Driver").trim()}: +{formatPoolynCreditsBalance(earned)} Poolyn Credits
+            {(s?.driver_full_name || "Driver").trim()}: +{formatPoolynCreditsBalance(earned)} trip share (internal credits)
           </Text>
         </View>
       ) : null}

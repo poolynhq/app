@@ -3,9 +3,20 @@ import {
   commuteDistanceMetersFromRouteJson,
   type MapboxDirectionsRouteJson,
 } from "@/lib/mapboxDirections";
-import { simplifyRouteCoords } from "@/lib/mapboxRouteGeometry";
+import {
+  dedupeConsecutiveCoords,
+  normalizeRouteCoords,
+  simplifyRouteCoords,
+} from "@/lib/mapboxRouteGeometry";
 
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ?? "";
+
+/** Crew routine card map tile (width x height). Wider-than-tall phones: ~1.85:1 avoids letterboxing in the card. */
+export const CREW_ROUTINE_STATIC_MAP_SIZE = "900x480@2x";
+/** Keep in sync with `mapImg` aspectRatio on MyCrewRoutineCard. */
+export const CREW_ROUTINE_STATIC_MAP_ASPECT = 900 / 480;
+/** Tighter than 88px so the route fills more of the frame (less empty margin). */
+const CREW_STATIC_PADDING = 36;
 
 export interface SingleRoute {
   distanceKm: number;
@@ -182,14 +193,14 @@ const CREW_PIN_COLORS = ["0B8457", "E74C3C", "2563EB", "D97706", "7C3AED", "DB27
 /** Static map with one pin per commute home (general area only). */
 export function buildCrewMemberPinsMapUrl(
   points: { lat: number; lng: number }[],
-  size = "600x220@2x"
+  size = CREW_ROUTINE_STATIC_MAP_SIZE
 ): string | null {
   if (!MAPBOX_TOKEN || points.length === 0) return null;
   const overlays = points.map((p, i) => {
     const hex = CREW_PIN_COLORS[i % CREW_PIN_COLORS.length];
     return `pin-s+${hex}(${p.lng},${p.lat})`;
   });
-  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/${size}?padding=64&access_token=${MAPBOX_TOKEN}`;
+  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/${size}?padding=${CREW_STATIC_PADDING}&access_token=${MAPBOX_TOKEN}`;
 }
 
 /**
@@ -200,7 +211,7 @@ export function buildCrewRoutineOverviewMapUrl(
   viewerWork: { lat: number; lng: number },
   routeInfo: RouteInfo | null,
   otherMemberHomes: { lat: number; lng: number }[],
-  size = "600x260@2x"
+  size = CREW_ROUTINE_STATIC_MAP_SIZE
 ): string | null {
   if (!MAPBOX_TOKEN) return null;
   const overlays: string[] = [];
@@ -234,7 +245,7 @@ export function buildCrewRoutineOverviewMapUrl(
   overlays.push(`pin-l+0B8457(${viewerHome.lng},${viewerHome.lat})`);
   overlays.push(`pin-l+E74C3C(${viewerWork.lng},${viewerWork.lat})`);
 
-  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/${size}?padding=72&access_token=${MAPBOX_TOKEN}`;
+  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/${size}?padding=${CREW_STATIC_PADDING}&access_token=${MAPBOX_TOKEN}`;
 }
 
 /**
@@ -245,7 +256,7 @@ export function buildViewerCommuteStaticMapUrl(
   viewerWork: { lat: number; lng: number },
   routeLine: [number, number][] | null | undefined,
   otherMemberHomes: { lat: number; lng: number }[],
-  size = "600x280@2x"
+  size = CREW_ROUTINE_STATIC_MAP_SIZE
 ): string | null {
   if (!MAPBOX_TOKEN) return null;
   const overlays: string[] = [];
@@ -269,7 +280,70 @@ export function buildViewerCommuteStaticMapUrl(
   }
   overlays.push(`pin-l+0B8457(${viewerHome.lng},${viewerHome.lat})`);
   overlays.push(`pin-l+E74C3C(${viewerWork.lng},${viewerWork.lat})`);
-  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/${size}?padding=72&access_token=${MAPBOX_TOKEN}`;
+  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/${size}?padding=${CREW_STATIC_PADDING}&access_token=${MAPBOX_TOKEN}`;
+}
+
+/**
+ * Driving route through ordered waypoints (driver home → pickups → destination).
+ * Uses Mapbox Directions with up to 25 coordinates.
+ */
+export async function fetchDrivingRouteThroughWaypoints(
+  waypoints: { lat: number; lng: number }[]
+): Promise<[number, number][] | null> {
+  if (!MAPBOX_TOKEN || waypoints.length < 2) return null;
+  const path = waypoints.map((p) => `${p.lng},${p.lat}`).join(";");
+  const qs = `access_token=${encodeURIComponent(MAPBOX_TOKEN)}&geometries=geojson&overview=full`;
+  for (const profile of ["mapbox/driving-traffic", "mapbox/driving"] as const) {
+    try {
+      const res = await fetch(`https://api.mapbox.com/directions/v5/${profile}/${path}?${qs}`);
+      const data = (await res.json()) as {
+        routes?: MapboxDirectionsRouteJson[];
+      };
+      const route = data.routes?.[0];
+      const raw = route?.geometry?.coordinates;
+      if (!route || !raw?.length) continue;
+      const normalized = dedupeConsecutiveCoords(normalizeRouteCoords(raw));
+      const coords = simplifyRouteCoords(normalized, 100);
+      if (coords.length >= 2) return coords;
+    } catch {
+      /* try next profile */
+    }
+  }
+  return null;
+}
+
+/**
+ * Pool preview map: actual driving polyline plus driver (yellow), destination (red), other homes (small pins).
+ */
+export function buildCrewPoolRouteStaticMapUrl(
+  routeLine: [number, number][],
+  pins: {
+    driver: { lat: number; lng: number };
+    destination: { lat: number; lng: number };
+    others: { lat: number; lng: number }[];
+  },
+  size = CREW_ROUTINE_STATIC_MAP_SIZE
+): string | null {
+  if (!MAPBOX_TOKEN || routeLine.length < 2) return null;
+  const simplified = simplifyRouteCoords(routeLine, 72);
+  const feature = {
+    type: "Feature",
+    properties: {
+      stroke: "#0B8457",
+      "stroke-width": 6,
+      "stroke-opacity": 0.92,
+    },
+    geometry: { type: "LineString", coordinates: simplified },
+  };
+  const overlays: string[] = [`geojson(${encodeURIComponent(JSON.stringify(feature))})`];
+  for (let i = 0; i < pins.others.length; i++) {
+    const p = pins.others[i];
+    const hex = CREW_PIN_COLORS[(i + 2) % CREW_PIN_COLORS.length];
+    overlays.push(`pin-s+${hex}(${p.lng},${p.lat})`);
+  }
+  overlays.push(`pin-l+FACC15(${pins.driver.lng},${pins.driver.lat})`);
+  overlays.push(`pin-l+E74C3C(${pins.destination.lng},${pins.destination.lat})`);
+  return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${overlays.join(",")}/auto/${size}?padding=${CREW_STATIC_PADDING}&access_token=${MAPBOX_TOKEN}`;
 }
 
 /** Short place line for displaying a saved pin (approximate street area). */

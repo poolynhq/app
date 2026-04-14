@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
@@ -7,23 +7,23 @@ import {
   Pressable,
   Image,
   ActivityIndicator,
-  ScrollView,
   Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import {
   ackCrewTripPickupReady,
   crewTripPickupAckDriverishId,
   deleteCrewAsOwner,
   fetchCrewMemberHomePins,
+  fetchCrewOwnerHomeWork,
   fetchCrewRoster,
   fetchCrewTripInstance,
   fetchPendingCrewInvitees,
   getOrCreateTripInstance,
   isCrewOwner,
   parseRiderPickupReadyMap,
-  rollCrewDriverDice,
   tryDepartureReadinessReminder,
   viewerShouldAckPickupReady,
   type CrewListRow,
@@ -36,8 +36,11 @@ import { localDateKey } from "@/lib/dailyCommuteLocationGate";
 import { parseStoredLineStringGeometry } from "@/lib/discoverMapViewerRoutes";
 import {
   buildCrewMemberPinsMapUrl,
+  buildCrewPoolRouteStaticMapUrl,
   buildCrewRoutineOverviewMapUrl,
   buildViewerCommuteStaticMapUrl,
+  CREW_ROUTINE_STATIC_MAP_ASPECT,
+  fetchDrivingRouteThroughWaypoints,
   fetchRouteInfo,
   mapboxTokenPresent,
 } from "@/lib/mapboxCommutePreview";
@@ -45,15 +48,19 @@ import { supabase } from "@/lib/supabase";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
 import { showAlert } from "@/lib/platformAlert";
 import { presentDrivingNavigationPicker } from "@/lib/navigationUrls";
-import { computeCrewDriverDiceEligibility } from "@/lib/crewDriverDicePool";
+import { computeCrewDriverWheelPool } from "@/lib/crewDriverDicePool";
 import {
   distanceMeters,
   orderPickupsAlongCommute,
+  orderPickupsForDriverPoolRoute,
   orderPickupsGreedy,
   resolveCommuteGeometry,
   type ResolvedCommuteLeg,
 } from "@/lib/crewRouteOrdering";
+import { modMinutes, formatMinutesAsTime } from "@/lib/crewSchedulePlan";
+import { computeCrewSchedulePlanForDriver } from "@/lib/crewScheduleForDriver";
 import { CrewTripStartSummaryModal } from "@/components/home/CrewTripStartSummaryModal";
+import { CrewTripScheduleModal } from "@/components/home/CrewTripScheduleModal";
 import { computeCrewEqualCorridorRiderBreakdown } from "@/lib/costModel";
 import { PassengerPaymentCostLines } from "@/components/home/PassengerPaymentCostLines";
 import type { User } from "@/types/database";
@@ -65,6 +72,18 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+
+const POOLYN_YELLOW = "#FACC15";
+const POOLYN_YELLOW_TEXT = "#1A1A2E";
+
+/** Planned driver departure from saved crew schedule (used for banners and reminders). */
+function driverDepartMinutesFromCrew(c: CrewListRow): number {
+  const mode = c.schedule_mode ?? "arrival";
+  const anchor = c.schedule_anchor_minutes ?? 540;
+  const est = c.estimated_pool_drive_minutes ?? 45;
+  if (mode === "arrival") return modMinutes(anchor - est);
+  return modMinutes(anchor);
+}
 
 type ProfilePins = Pick<User, "home_location" | "work_location">;
 
@@ -100,6 +119,13 @@ function mergeMemberAndPendingPins(
   return [...byUser.values()];
 }
 
+/** Stable key for when the static map route must be recomputed (driver or excluded pickups). */
+function tripInstanceMapSig(row: CrewTripInstanceRow | null): string {
+  if (!row) return "";
+  const ex = [...(row.excluded_pickup_user_ids ?? [])].sort().join(",");
+  return `${row.designated_driver_user_id ?? ""}|${ex}`;
+}
+
 export function MyCrewRoutineCard({
   userId,
   crew,
@@ -118,10 +144,21 @@ export function MyCrewRoutineCard({
   const [roster, setRoster] = useState<CrewRosterMember[]>([]);
   const [pendingInvitees, setPendingInvitees] = useState<PendingCrewInvitee[]>([]);
   const [crewPinsForNav, setCrewPinsForNav] = useState<CrewMemberMapPin[]>([]);
+  /** Home pins for accepted crew_members only (excludes pending invites). Used for driver wheel. */
+  const [acceptedMemberPins, setAcceptedMemberPins] = useState<CrewMemberMapPin[]>([]);
+  /** Owner commute pins so corridor dice/wheel hints match server (not viewer-specific). */
+  const [crewOwnerAnchor, setCrewOwnerAnchor] = useState<{
+    home: unknown;
+    work: unknown;
+  } | null>(null);
   const [owner, setOwner] = useState(false);
   const [tripStartOpen, setTripStartOpen] = useState(false);
   const [todayTrip, setTodayTrip] = useState<CrewTripInstanceRow | null>(null);
-  const [rollingDice, setRollingDice] = useState(false);
+  /** Avoids reloading the map when Realtime updates unrelated trip fields (e.g. pickup acks). */
+  const mapTripSigRef = useRef<string>("");
+  const [tripScheduleOpen, setTripScheduleOpen] = useState(false);
+  /** Set when the wheel finishes so the schedule modal opens with the new driver before React re-renders trip state. */
+  const [scheduleDriverIdOverride, setScheduleDriverIdOverride] = useState<string | null>(null);
   const [pickupAckBusy, setPickupAckBusy] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [commuteStats, setCommuteStats] = useState<{
@@ -135,7 +172,7 @@ export function MyCrewRoutineCard({
 
   const loadMapAndRoster = useCallback(async () => {
     setLoadingMap(true);
-    const [pinsMember, rosterRows, pending, crRes, geomRes] = await Promise.all([
+    const [pinsMember, rosterRows, pending, crRes, geomRes, ownerHw] = await Promise.all([
       fetchCrewMemberHomePins(crew.id),
       fetchCrewRoster(crew.id),
       fetchPendingCrewInvitees(crew.id),
@@ -146,9 +183,14 @@ export function MyCrewRoutineCard({
         .eq("direction", "to_work")
         .maybeSingle(),
       supabase.rpc("get_crew_routine_map_route_geojson", { p_crew_id: crew.id }),
+      fetchCrewOwnerHomeWork(crew.id),
     ]);
     setRoster(rosterRows);
     setPendingInvitees(pending);
+    setAcceptedMemberPins(pinsMember);
+    setCrewOwnerAnchor(
+      ownerHw ? { home: ownerHw.home_location, work: ownerHw.work_location } : null
+    );
     const pins = mergeMemberAndPendingPins(pinsMember, pending);
     setCrewPinsForNav(pins);
 
@@ -168,7 +210,9 @@ export function MyCrewRoutineCard({
     }
 
     const inst = await getOrCreateTripInstance(crew.id, localDateKey());
-    setTodayTrip(inst.ok ? inst.row : null);
+    const tripRow = inst.ok ? inst.row : null;
+    setTodayTrip(tripRow);
+    mapTripSigRef.current = tripInstanceMapSig(tripRow);
 
     if (!mapboxTokenPresent()) {
       setMapUrl(null);
@@ -180,7 +224,53 @@ export function MyCrewRoutineCard({
     const work = parseGeoPoint(profilePins.work_location as unknown);
 
     let url: string | null = null;
-    if (home && work) {
+    const designatedId = tripRow?.designated_driver_user_id ?? null;
+    const excludedTrip = new Set(tripRow?.excluded_pickup_user_ids ?? []);
+
+    if (home && work && designatedId) {
+      const driverPin = pins.find((p) => p.userId === designatedId);
+      if (driverPin) {
+        const pattern = crew.commute_pattern ?? "to_work";
+        const activeLeg: ResolvedCommuteLeg = pattern === "to_home" ? "to_home" : "to_work";
+        const g = resolveCommuteGeometry({ pattern, activeLeg, home, work });
+        if (g?.finalDestination) {
+          const passengerPins = pins.filter(
+            (p) => p.userId !== designatedId && !excludedTrip.has(p.userId)
+          );
+          const ordered = orderPickupsForDriverPoolRoute(
+            driverPin,
+            passengerPins,
+            g.segmentStart,
+            g.segmentEnd
+          );
+          let waypoints: { lat: number; lng: number }[] = [
+            { lat: driverPin.lat, lng: driverPin.lng },
+            ...ordered.map((p) => ({ lat: p.lat, lng: p.lng })),
+            g.finalDestination,
+          ];
+          const MAX_WAYPOINTS = 25;
+          if (waypoints.length > MAX_WAYPOINTS) {
+            const first = waypoints[0]!;
+            const last = waypoints[waypoints.length - 1]!;
+            const mid = waypoints.slice(1, -1);
+            waypoints = [first, ...mid.slice(0, MAX_WAYPOINTS - 2), last];
+          }
+          const routeCoords = await fetchDrivingRouteThroughWaypoints(waypoints);
+          if (routeCoords && routeCoords.length >= 2) {
+            const othersForPins = pins
+              .filter((p) => p.userId !== designatedId)
+              .map((p) => ({ lat: p.lat, lng: p.lng }));
+            url = buildCrewPoolRouteStaticMapUrl(routeCoords, {
+              driver: { lat: driverPin.lat, lng: driverPin.lng },
+              destination: g.finalDestination,
+              others: othersForPins,
+            });
+          }
+        }
+      }
+    }
+
+    if (!url && home && work) {
       const others = pins.filter(
         (p) => p.userId !== userId && distanceMeters({ lat: p.lat, lng: p.lng }, home) > 120
       );
@@ -193,13 +283,14 @@ export function MyCrewRoutineCard({
         const routeInfo = await fetchRouteInfo(home, work);
         url = buildCrewRoutineOverviewMapUrl(home, work, routeInfo, otherPts);
       }
-    } else if (pins.length > 0) {
+    } else if (!url && pins.length > 0) {
       url = buildCrewMemberPinsMapUrl(pins.map((p) => ({ lat: p.lat, lng: p.lng })));
     }
     setMapUrl(url);
     setLoadingMap(false);
   }, [
     crew.id,
+    crew.commute_pattern,
     crew.locked_route_distance_m,
     crew.locked_route_duration_s,
     profilePins.home_location,
@@ -228,7 +319,12 @@ export function MyCrewRoutineCard({
         },
         () => {
           void fetchCrewTripInstance(id).then((row) => {
-            if (row) setTodayTrip(row);
+            if (!row) return;
+            setTodayTrip(row);
+            const nextSig = tripInstanceMapSig(row);
+            if (nextSig !== mapTripSigRef.current) {
+              void loadMapAndRoster();
+            }
           });
         }
       )
@@ -236,7 +332,7 @@ export function MyCrewRoutineCard({
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [todayTrip?.id, todayTrip?.trip_finished_at]);
+  }, [todayTrip?.id, todayTrip?.trip_finished_at, loadMapAndRoster]);
 
   useFocusEffect(
     useCallback(() => {
@@ -305,7 +401,7 @@ export function MyCrewRoutineCard({
    * Handles the "Finish Poolyn" card button.
    *
    * The button becomes active (filled amber) as soon as the trip starts. Pressing it navigates
-   * to the crew chat where the actual "Finish trip and settle Poolyn Credits" action lives.
+   * to the crew chat where the actual "Finish trip and settle credits" action lives.
    *
    * If the trip is active and some riders have not yet acknowledged pickup readiness, a warning
    * dialog is shown first. The driver can wait for them or proceed to chat anyway. The final
@@ -401,35 +497,6 @@ export function MyCrewRoutineCard({
     onCrewDeleted?.();
   }
 
-  const othersPins = useMemo(
-    () => crewPinsForNav.filter((p) => p.userId !== userId),
-    [crewPinsForNav, userId]
-  );
-
-  const orderedLegsPreview = useMemo(() => {
-    if (othersPins.length === 0) return [];
-    const home = parseGeoPoint(profilePins.home_location as unknown);
-    const work = parseGeoPoint(profilePins.work_location as unknown);
-    const pattern = crew.commute_pattern ?? "to_work";
-    const activeLeg: ResolvedCommuteLeg = pattern === "to_home" ? "to_home" : "to_work";
-    const g =
-      home && work ? resolveCommuteGeometry({ pattern, activeLeg, home, work }) : null;
-    let origin: { lat: number; lng: number };
-    if (home) origin = home;
-    else {
-      let lat = 0;
-      let lng = 0;
-      for (const p of othersPins) {
-        lat += p.lat;
-        lng += p.lng;
-      }
-      const n = othersPins.length;
-      origin = { lat: lat / n, lng: lng / n };
-    }
-    if (g) return orderPickupsAlongCommute(origin, othersPins, g.segmentStart, g.segmentEnd);
-    return orderPickupsGreedy(origin, othersPins);
-  }, [othersPins, profilePins.home_location, profilePins.work_location, crew.commute_pattern]);
-
   const finalNavPoint = useMemo(() => {
     const pattern = crew.commute_pattern ?? "to_work";
     if (pattern === "to_home") return parseGeoPoint(profilePins.home_location as unknown);
@@ -444,18 +511,93 @@ export function MyCrewRoutineCard({
         : "Workplace (after pickups)";
 
   const invitedShown = Math.max(pendingInviteCount, pendingInvitees.length);
-  const driverDice = useMemo(
+  const wheelPool = useMemo(
     () =>
-      computeCrewDriverDiceEligibility({
-        memberPins: crewPinsForNav,
+      computeCrewDriverWheelPool({
+        memberPins: acceptedMemberPins,
         commutePattern: crew.commute_pattern ?? "to_work",
         viewerHome: profilePins.home_location,
         viewerWork: profilePins.work_location,
+        corridorAnchorHome: crewOwnerAnchor?.home,
+        corridorAnchorWork: crewOwnerAnchor?.work,
       }),
-    [crewPinsForNav, crew.commute_pattern, profilePins.home_location, profilePins.work_location]
+    [
+      acceptedMemberPins,
+      crew.commute_pattern,
+      profilePins.home_location,
+      profilePins.work_location,
+      crewOwnerAnchor?.home,
+      crewOwnerAnchor?.work,
+    ]
   );
 
   const designatedDriverId = todayTrip?.designated_driver_user_id ?? null;
+
+  /** All accepted passengers who should appear in pickup order (includes viewer when they ride). */
+  const passengerPinsForLegPreview = useMemo(() => {
+    const ex = new Set(todayTrip?.excluded_pickup_user_ids ?? []);
+    return acceptedMemberPins.filter((p) => {
+      if (ex.has(p.userId)) return false;
+      if (designatedDriverId != null && p.userId === designatedDriverId) return false;
+      return true;
+    });
+  }, [acceptedMemberPins, designatedDriverId, todayTrip?.excluded_pickup_user_ids]);
+
+  const orderedLegsPreview = useMemo(() => {
+    if (passengerPinsForLegPreview.length === 0) return [];
+    const home = parseGeoPoint(profilePins.home_location as unknown);
+    const work = parseGeoPoint(profilePins.work_location as unknown);
+    const pattern = crew.commute_pattern ?? "to_work";
+    const activeLeg: ResolvedCommuteLeg = pattern === "to_home" ? "to_home" : "to_work";
+    const g =
+      home && work ? resolveCommuteGeometry({ pattern, activeLeg, home, work }) : null;
+    const driverPin =
+      designatedDriverId != null
+        ? acceptedMemberPins.find((p) => p.userId === designatedDriverId)
+        : null;
+    if (g && driverPin) {
+      return orderPickupsForDriverPoolRoute(
+        driverPin,
+        passengerPinsForLegPreview,
+        g.segmentStart,
+        g.segmentEnd
+      );
+    }
+    let origin: { lat: number; lng: number };
+    if (home) origin = home;
+    else {
+      let lat = 0;
+      let lng = 0;
+      for (const p of passengerPinsForLegPreview) {
+        lat += p.lat;
+        lng += p.lng;
+      }
+      const n = passengerPinsForLegPreview.length;
+      origin = { lat: lat / n, lng: lng / n };
+    }
+    if (g) {
+      return orderPickupsAlongCommute(
+        origin,
+        passengerPinsForLegPreview,
+        g.segmentStart,
+        g.segmentEnd
+      );
+    }
+    return orderPickupsGreedy(origin, passengerPinsForLegPreview);
+  }, [
+    passengerPinsForLegPreview,
+    profilePins.home_location,
+    profilePins.work_location,
+    crew.commute_pattern,
+    designatedDriverId,
+    acceptedMemberPins,
+  ]);
+
+  const todaysDriverFullName = useMemo(() => {
+    if (!designatedDriverId) return null;
+    const n = (roster.find((m) => m.userId === designatedDriverId)?.fullName ?? "").trim();
+    return n || null;
+  }, [designatedDriverId, roster]);
   const isTodaysDriver = !!(designatedDriverId && userId === designatedDriverId);
   const pickupDriverishId = todayTrip ? crewTripPickupAckDriverishId(todayTrip) : null;
   const riderReadyMap = useMemo(
@@ -492,43 +634,29 @@ export function MyCrewRoutineCard({
 
   const finishTripActive = !!(todayTrip?.trip_started_at && !todayTrip?.trip_finished_at);
 
-  const onRollDriverDice = useCallback(async () => {
-    if (rollingDice || driverDice.eligibleUserIds.length < 2) return;
-    setRollingDice(true);
-    try {
-      const inst = await getOrCreateTripInstance(crew.id, localDateKey());
-      if (!inst.ok) {
-        showAlert("Could not roll", inst.reason);
-        return;
-      }
-      const res = await rollCrewDriverDice(inst.row.id, driverDice.eligibleUserIds);
-      if (!res.ok) {
-        showAlert("Driver dice", res.reason.replace(/_/g, " "));
-        return;
-      }
-      const row = await fetchCrewTripInstance(inst.row.id);
-      if (row) setTodayTrip(row);
-      void loadMapAndRoster().then(() => onRefresh?.());
-    } finally {
-      setRollingDice(false);
+  const wheelHint = useMemo(() => {
+    if (todayTrip?.trip_started_at && !todayTrip.trip_finished_at) {
+      return "Poolyn is in progress. Today’s driver cannot be changed here.";
     }
-  }, [rollingDice, driverDice.eligibleUserIds, crew.id, loadMapAndRoster, onRefresh]);
-
-  const driverDiceHint = useMemo(() => {
-    if (driverDice.reason === "ok" && driverDice.eligibleUserIds.length >= 2) {
-      return "Only the two homes farthest along your commute corridor (within ~15 km of the line), not mid-route.";
+    if (wheelPool.reason === "ok" && wheelPool.members.length >= 2) {
+      return "Tap Choose driver to open Crew Chat. Spin the wheel or tap I choose to drive. Corridor ends are on the wheel by default.";
     }
-    if (driverDice.reason === "no_geometry") {
-      return "Save home and work on your profile to enable driver dice.";
+    if (wheelPool.reason === "no_geometry") {
+      return "Save home and work on your profile to align the corridor and the wheel.";
     }
-    if (driverDice.reason === "too_few_pins") {
-      return "Need at least two members with saved home pins in this crew.";
+    if (wheelPool.reason === "too_few_pins") {
+      return "Need at least two accepted members with saved home pins in this crew.";
     }
-    if (driverDice.reason === "too_few_near_corridor") {
+    if (wheelPool.reason === "too_few_near_corridor") {
       return "Need two or more homes near the commute line.";
     }
-    return "Homes sit between the ends along the route; pick a driver in chat instead.";
-  }, [driverDice.eligibleUserIds.length, driverDice.reason]);
+    return "Homes sit between the ends along the route; pick a driver in Crew Chat instead.";
+  }, [wheelPool.reason, wheelPool.members.length, todayTrip?.trip_started_at, todayTrip?.trip_finished_at]);
+
+  /** After the trip starts, today’s driver is fixed until the day is done. */
+  const chooseDriverDisabled = !!todayTrip?.trip_finished_at || !!todayTrip?.trip_started_at;
+
+  const showChooseDriver = !todayTrip?.trip_finished_at;
 
   const tripStatus = useMemo(() => {
     if (!todayTrip) {
@@ -578,23 +706,17 @@ export function MyCrewRoutineCard({
       : null;
     const subtitle = designatedDriverId
       ? `Waiting for ${driverName} to start Poolyn.`
-      : "Pick today’s driver with the dice on this card (route ends only) or claim in group chat.";
+      : "Pick today’s driver with Choose driver below or claim in Crew Chat.";
     return {
       title: "Trip not started",
       subtitle,
-      icon: "ellipse-outline" as const,
+      icon: "time-outline" as const,
       variant: "idle" as const,
     };
   }, [todayTrip, loadingMap, commuteStats, designatedDriverId, roster]);
 
   const tripInProgress = tripStatus.variant === "active";
 
-  const legSummary =
-    crew.commute_pattern === "to_home"
-      ? "Work → Home"
-      : crew.commute_pattern === "round_trip"
-        ? "Round trip"
-        : "Home → Work";
   const commuteSummary =
     commuteStats != null
       ? `${(commuteStats.distance_m / 1000).toFixed(1)} km · ~${Math.round(commuteStats.duration_s / 60)} min`
@@ -612,6 +734,54 @@ export function MyCrewRoutineCard({
     if (!bd) return null;
     return { poolRiders, cents: bd.total_contribution };
   }, [commuteStats, memberCount]);
+
+  /** Solo corridor minutes for schedule math (locked crew route, then profile). */
+  const baseCorridorMinForSchedule = useMemo(() => {
+    if (commuteStats?.duration_s && commuteStats.duration_s > 0) {
+      return Math.max(1, Math.round(commuteStats.duration_s / 60));
+    }
+    if (crew.locked_route_duration_s != null && crew.locked_route_duration_s > 0) {
+      return Math.max(1, Math.round(crew.locked_route_duration_s / 60));
+    }
+    return 25;
+  }, [commuteStats, crew.locked_route_duration_s]);
+
+  /** Passengers in today’s pool (roster minus driver, respecting excluded pickups). Drives live suggested start when roster changes. */
+  const passengerUserIdsForSuggestedStart = useMemo(() => {
+    if (!designatedDriverId) return [] as string[];
+    const ex = new Set(todayTrip?.excluded_pickup_user_ids ?? []);
+    return roster
+      .filter((m) => m.userId !== designatedDriverId && !ex.has(m.userId))
+      .map((m) => m.userId);
+  }, [roster, designatedDriverId, todayTrip?.excluded_pickup_user_ids]);
+
+  const suggestedSchedulePlan = useMemo(() => {
+    if (!designatedDriverId) return null;
+    return computeCrewSchedulePlanForDriver({
+      commutePattern: crew.commute_pattern ?? "to_work",
+      viewerHome: profilePins.home_location,
+      viewerWork: profilePins.work_location,
+      driverUserId: designatedDriverId,
+      memberPins: acceptedMemberPins,
+      passengerUserIds: passengerUserIdsForSuggestedStart,
+      mode: crew.schedule_mode ?? "arrival",
+      anchorMinutes: modMinutes(crew.schedule_anchor_minutes ?? 540),
+      baseCorridorMinutes: baseCorridorMinForSchedule,
+      extraMinByUserId: {},
+    });
+  }, [
+    designatedDriverId,
+    acceptedMemberPins,
+    passengerUserIdsForSuggestedStart,
+    crew.commute_pattern,
+    crew.schedule_mode,
+    crew.schedule_anchor_minutes,
+    profilePins.home_location,
+    profilePins.work_location,
+    baseCorridorMinForSchedule,
+  ]);
+
+  const suggestedStartMinutes = suggestedSchedulePlan?.driverDepartMinutes ?? driverDepartMinutesFromCrew(crew);
 
   function openMapExternal() {
     if (!mapUrl) return;
@@ -635,10 +805,19 @@ export function MyCrewRoutineCard({
           <Text style={styles.crewName} numberOfLines={2}>
             {crew.name}
           </Text>
+          <Text style={styles.todaysDriverLine} numberOfLines={1}>
+            Today&apos;s driver: {todaysDriverFullName ?? "Not set yet"}
+          </Text>
           <View style={styles.chipRow}>
-            <View style={styles.infoChip}>
-              <Text style={styles.infoChipText}>{memberCount} in crew</Text>
-            </View>
+            <Pressable
+              style={styles.infoChip}
+              onPress={() => router.push(`/(tabs)/profile/crew-settings/${crew.id}`)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Crew settings, ${memberCount} members in crew`}
+            >
+              <Text style={styles.infoChipText}>{memberCount} members</Text>
+            </Pressable>
             {invitedShown > 0 ? (
               <View style={styles.infoChipMuted}>
                 <Text style={styles.infoChipTextMuted}>{invitedShown} invited</Text>
@@ -652,17 +831,41 @@ export function MyCrewRoutineCard({
           </View>
           <View style={styles.patternRow}>
             <View style={styles.patternBadge}>
-              <Ionicons
-                name={
-                  crew.commute_pattern === "round_trip" ? "git-compare-outline" : "arrow-forward"
-                }
-                size={14}
-                color={Colors.primaryDark}
-              />
-              <Text style={styles.patternBadgeText}>{legSummary}</Text>
+              {crew.commute_pattern === "round_trip" ? (
+                <>
+                  <Ionicons name="git-compare-outline" size={14} color={Colors.primaryDark} />
+                  <Text style={styles.patternBadgeText}>Round trip</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.patternBadgeText}>
+                    {crew.commute_pattern === "to_home" ? "Work" : "Home"}
+                  </Text>
+                  <Ionicons name="arrow-forward" size={14} color={Colors.primaryDark} />
+                  <Text style={styles.patternBadgeText}>
+                    {crew.commute_pattern === "to_home" ? "Home" : "Work"}
+                  </Text>
+                </>
+              )}
             </View>
           </View>
           {commuteSummary ? <Text style={styles.commuteSummary}>{commuteSummary}</Text> : null}
+          <View style={styles.suggestedStartRow}>
+            <Text style={styles.suggestedStartLine} numberOfLines={1}>
+              <Text style={styles.suggestedStartLabel}>Suggested Start: </Text>
+              <Text style={styles.suggestedStartTime}>{formatMinutesAsTime(suggestedStartMinutes)}</Text>
+            </Text>
+            {todayTrip && designatedDriverId ? (
+              <Pressable
+                onPress={() => setTripScheduleOpen(true)}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Open trip time calculator"
+              >
+                <Ionicons name="calculator-outline" size={20} color={Colors.primaryDark} />
+              </Pressable>
+            ) : null}
+          </View>
           {riderCostPreview ? (
             <View style={styles.riderCostBlock}>
               <PassengerPaymentCostLines
@@ -677,24 +880,15 @@ export function MyCrewRoutineCard({
             </View>
           ) : null}
         </View>
-        <View style={styles.headerActions}>
-          <Pressable
-            style={styles.iconBtn}
-            onPress={() => router.push(`/(tabs)/profile/crew-settings/${crew.id}`)}
-            hitSlop={8}
-            accessibilityLabel="Crew settings"
-          >
-            <Ionicons name="settings-outline" size={22} color={Colors.primary} />
-          </Pressable>
-          <Pressable
-            style={styles.manageBtn}
-            onPress={() => router.push("/(tabs)/profile/crews")}
-            hitSlop={8}
-          >
-            <Text style={styles.manageBtnText}>Manage</Text>
-            <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
-          </Pressable>
-        </View>
+        <Pressable
+          style={styles.iconBtn}
+          onPress={() => router.push(`/(tabs)/profile/crew-settings/${crew.id}`)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Crew settings"
+        >
+          <Ionicons name="settings-outline" size={22} color={Colors.primary} />
+        </Pressable>
       </View>
 
       <Pressable
@@ -705,11 +899,13 @@ export function MyCrewRoutineCard({
         accessibilityLabel="Open route map"
       >
         {loadingMap ? (
-          <ActivityIndicator color={Colors.primary} style={styles.mapLoader} />
+          <View style={[styles.mapTile, styles.mapLoaderWrap]}>
+            <ActivityIndicator color={Colors.primary} />
+          </View>
         ) : mapUrl ? (
-          <Image source={{ uri: mapUrl }} style={styles.mapImg} resizeMode="cover" />
+          <Image source={{ uri: mapUrl }} style={styles.mapTile} resizeMode="cover" />
         ) : (
-          <View style={styles.mapPlaceholder}>
+          <View style={[styles.mapTile, styles.mapPlaceholder]}>
             <Ionicons name="map-outline" size={32} color={Colors.textTertiary} />
             <Text style={styles.mapPhText}>
               {mapboxTokenPresent()
@@ -719,9 +915,6 @@ export function MyCrewRoutineCard({
           </View>
         )}
       </Pressable>
-      {mapUrl && !loadingMap ? (
-        <Text style={styles.mapHint}>Tap map to open a zoomable preview in the browser.</Text>
-      ) : null}
 
       <View
         style={[
@@ -731,17 +924,21 @@ export function MyCrewRoutineCard({
         ]}
         accessibilityLabel={`${tripStatus.title}. ${tripStatus.subtitle}`}
       >
-        <Ionicons
-          name={tripStatus.icon}
-          size={22}
-          color={
-            tripStatus.variant === "active"
-              ? Colors.primaryDark
-              : tripStatus.variant === "done"
-                ? Colors.textSecondary
-                : Colors.textSecondary
-          }
-        />
+        {tripStatus.variant === "idle" ? (
+          <View style={styles.tripStatusIconSpacer} />
+        ) : (
+          <Ionicons
+            name={tripStatus.icon}
+            size={22}
+            color={
+              tripStatus.variant === "active"
+                ? Colors.primaryDark
+                : tripStatus.variant === "done"
+                  ? Colors.textSecondary
+                  : Colors.textSecondary
+            }
+          />
+        )}
         <View style={styles.tripStatusTextCol}>
           <Text style={styles.tripStatusTitle}>{tripStatus.title}</Text>
           <Text style={styles.tripStatusSubtitle}>{tripStatus.subtitle}</Text>
@@ -796,31 +993,6 @@ export function MyCrewRoutineCard({
         </View>
       ) : null}
 
-      {!designatedDriverId && !todayTrip?.trip_finished_at ? (
-        <View style={styles.driverDiceBlock}>
-          <Pressable
-            style={[
-              styles.driverDiceBtn,
-              (driverDice.eligibleUserIds.length < 2 || rollingDice) && styles.driverDiceBtnOff,
-            ]}
-            disabled={driverDice.eligibleUserIds.length < 2 || rollingDice}
-            onPress={() => void onRollDriverDice()}
-            accessibilityRole="button"
-            accessibilityLabel="Pick driver at random from corridor ends"
-          >
-            {rollingDice ? (
-              <ActivityIndicator color={Colors.textOnPrimary} />
-            ) : (
-              <>
-                <Ionicons name="dice-outline" size={20} color={Colors.textOnPrimary} />
-                <Text style={styles.driverDiceBtnText}>Pick driver (dice)</Text>
-              </>
-            )}
-          </Pressable>
-          <Text style={styles.driverDiceHint}>{driverDiceHint}</Text>
-        </View>
-      ) : null}
-
       {canUseStartPoolyn ? (
         <Pressable
           style={styles.startPoolynBtn}
@@ -856,16 +1028,57 @@ export function MyCrewRoutineCard({
           {finishTripActive ? (
             <Text style={styles.finishHint}>
               Maps does not report back to Poolyn. In chat, use{" "}
-              <Text style={styles.finishHintBold}>Finish trip and settle Poolyn Credits</Text>.
+              <Text style={styles.finishHintBold}>Finish trip and settle credits</Text>.
             </Text>
           ) : (
             <Text style={styles.finishHintMuted}>
-              Outline until today&apos;s run has started; then this highlights so you can close the day and move
-              credits.
+              Outline until today&apos;s run has started; then this highlights so you can close the day in chat.
             </Text>
           )}
         </>
       ) : null}
+
+      <View style={styles.chatAndWheelBlock}>
+        <Pressable
+          style={[styles.chatBtn, opening && styles.btnDisabled]}
+          onPress={() => void openTodaysChat()}
+          disabled={opening}
+        >
+          {opening ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="chatbubbles" size={20} color="#fff" />
+              <Text style={styles.chatBtnText}>Crew Chat</Text>
+            </>
+          )}
+        </Pressable>
+
+        {showChooseDriver ? (
+          <>
+            <Pressable
+              style={[
+                styles.chooseDriverBtn,
+                chooseDriverDisabled && styles.chooseDriverBtnOff,
+              ]}
+              disabled={chooseDriverDisabled || opening}
+              onPress={() => void openTodaysChat()}
+              accessibilityRole="button"
+              accessibilityLabel="Choose driver in crew chat"
+            >
+              {opening ? (
+                <ActivityIndicator color={POOLYN_YELLOW_TEXT} />
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="steering" size={20} color={POOLYN_YELLOW_TEXT} />
+                  <Text style={styles.chooseDriverBtnText}>Choose driver</Text>
+                </>
+              )}
+            </Pressable>
+            <Text style={styles.wheelHintText}>{wheelHint}</Text>
+          </>
+        ) : null}
+      </View>
 
       <Pressable
         style={styles.detailsToggle}
@@ -883,58 +1096,53 @@ export function MyCrewRoutineCard({
       {detailsOpen ? (
         <View style={styles.detailsBody}>
           <View style={styles.detailBubble}>
-            <Text style={styles.detailBubbleText}>
-              Pins: your home and work with your saved commute line (when Mapbox can route). Smaller pins are
-              crewmates&apos; home areas. In Start Poolyn, turn off anyone not riding today so they are not charged
-              at settlement. Automated pickup checks against saved addresses are planned later.
+            <Text style={styles.detailBulletLine}>
+              • Pins show your home and work on your saved commute line when Mapbox can route.
+            </Text>
+            <Text style={styles.detailBulletLine}>
+              • Smaller pins are crewmates&apos; home areas.
+            </Text>
+            <Text style={styles.detailBulletLine}>
+              • In Start Poolyn, turn off anyone not riding today so they are not charged at settlement.
+            </Text>
+            <Text style={styles.detailBulletLine}>
+              • Automated pickup checks against saved addresses are planned later.
             </Text>
           </View>
-
-          <Pressable
-            style={[styles.chatBtn, opening && styles.btnDisabled]}
-            onPress={() => void openTodaysChat()}
-            disabled={opening}
-          >
-            {opening ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <>
-                <Ionicons name="chatbubbles" size={20} color="#fff" />
-                <Text style={styles.chatBtnText}>Group chat &amp; driver</Text>
-              </>
-            )}
-          </Pressable>
 
           {roster.length > 0 || pendingInvitees.length > 0 ? (
             <View style={styles.membersBlock}>
               {roster.length > 0 ? (
                 <>
                   <Text style={styles.membersLabel}>In this crew</Text>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.memberChips}
-                  >
+                  <View style={styles.memberChips}>
                     {roster.map((m) => (
-                      <View key={m.userId} style={styles.memberChip}>
+                      <View
+                        key={m.userId}
+                        style={[
+                          styles.memberChip,
+                          designatedDriverId === m.userId && styles.memberChipDriver,
+                        ]}
+                      >
                         <Ionicons name="person" size={14} color={Colors.primaryDark} />
                         <Text style={styles.memberChipText} numberOfLines={1}>
                           {(m.fullName || "Member").trim()}
                           {m.userId === userId ? " (you)" : ""}
                         </Text>
+                        {designatedDriverId === m.userId ? (
+                          <View style={styles.driverBadge}>
+                            <Text style={styles.driverBadgeText}>Driver</Text>
+                          </View>
+                        ) : null}
                       </View>
                     ))}
-                  </ScrollView>
+                  </View>
                 </>
               ) : null}
               {pendingInvitees.length > 0 ? (
                 <>
                   <Text style={[styles.membersLabel, styles.invitedLabel]}>Invited (pending)</Text>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.memberChips}
-                  >
+                  <View style={styles.memberChips}>
                     {pendingInvitees.map((p) => (
                       <View key={p.userId} style={[styles.memberChip, styles.memberChipPending]}>
                         <Ionicons name="mail-outline" size={14} color={Colors.textSecondary} />
@@ -944,7 +1152,7 @@ export function MyCrewRoutineCard({
                         </Text>
                       </View>
                     ))}
-                  </ScrollView>
+                  </View>
                 </>
               ) : null}
             </View>
@@ -1040,6 +1248,27 @@ export function MyCrewRoutineCard({
           })()
         }
       />
+
+      {todayTrip && (scheduleDriverIdOverride ?? designatedDriverId) ? (
+        <CrewTripScheduleModal
+          visible={tripScheduleOpen}
+          onClose={() => {
+            setTripScheduleOpen(false);
+            setScheduleDriverIdOverride(null);
+          }}
+          onSaved={() => {
+            void loadMapAndRoster().then(() => onRefresh?.());
+          }}
+          crew={crew}
+          tripInstance={todayTrip}
+          driverUserId={scheduleDriverIdOverride ?? designatedDriverId!}
+          viewerUserId={userId}
+          roster={roster}
+          memberPins={acceptedMemberPins}
+          viewerHome={profilePins.home_location}
+          viewerWork={profilePins.work_location}
+        />
+      ) : null}
     </View>
   );
 }
@@ -1078,7 +1307,8 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
     marginBottom: Spacing.sm,
   },
-  titleBlock: { flex: 1 },
+  titleBlock: { flex: 1, minWidth: 0 },
+  iconBtn: { padding: 4, marginTop: 2 },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
   infoChip: {
     paddingHorizontal: 10,
@@ -1105,6 +1335,26 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     color: Colors.text,
   },
+  suggestedStartRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  suggestedStartLine: {
+    flex: 1,
+    minWidth: 0,
+  },
+  suggestedStartLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary,
+  },
+  suggestedStartTime: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryDark,
+  },
   riderCostHint: {
     marginTop: 4,
     fontSize: FontSize.xs,
@@ -1125,8 +1375,6 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
   },
   patternBadgeText: { fontSize: 11, fontWeight: FontWeight.semibold, color: Colors.primaryDark },
-  headerActions: { alignItems: "flex-end", gap: Spacing.xs },
-  iconBtn: { padding: 4 },
   crewLabel: {
     fontSize: 10,
     fontWeight: FontWeight.bold,
@@ -1142,11 +1390,11 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  manageBtn: { flexDirection: "row", alignItems: "center", gap: 2, paddingVertical: 4 },
-  manageBtnText: {
+  todaysDriverLine: {
+    marginTop: 6,
     fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.primary,
+    fontWeight: FontWeight.medium,
+    color: Colors.textSecondary,
   },
   membersBlock: { marginBottom: Spacing.sm },
   membersLabel: {
@@ -1155,18 +1403,36 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginBottom: Spacing.xs,
   },
-  memberChips: { flexDirection: "row", gap: Spacing.sm, paddingVertical: 2 },
+  memberChips: { flexDirection: "column", gap: Spacing.sm, paddingVertical: 2, alignSelf: "stretch" },
   memberChip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     paddingVertical: 6,
     paddingHorizontal: Spacing.sm,
-    borderRadius: BorderRadius.full,
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    maxWidth: 200,
+    alignSelf: "stretch",
+  },
+  memberChipDriver: {
+    borderColor: "rgba(11, 132, 87, 0.55)",
+    backgroundColor: "rgba(236, 253, 245, 0.95)",
+  },
+  driverBadge: {
+    marginLeft: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.primary,
+  },
+  driverBadgeText: {
+    fontSize: 9,
+    fontWeight: FontWeight.bold,
+    color: Colors.textOnPrimary,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
   memberChipText: { fontSize: FontSize.xs, fontWeight: FontWeight.medium, color: Colors.text, flexShrink: 1 },
   invitedLabel: { marginTop: Spacing.sm },
@@ -1179,12 +1445,17 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
     overflow: "hidden",
     backgroundColor: Colors.borderLight,
-    minHeight: 140,
   },
-  mapImg: { width: "100%", height: 140 },
-  mapLoader: { paddingVertical: 48 },
+  /** Matches Mapbox `CREW_ROUTINE_STATIC_MAP_SIZE` so the bitmap is not cropped by a mismatched frame. */
+  mapTile: {
+    width: "100%",
+    aspectRatio: CREW_ROUTINE_STATIC_MAP_ASPECT,
+  },
+  mapLoaderWrap: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
   mapPlaceholder: {
-    minHeight: 140,
     alignItems: "center",
     justifyContent: "center",
     padding: Spacing.lg,
@@ -1194,12 +1465,6 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: Colors.textTertiary,
     textAlign: "center",
-  },
-  mapHint: {
-    fontSize: 10,
-    color: Colors.textTertiary,
-    marginTop: 4,
-    marginBottom: Spacing.sm,
   },
   startPoolynBtn: {
     flexDirection: "row",
@@ -1263,6 +1528,10 @@ const styles = StyleSheet.create({
   tripStatusBoxDone: {
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
+  },
+  tripStatusIconSpacer: {
+    width: 22,
+    minHeight: 22,
   },
   tripStatusTextCol: { flex: 1, minWidth: 0 },
   tripStatusTitle: {
@@ -1337,28 +1606,29 @@ const styles = StyleSheet.create({
   driverReadyName: { flex: 1, minWidth: 0, fontSize: FontSize.sm, color: Colors.text },
   driverReadyOk: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: Colors.primary },
   driverReadyWait: { fontSize: FontSize.xs, color: Colors.textTertiary },
-  driverDiceBlock: {
-    marginTop: Spacing.sm,
+  chatAndWheelBlock: {
     alignSelf: "stretch",
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
   },
-  driverDiceBtn: {
+  chooseDriverBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: Spacing.sm,
     paddingVertical: 12,
     borderRadius: BorderRadius.lg,
-    backgroundColor: "#7C3AED",
+    backgroundColor: POOLYN_YELLOW,
   },
-  driverDiceBtnOff: {
+  chooseDriverBtnOff: {
     opacity: 0.45,
   },
-  driverDiceBtnText: {
+  chooseDriverBtnText: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.bold,
-    color: Colors.textOnPrimary,
+    color: POOLYN_YELLOW_TEXT,
   },
-  driverDiceHint: {
+  wheelHintText: {
     fontSize: 10,
     color: Colors.textTertiary,
     textAlign: "center",
@@ -1403,8 +1673,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(11, 132, 87, 0.2)",
     padding: Spacing.sm,
+    gap: 6,
   },
-  detailBubbleText: {
+  detailBulletLine: {
     fontSize: 11,
     color: Colors.textSecondary,
     lineHeight: 16,

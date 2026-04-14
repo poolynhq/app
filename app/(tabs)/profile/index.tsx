@@ -30,7 +30,9 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+/* FUTURE USE: Poolyn Credits profile card
 import { PoolynCreditsCard } from "@/components/profile/PoolynCreditsCard";
+*/
 
 const GENDER_LABELS: Record<string, string> = {
   male: "Male",
@@ -299,6 +301,11 @@ export default function Profile() {
           label: "Commute & pickup",
           route: "/(tabs)/profile/commute-locations",
         },
+        {
+          icon: "receipt-outline" as const,
+          label: "Transaction history",
+          route: "/(tabs)/profile/payment-history",
+        },
         ...(profile && canViewerActAsDriver(profile)
           ? [
               {
@@ -478,9 +485,11 @@ export default function Profile() {
           </View>
         )}
 
+        {/* FUTURE USE: Poolyn Credits hero (commute_credits_balance)
         {profile ? (
           <PoolynCreditsCard balance={profile.commute_credits_balance ?? 0} />
         ) : null}
+        */}
 
         {/* Completion bar */}
         {completionPct < 100 && (
@@ -501,19 +510,11 @@ export default function Profile() {
           </View>
         )}
 
-        {/* Stats */}
+        {/* Stats: Rides only. FUTURE USE: Points + Flex Credits columns (legacy gamification)
+        <View style={styles.stat}>… points_balance, flex_credits_balance …</View>
+        */}
         <View style={styles.statsRow}>
-          <View style={styles.stat}>
-            <Text style={styles.statValue}>{profile?.points_balance ?? 0}</Text>
-            <Text style={styles.statLabel}>Points</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.stat}>
-            <Text style={styles.statValue}>{profile?.flex_credits_balance ?? 3}</Text>
-            <Text style={styles.statLabel}>Flex Credits</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.stat}>
+          <View style={[styles.stat, { flex: 1 }]}>
             <Text style={styles.statValue}>0</Text>
             <Text style={styles.statLabel}>Rides</Text>
           </View>

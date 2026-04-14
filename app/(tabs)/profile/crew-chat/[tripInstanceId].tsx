@@ -21,9 +21,12 @@ import { showAlert } from "@/lib/platformAlert";
 import {
   ackCrewTripPickupReady,
   crewTripPickupAckDriverishId,
+  fetchCrewMemberHomePins,
   fetchCrewMessages,
   fetchCrewName,
   fetchCrewRoster,
+  fetchCrewRow,
+  fetchCrewOwnerHomeWork,
   fetchCrewTripContributionForSettlement,
   fetchCrewTripInstance,
   finishAndSettleCrewTripCredits,
@@ -32,10 +35,15 @@ import {
   setCrewDesignatedDriver,
   sendCrewUserMessage,
   viewerShouldAckPickupReady,
+  type CrewListRow,
+  type CrewMemberMapPin,
   type CrewMessageRow,
   type CrewRosterMember,
   type CrewTripInstanceRow,
 } from "@/lib/crewMessaging";
+import { CrewTripScheduleModal } from "@/components/home/CrewTripScheduleModal";
+import { CollaborativeDriverSpinModal } from "@/components/home/CollaborativeDriverSpinModal";
+import { computeCrewDriverWheelPool, type CrewWheelMember } from "@/lib/crewDriverDicePool";
 import {
   Colors,
   Spacing,
@@ -43,6 +51,7 @@ import {
   FontSize,
   FontWeight,
 } from "@/constants/theme";
+import { firstNameOnly } from "@/lib/personName";
 
 export default function CrewTripChatScreen() {
   const { tripInstanceId: tripParam } = useLocalSearchParams<{ tripInstanceId: string | string[] }>();
@@ -61,7 +70,18 @@ export default function CrewTripChatScreen() {
   const [pickupAckBusy, setPickupAckBusy] = useState(false);
   const [imOwner, setImOwner] = useState(false);
   const [roster, setRoster] = useState<CrewRosterMember[]>([]);
+  const [tripScheduleOpen, setTripScheduleOpen] = useState(false);
+  const [scheduleCrew, setScheduleCrew] = useState<CrewListRow | null>(null);
+  const [schedulePins, setSchedulePins] = useState<CrewMemberMapPin[]>([]);
+  const [spinModalOpen, setSpinModalOpen] = useState(false);
+  const [spinMembers, setSpinMembers] = useState<CrewWheelMember[]>([]);
+  const [spinPrepBusy, setSpinPrepBusy] = useState(false);
   const listRef = useRef<FlatList<CrewMessageRow>>(null);
+
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => m.kind !== "dice"),
+    [messages]
+  );
 
   const reload = useCallback(async () => {
     if (!tripInstanceId) return;
@@ -213,10 +233,78 @@ export default function CrewTripChatScreen() {
       showAlert("Could not set driver", res.reason.replace(/_/g, " "));
       return;
     }
-    void reload();
+    await reload();
+    const row = await fetchCrewTripInstance(tripInstanceId);
+    const cid = row?.crew_id;
+    if (cid) {
+      const [crewRow, pins] = await Promise.all([fetchCrewRow(cid), fetchCrewMemberHomePins(cid)]);
+      if (crewRow) setScheduleCrew(crewRow);
+      setSchedulePins(pins);
+      setTripScheduleOpen(true);
+    }
   }
 
+  const driverActionsLocked = !!(tripRow?.trip_started_at || tripRow?.trip_finished_at);
+
+  const prepareSpinAndOpen = useCallback(async () => {
+    if (!tripInstanceId || !tripRow?.crew_id || !profile?.id || spinPrepBusy) return;
+    setSpinPrepBusy(true);
+    try {
+      const [crewRow, pins, ownerHw] = await Promise.all([
+        fetchCrewRow(tripRow.crew_id),
+        fetchCrewMemberHomePins(tripRow.crew_id),
+        fetchCrewOwnerHomeWork(tripRow.crew_id),
+      ]);
+      if (!crewRow) {
+        showAlert("Could not load crew", "Try again.");
+        return;
+      }
+      if (pins.length < 2) {
+        showAlert(
+          "Wheel unavailable",
+          "Need at least two crew members with saved home pins."
+        );
+        return;
+      }
+      const wheel = computeCrewDriverWheelPool({
+        memberPins: pins,
+        commutePattern: crewRow.commute_pattern,
+        viewerHome: profile.home_location,
+        viewerWork: profile.work_location,
+        corridorAnchorHome: ownerHw?.home_location,
+        corridorAnchorWork: ownerHw?.work_location,
+      });
+      if (wheel.reason === "ok" && wheel.members.length > 0) {
+        setSpinMembers(wheel.members);
+      } else {
+        setSpinMembers(
+          pins.map((p) => ({
+            userId: p.userId,
+            displayName: (p.fullName || "Member").trim() || "Member",
+            isMidRoute: false,
+          }))
+        );
+      }
+      setSpinModalOpen(true);
+    } finally {
+      setSpinPrepBusy(false);
+    }
+  }, [
+    tripInstanceId,
+    tripRow?.crew_id,
+    profile?.id,
+    profile?.home_location,
+    profile?.work_location,
+    spinPrepBusy,
+  ]);
+
   const designatedId = tripRow?.designated_driver_user_id ?? null;
+
+  const designatedDriverFirstName = useMemo(() => {
+    if (!designatedId) return null;
+    const r = roster.find((m) => m.userId === designatedId);
+    return firstNameOnly(r?.fullName);
+  }, [designatedId, roster]);
   const iAmDriver = !!(profile?.id && designatedId && profile.id === designatedId);
 
   // The person who pressed "Start Poolyn" is the de-facto driver even when no designated driver
@@ -248,7 +336,7 @@ export default function CrewTripChatScreen() {
     (iAmDriver || imOwner || iAmTripStarter);
 
   /**
-   * Called when the driver taps "Finish trip and settle Poolyn Credits".
+   * Called when the driver taps "Finish trip and settle credits".
    *
    * Flow:
    * 1. Rider readiness guard (soft warning): if some riders have not tapped "I am ready for
@@ -336,7 +424,7 @@ export default function CrewTripChatScreen() {
       });
       if (!prev.ok) {
         showAlert(
-          "Cannot settle credits",
+          "Cannot settle",
           prev.reason === "no_route_stats"
             ? "Save a locked crew route or a to-work commute on your profile so Poolyn can price the share."
             : prev.reason === "pricing_unavailable"
@@ -349,7 +437,7 @@ export default function CrewTripChatScreen() {
       const sub =
         payingRiderCount < 1
           ? "No paying riders today (everyone excluded or solo). The trip will still close with no credit movement."
-          : `About ${each.toLocaleString()} Poolyn Credits from each of ${payingRiderCount} rider(s) to today's driver. Crew explorer admin fee is up to 4% in credits for riders not on a workplace network (same idea as the cash line on the crew card).`;
+          : `About ${each.toLocaleString()} internal credits from each of ${payingRiderCount} rider(s) to today's driver. Crew explorer admin fee is up to 4% in credits for riders not on a workplace network (same idea as the cash line on the crew card).`;
       showAlert("Finish crew trip?", sub, [
         { text: "Cancel", style: "cancel" },
         {
@@ -366,10 +454,10 @@ export default function CrewTripChatScreen() {
                 if (!res.ok) {
                   if (res.reason === "insufficient_credits") {
                     showAlert(
-                      "Not enough Poolyn Credits",
+                      "Not enough credits",
                       res.balance != null && res.needed != null
                         ? `A rider needs ${res.needed.toLocaleString()} credits but only has ${res.balance.toLocaleString()}.`
-                        : "A rider does not have enough Poolyn Credits for this share."
+                        : "A rider does not have enough credits for this share."
                     );
                   } else {
                     showAlert("Could not settle", res.reason.replace(/_/g, " "));
@@ -378,7 +466,7 @@ export default function CrewTripChatScreen() {
                 }
                 await refreshProfile();
                 void reload();
-                showAlert("Trip finished", "Poolyn Credits have been moved to the driver for this day.");
+                showAlert("Trip finished", "Credits have been moved to the driver for this day.");
               } finally {
                 setSettling(false);
               }
@@ -417,15 +505,17 @@ export default function CrewTripChatScreen() {
           <Text style={styles.driverBannerText}>You&apos;re today&apos;s driver. Lead timing in this chat.</Text>
         </View>
       ) : designatedId ? (
-        <View style={styles.driverHint}>
-          <Text style={styles.driverHintText}>
-            Today&apos;s driver is set. They coordinate pickup order and departure.
+        <View style={styles.driverNamedBanner}>
+          <Ionicons name="ribbon-outline" size={20} color={Colors.primaryDark} />
+          <Text style={styles.driverNamedBannerText}>
+            Today&apos;s driver:{" "}
+            <Text style={styles.driverNamedEmphasis}>{designatedDriverFirstName ?? "Assigned"}</Text>
           </Text>
         </View>
       ) : (
         <View style={styles.driverHint}>
           <Text style={styles.driverHintText}>
-            No driver yet. Use Pick driver (dice) on your crew card on Home, or tap below if you are driving today.
+            No driver yet. Spin the wheel with the crew here, or tap I choose to drive if you are driving today.
           </Text>
         </View>
       )}
@@ -467,23 +557,46 @@ export default function CrewTripChatScreen() {
         </View>
       ) : null}
 
-      <TouchableOpacity
-        style={styles.claimBtn}
-        onPress={() => void onClaimDriver()}
-        disabled={claiming || iAmDriver}
-        activeOpacity={0.85}
-      >
-        {claiming ? (
-          <ActivityIndicator color={Colors.primary} />
-        ) : (
-          <>
-            <Ionicons name="car-outline" size={20} color={Colors.primary} />
-            <Text style={styles.claimBtnText}>
-              {iAmDriver ? "You’re marked as today’s driver" : "I’m driving today (publish)"}
-            </Text>
-          </>
-        )}
-      </TouchableOpacity>
+      <View style={styles.driverActionCol}>
+        <TouchableOpacity
+          style={[
+            styles.claimBtn,
+            (claiming || iAmDriver || driverActionsLocked) && styles.claimBtnDisabled,
+          ]}
+          onPress={() => void onClaimDriver()}
+          disabled={claiming || iAmDriver || driverActionsLocked}
+          activeOpacity={0.85}
+        >
+          {claiming ? (
+            <ActivityIndicator color={Colors.primary} />
+          ) : (
+            <>
+              <Ionicons name="car-outline" size={20} color={Colors.primary} />
+              <Text style={styles.claimBtnText}>
+                {iAmDriver ? "You are marked as today's driver" : "I choose to drive"}
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.spinChatBtn,
+            (spinPrepBusy || driverActionsLocked) && styles.claimBtnDisabled,
+          ]}
+          onPress={() => void prepareSpinAndOpen()}
+          disabled={spinPrepBusy || driverActionsLocked}
+          activeOpacity={0.85}
+        >
+          {spinPrepBusy ? (
+            <ActivityIndicator color="#A16207" />
+          ) : (
+            <>
+              <Ionicons name="sync" size={20} color="#A16207" />
+              <Text style={styles.spinChatBtnText}>Spin the wheel</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
 
       {tripRow?.trip_started_at && !tripRow?.trip_finished_at ? (
         <View style={styles.tripLiveBanner}>
@@ -511,7 +624,7 @@ export default function CrewTripChatScreen() {
           ) : (
             <>
               <Ionicons name="flag-outline" size={20} color={Colors.textOnPrimary} />
-              <Text style={styles.finishBtnText}>Finish trip and settle Poolyn Credits</Text>
+              <Text style={styles.finishBtnText}>Finish trip and settle credits</Text>
             </>
           )}
         </TouchableOpacity>
@@ -519,24 +632,31 @@ export default function CrewTripChatScreen() {
 
       <FlatList
         ref={listRef}
-        data={messages}
+        data={visibleMessages}
         keyExtractor={(m) => m.id}
         contentContainerStyle={styles.listContent}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
         renderItem={({ item: m }) => {
-          if (m.kind === "system" || m.kind === "dice") {
+          if (m.kind === "system") {
             return (
               <View style={styles.systemWrap}>
-                <View style={m.kind === "dice" ? styles.diceBubble : styles.systemBubble}>
+                <View style={styles.systemBubble}>
                   <Text style={styles.systemText}>{m.body}</Text>
                 </View>
               </View>
             );
           }
           const mine = m.sender_id === profile?.id;
+          const isDriverMessage = !!(designatedId && m.sender_id === designatedId);
           return (
             <View style={[styles.msgRow, mine && styles.msgRowMine]}>
-              <View style={[styles.msgBubble, mine ? styles.msgBubbleMine : styles.msgBubbleTheirs]}>
+              <View
+                style={[
+                  styles.msgBubble,
+                  mine ? styles.msgBubbleMine : styles.msgBubbleTheirs,
+                  isDriverMessage && (mine ? styles.msgBubbleDriverMine : styles.msgBubbleDriverTheirs),
+                ]}
+              >
                 {!mine && m.sender_name ? (
                   <Text style={styles.senderLabel}>{m.sender_name}</Text>
                 ) : null}
@@ -569,6 +689,48 @@ export default function CrewTripChatScreen() {
           )}
         </TouchableOpacity>
       </View>
+
+      {tripInstanceId && profile?.id && spinMembers.length > 0 ? (
+        <CollaborativeDriverSpinModal
+          visible={spinModalOpen}
+          onClose={() => setSpinModalOpen(false)}
+          tripInstanceId={tripInstanceId}
+          members={spinMembers}
+          viewerUserId={profile.id}
+          onDriverAssigned={() => void reload()}
+          onCelebrationComplete={() => {
+            void (async () => {
+              const row = await fetchCrewTripInstance(tripInstanceId);
+              const cid = row?.crew_id;
+              if (cid) {
+                const [crewRow, pins] = await Promise.all([
+                  fetchCrewRow(cid),
+                  fetchCrewMemberHomePins(cid),
+                ]);
+                if (crewRow) setScheduleCrew(crewRow);
+                setSchedulePins(pins);
+                setTripScheduleOpen(true);
+              }
+            })();
+          }}
+        />
+      ) : null}
+
+      {tripRow && scheduleCrew && profile?.id ? (
+        <CrewTripScheduleModal
+          visible={tripScheduleOpen}
+          onClose={() => setTripScheduleOpen(false)}
+          onSaved={() => void reload()}
+          crew={scheduleCrew}
+          tripInstance={tripRow}
+          driverUserId={tripRow.designated_driver_user_id ?? profile.id}
+          viewerUserId={profile.id}
+          roster={roster}
+          memberPins={schedulePins}
+          viewerHome={profile.home_location}
+          viewerWork={profile.work_location}
+        />
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -597,6 +759,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
   },
   driverHintText: { fontSize: FontSize.xs, color: Colors.textSecondary, lineHeight: 18 },
+  driverNamedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: "rgba(11, 132, 87, 0.35)",
+  },
+  driverNamedBannerText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.text,
+    lineHeight: 20,
+  },
+  driverNamedEmphasis: { fontWeight: FontWeight.bold, color: Colors.primaryDark },
   riderAckBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -631,13 +813,16 @@ const styles = StyleSheet.create({
   },
   riderAckBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.textOnPrimary },
   claimBtnDisabled: { opacity: 0.65 },
+  driverActionCol: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.sm,
+    gap: Spacing.sm,
+  },
   claimBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: Spacing.sm,
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.sm,
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
@@ -648,6 +833,22 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
     color: Colors.primary,
+  },
+  spinChatBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FACC15",
+  },
+  spinChatBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: "#A16207",
   },
   tripLiveBanner: {
     flexDirection: "row",
@@ -697,15 +898,6 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.borderLight,
   },
-  diceBubble: {
-    maxWidth: "92%",
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    borderRadius: BorderRadius.lg,
-    backgroundColor: "#EDE9FE",
-    borderWidth: 1,
-    borderColor: "#C4B5FD",
-  },
   systemText: {
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
@@ -722,6 +914,15 @@ const styles = StyleSheet.create({
   },
   msgBubbleMine: { backgroundColor: Colors.primary },
   msgBubbleTheirs: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
+  msgBubbleDriverTheirs: {
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "rgba(11, 132, 87, 0.5)",
+  },
+  msgBubbleDriverMine: {
+    borderWidth: 2,
+    borderColor: "#FACC15",
+  },
   senderLabel: {
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,

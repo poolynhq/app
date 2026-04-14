@@ -15,13 +15,15 @@
     "db:reset": "supabase db reset",
     "lint": "expo lint",
     "seed:test-users": "node scripts/create-test-users.mjs",
-    "seed:adelaide-commute-riders": "node scripts/seed-adelaide-commute-riders.mjs"
+    "seed:adelaide-commute-riders": "node scripts/seed-adelaide-commute-riders.mjs",
+    "test": "tsx --test src/lib/payments/**/*.test.ts"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
     "@expo-google-fonts/plus-jakarta-sans": "^0.4.2",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@stripe/stripe-react-native": "^0.45.0",
     "@supabase/supabase-js": "^2.49.1",
     "@turf/turf": "^7.3.4",
     "expo": "~54.0.0",
@@ -54,6 +56,7 @@
     "react-native-worklets": "0.5.1"
   },
   "devDependencies": {
+    "tsx": "^4.19.3",
     "@types/react": "~19.1.0",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~10.0.0",

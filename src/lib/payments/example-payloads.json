@@ -1,0 +1,57 @@
+{
+  "pricing_quote_response_solo_driver": {
+    "ok": true,
+    "ride_id": "11111111-1111-1111-1111-111111111111",
+    "ride_passenger_id": "22222222-2222-2222-2222-222222222222",
+    "poolyn_context": "mingle",
+    "gross_trip_amount_cents": 10000,
+    "platform_fee_cents": 1500,
+    "total_payable_cents": 11500,
+    "fee_product_type": "solo_driver",
+    "platform_fee_label": "network fee",
+    "driver_user_id": "33333333-3333-3333-3333-333333333333",
+    "rider_user_id": "44444444-4444-4444-4444-444444444444",
+    "organization_id": null,
+    "net_payout_estimate_cents": 10000
+  },
+  "pricing_quote_response_group_trip": {
+    "ok": true,
+    "ride_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "ride_passenger_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "poolyn_context": "crew",
+    "gross_trip_amount_cents": 8000,
+    "platform_fee_cents": 800,
+    "total_payable_cents": 8800,
+    "fee_product_type": "group_trip",
+    "platform_fee_label": "coordination fee",
+    "driver_user_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "rider_user_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "organization_id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+    "net_payout_estimate_cents": 8000
+  },
+  "create_ride_payment_intent_success_connect": {
+    "ok": true,
+    "cash_to_charge_cents": 11500,
+    "client_secret": "pi_xxx_secret_xxx",
+    "payment_intent_id": "pi_xxx",
+    "connect_mode": "destination_charge",
+    "application_fee_cents": 1500
+  },
+  "stripe_webhook_payment_intent_succeeded": {
+    "id": "evt_xxx",
+    "type": "payment_intent.succeeded",
+    "data": {
+      "object": {
+        "id": "pi_xxx",
+        "amount": 11500,
+        "currency": "aud",
+        "metadata": {
+          "booking_id": "22222222-2222-2222-2222-222222222222",
+          "trip_id": "11111111-1111-1111-1111-111111111111",
+          "fee_type": "solo_driver",
+          "fee_percentage": "0.15"
+        }
+      }
+    }
+  }
+}

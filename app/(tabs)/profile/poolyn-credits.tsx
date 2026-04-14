@@ -1,19 +1,11 @@
-import { useCallback, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  RefreshControl,
-  ActivityIndicator,
-} from "react-native";
+/**
+ * FUTURE USE: Full Poolyn Credits activity screen (commute_credits_ledger list, balance header).
+ * Replaced with this placeholder while Stripe card payments are primary. Restore from git history if needed.
+ */
+import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "@react-navigation/native";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { supabase } from "@/lib/supabase";
-import { useAuth } from "@/contexts/AuthContext";
-import type { CommuteCreditsLedgerEntry } from "@/types/database";
-import { formatPoolynCreditsBalance } from "@/lib/poolynCreditsUi";
 import {
   Colors,
   Spacing,
@@ -22,236 +14,70 @@ import {
   FontWeight,
 } from "@/constants/theme";
 
-function txnTitle(t: CommuteCreditsLedgerEntry["txn_type"]): string {
-  switch (t) {
-    case "credit_earned":
-      return "Trip earnings";
-    case "credit_used":
-      return "Applied to trip share";
-    case "credit_adjustment":
-      return "Balance update";
-    default:
-      return "Activity";
-  }
-}
-
-function formatWhen(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("en-AU", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
-
-export default function PoolynCreditsActivityScreen() {
-  const { profile, refreshProfile } = useAuth();
-  const [rows, setRows] = useState<CommuteCreditsLedgerEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const load = useCallback(async () => {
-    if (!profile?.id) {
-      setRows([]);
-      setLoading(false);
-      return;
-    }
-    const { data, error } = await supabase
-      .from("commute_credits_ledger")
-      .select("*")
-      .eq("user_id", profile.id)
-      .order("created_at", { ascending: false })
-      .limit(80);
-    if (!error && data) setRows(data as CommuteCreditsLedgerEntry[]);
-    else setRows([]);
-    setLoading(false);
-    setRefreshing(false);
-  }, [profile?.id]);
-
-  useFocusEffect(
-    useCallback(() => {
-      setLoading(true);
-      void load();
-      void refreshProfile();
-    }, [load, refreshProfile])
-  );
-
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    void load();
-    void refreshProfile();
-  }, [load, refreshProfile]);
-
-  const balance = profile?.commute_credits_balance ?? 0;
+export default function PoolynCreditsPlaceholderScreen() {
+  const router = useRouter();
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
-      <View style={styles.header}>
-        <Text style={styles.balance}>{formatPoolynCreditsBalance(balance)}</Text>
-        <Text style={styles.sub}>Current balance</Text>
-        <Text style={styles.hint}>
-          Credits add up when you drive for others. When you ride, they can cover your trip share — any
-          separate cash service fee still applies unless your workplace network includes it.
+      <View style={styles.card}>
+        <Ionicons name="sparkles-outline" size={36} color={Colors.textTertiary} />
+        <Text style={styles.title}>Poolyn Credits</Text>
+        <Text style={styles.body}>
+          This balance and ledger are not shown in the app right now. Payments use card checkout instead.
         </Text>
+        <Text style={styles.body}>
+          For money you paid as a passenger, open Transaction history on your profile.
+        </Text>
+        <TouchableOpacity
+          style={styles.btn}
+          onPress={() => router.push("/(tabs)/profile/payment-history")}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="receipt-outline" size={20} color={Colors.textOnPrimary} />
+          <Text style={styles.btnText}>Transaction history</Text>
+        </TouchableOpacity>
       </View>
-      <Text style={styles.sectionTitle}>Recent activity</Text>
-      {loading ? (
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.xl }} />
-      ) : (
-        <FlatList
-          data={rows}
-          keyExtractor={(item) => item.id}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />
-          }
-          contentContainerStyle={styles.listContent}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="wallet-outline" size={40} color={Colors.textTertiary} />
-              <Text style={styles.emptyTitle}>No activity yet</Text>
-              <Text style={styles.emptyBody}>
-                Complete a trip as a driver to start building your balance.
-              </Text>
-            </View>
-          }
-          renderItem={({ item }) => {
-            const up = item.delta > 0;
-            return (
-              <View style={styles.row}>
-                <View
-                  style={[styles.deltaBadge, up ? styles.deltaBadgeUp : styles.deltaBadgeDown]}
-                >
-                  <Ionicons
-                    name={up ? "arrow-up" : "arrow-down"}
-                    size={14}
-                    color={up ? Colors.primaryDark : Colors.warning}
-                  />
-                </View>
-                <View style={styles.rowBody}>
-                  <Text style={styles.rowTitle}>{txnTitle(item.txn_type)}</Text>
-                  <Text style={styles.rowMeta}>{formatWhen(item.created_at)}</Text>
-                  {item.description ? (
-                    <Text style={styles.rowDesc} numberOfLines={2}>
-                      {item.description}
-                    </Text>
-                  ) : null}
-                </View>
-                <Text style={[styles.deltaText, up ? styles.deltaTextUp : styles.deltaTextDown]}>
-                  {item.delta > 0 ? "+" : item.delta < 0 ? "−" : ""}
-                  {formatPoolynCreditsBalance(Math.abs(item.delta))}
-                </Text>
-              </View>
-            );
-          }}
-        />
-      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
-  header: {
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.lg,
-  },
-  balance: {
-    fontSize: FontSize["3xl"],
-    fontWeight: FontWeight.bold,
-    color: Colors.text,
-    letterSpacing: -0.5,
-  },
-  sub: {
-    marginTop: 4,
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    fontWeight: FontWeight.medium,
-  },
-  hint: {
-    marginTop: Spacing.md,
-    fontSize: FontSize.sm,
-    lineHeight: 20,
-    color: Colors.textTertiary,
-  },
-  sectionTitle: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    color: Colors.textSecondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    paddingHorizontal: Spacing.lg,
-    marginBottom: Spacing.sm,
-  },
-  listContent: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing["4xl"],
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: Spacing.md,
+  card: {
+    margin: Spacing.xl,
+    padding: Spacing.xl,
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.md,
+    borderRadius: BorderRadius.lg,
     borderWidth: 1,
-    borderColor: Colors.borderLight,
-    padding: Spacing.base,
-    marginBottom: Spacing.sm,
-  },
-  deltaBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    borderColor: Colors.border,
     alignItems: "center",
-    justifyContent: "center",
+    gap: Spacing.md,
   },
-  deltaBadgeUp: { backgroundColor: Colors.primaryLight },
-  deltaBadgeDown: { backgroundColor: Colors.accentLight },
-  rowBody: { flex: 1, minWidth: 0 },
-  rowTitle: {
-    fontSize: FontSize.base,
-    fontWeight: FontWeight.semibold,
-    color: Colors.text,
-  },
-  rowMeta: {
-    marginTop: 2,
-    fontSize: FontSize.xs,
-    color: Colors.textTertiary,
-  },
-  rowDesc: {
-    marginTop: 4,
-    fontSize: FontSize.xs,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-  },
-  deltaText: {
-    fontSize: FontSize.base,
+  title: {
+    fontSize: FontSize.xl,
     fontWeight: FontWeight.bold,
-    fontVariant: ["tabular-nums"],
-  },
-  deltaTextUp: { color: Colors.primaryDark },
-  deltaTextDown: { color: Colors.warning },
-  empty: {
-    alignItems: "center",
-    paddingVertical: Spacing["3xl"],
-    paddingHorizontal: Spacing.xl,
-  },
-  emptyTitle: {
-    marginTop: Spacing.md,
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary,
-  },
-  emptyBody: {
-    marginTop: Spacing.sm,
-    fontSize: FontSize.sm,
-    color: Colors.textTertiary,
+    color: Colors.text,
     textAlign: "center",
-    lineHeight: 20,
+  },
+  body: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 22,
+    textAlign: "center",
+  },
+  btn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: BorderRadius.md,
+  },
+  btnText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textOnPrimary,
   },
 });

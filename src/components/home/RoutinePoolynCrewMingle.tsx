@@ -22,9 +22,19 @@ import {
   countCrewMembers,
   countPendingCrewInvitationsForCrew,
   MAX_CREWS_PER_USER,
+  isCrewOwner,
+  getOrCreateTripInstance,
+  deleteCrewAsOwner,
   type CrewListRow,
   type CrewInvitePendingRow,
 } from "@/lib/crewMessaging";
+import { localDateKey } from "@/lib/dailyCommuteLocationGate";
+import { JoinCrewByCodeModal } from "@/components/home/JoinCrewByCodeModal";
+import {
+  CrewPoolynCrewActionButtons,
+  CrewPoolynCrewHintText,
+  CrewPoolynCrewListRows,
+} from "@/components/home/CrewPoolynCrewPicker";
 import { showAlert } from "@/lib/platformAlert";
 import { MinglePoolynHomePanel } from "@/components/home/MinglePoolynHomePanel";
 import { useAuth } from "@/contexts/AuthContext";
@@ -91,12 +101,17 @@ export function RoutinePoolynCrewMingleBlock({
   const [crewCardStats, setCrewCardStats] = useState<
     Record<string, { members: number; pending: number }>
   >({});
+  const [ownerByCrewId, setOwnerByCrewId] = useState<Record<string, boolean>>({});
+  const [expandedCrewId, setExpandedCrewId] = useState<string | null>(null);
+  const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const [deletingCrewId, setDeletingCrewId] = useState<string | null>(null);
 
   const loadRoutineData = useCallback(async () => {
     if (!profile.id) {
       setMyCrews([]);
       setPendingInvites([]);
       setCrewCardStats({});
+      setOwnerByCrewId({});
       setRoutineLoading(false);
       return;
     }
@@ -119,13 +134,24 @@ export function RoutinePoolynCrewMingleBlock({
           })
         );
         setCrewCardStats(Object.fromEntries(statsEntries));
+        const ownerPairs = await Promise.all(
+          crews.map(async (c) => [c.id, await isCrewOwner(c.id, profile.id)] as const)
+        );
+        setOwnerByCrewId(Object.fromEntries(ownerPairs));
       } else {
         setCrewCardStats({});
+        setOwnerByCrewId({});
       }
     } finally {
       setRoutineLoading(false);
     }
   }, [profile.id]);
+
+  useEffect(() => {
+    if (expandedCrewId && !myCrews.some((c) => c.id === expandedCrewId)) {
+      setExpandedCrewId(null);
+    }
+  }, [myCrews, expandedCrewId]);
 
   useEffect(() => {
     if (!isFocused) return;
@@ -162,18 +188,70 @@ export function RoutinePoolynCrewMingleBlock({
     if (!r.ok) {
       const msg =
         r.reason === "too_many_crews"
-          ? `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave one under Profile → Poolyn Crews before accepting another invite.`
+          ? `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave or delete one in Crew Poolyn on Home before accepting another invite.`
           : r.reason;
       showAlert(accept ? "Could not accept" : "Could not decline", msg);
       return;
     }
     await loadRoutineData();
     if (accept) {
-      showAlert("You’re in the crew", "Open Profile → Crews or use Group chat on Home.");
+      showAlert("You’re in the crew", "Find it under Crew Poolyn on Home, or open today’s chat from the list.");
     }
   }
 
   const hasCrew = myCrews.length > 0;
+
+  async function openTodaysChat(crewId: string) {
+    const today = localDateKey();
+    const inst = await getOrCreateTripInstance(crewId, today);
+    if (!inst.ok) {
+      showAlert("Could not open chat", inst.reason);
+      return;
+    }
+    router.push({
+      pathname: "/(tabs)/profile/crew-chat/[tripInstanceId]",
+      params: { tripInstanceId: inst.row.id },
+    });
+  }
+
+  function confirmDeleteCrew(c: CrewListRow) {
+    showAlert(
+      `Delete “${c.name}”?`,
+      "Everyone loses access. Members, day chat threads, and pending invites are removed. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Continue",
+          style: "default",
+          onPress: () => {
+            showAlert(
+              "Delete crew permanently?",
+              "You are about to delete this crew for all members. This cannot be undone.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Delete crew",
+                  style: "destructive",
+                  onPress: () => void runDeleteCrew(c.id),
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  }
+
+  async function runDeleteCrew(crewId: string) {
+    setDeletingCrewId(crewId);
+    const r = await deleteCrewAsOwner(crewId);
+    setDeletingCrewId(null);
+    if (!r.ok) {
+      showAlert("Could not delete crew", r.reason);
+      return;
+    }
+    await loadRoutineData();
+  }
 
   return (
     <View style={styles.wrap}>
@@ -244,25 +322,50 @@ export function RoutinePoolynCrewMingleBlock({
           </View>
         ) : hasCrew ? (
           <View style={styles.crewHasWrap}>
-            {myCrews.map((c) => {
-              const st = crewCardStats[c.id];
-              return (
-                <MyCrewRoutineCard
-                  key={c.id}
-                  userId={profile.id}
-                  crew={c}
-                  memberCount={st?.members ?? 0}
-                  pendingInviteCount={st?.pending ?? 0}
-                  hasWorkplaceNetworkOnProfile={Boolean(profile.org_id)}
-                  profilePins={{
-                    home_location: profile.home_location,
-                    work_location: profile.work_location,
-                  }}
-                  onRefresh={() => void loadRoutineData()}
-                  onCrewDeleted={() => void loadRoutineData()}
-                />
-              );
-            })}
+            <CrewPoolynCrewActionButtons
+              crewCount={myCrews.length}
+              onNewCrew={() => {
+                if (myCrews.length >= MAX_CREWS_PER_USER) return;
+                setCrewModalOpen(true);
+              }}
+              onJoinWithCode={() => setJoinModalOpen(true)}
+            />
+            <CrewPoolynCrewHintText variant="home" />
+            <CrewPoolynCrewListRows
+              mode="home"
+              crews={myCrews}
+              ownerByCrewId={ownerByCrewId}
+              deletingCrewId={deletingCrewId}
+              selectedCrewId={expandedCrewId}
+              onCrewMainPress={(c) => {
+                setExpandedCrewId((prev) => (prev === c.id ? null : c.id));
+              }}
+              onOpenChat={(crewId) => void openTodaysChat(crewId)}
+              onDeleteOwner={(c) => confirmDeleteCrew(c)}
+            />
+            {expandedCrewId
+              ? (() => {
+                  const c = myCrews.find((x) => x.id === expandedCrewId);
+                  if (!c) return null;
+                  const st = crewCardStats[c.id];
+                  return (
+                    <MyCrewRoutineCard
+                      key={c.id}
+                      userId={profile.id}
+                      crew={c}
+                      memberCount={st?.members ?? 0}
+                      pendingInviteCount={st?.pending ?? 0}
+                      hasWorkplaceNetworkOnProfile={Boolean(profile.org_id)}
+                      profilePins={{
+                        home_location: profile.home_location,
+                        work_location: profile.work_location,
+                      }}
+                      onRefresh={() => void loadRoutineData()}
+                      onCrewDeleted={() => void loadRoutineData()}
+                    />
+                  );
+                })()
+              : null}
             {myCrews.length < MAX_CREWS_PER_USER ? (
               <Pressable
                 style={styles.secondaryCrewCta}
@@ -276,21 +379,16 @@ export function RoutinePoolynCrewMingleBlock({
               </Pressable>
             ) : (
               <Text style={styles.crewCapHint}>
-                You&apos;re in {MAX_CREWS_PER_USER} crews (the maximum). Leave one under Profile → Poolyn Crews to
+                You&apos;re in {MAX_CREWS_PER_USER} crews (the maximum). Leave or delete one in the list above to
                 add another.
               </Text>
             )}
           </View>
         ) : (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Same people, most days</Text>
-            <Text style={styles.cardBody}>
-              Form a crew with coworkers you trust. Selected people get an in-app invite; everyone can still use
-              the invite code. Coordinate in daily crew chat and take turns driving.
-            </Text>
-            <Pressable
-              style={[styles.crewCta, !commuteRouteReady && styles.crewCtaDisabled]}
-              onPress={() => {
+          <View style={styles.crewHasWrap}>
+            <CrewPoolynCrewActionButtons
+              crewCount={0}
+              onNewCrew={() => {
                 if (!commuteRouteReady) {
                   showAlert(
                     "Choose a route",
@@ -300,10 +398,34 @@ export function RoutinePoolynCrewMingleBlock({
                 }
                 setCrewModalOpen(true);
               }}
-            >
-              <Text style={styles.crewCtaText}>Form your Crew</Text>
-              <Ionicons name="arrow-forward" size={18} color="#fff" />
-            </Pressable>
+              onJoinWithCode={() => setJoinModalOpen(true)}
+            />
+            <Text style={styles.crewEmptyBlurb}>
+              Create a crew for people you ride with often, or join with an invite code from your organiser.
+            </Text>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Same people, most days</Text>
+              <Text style={styles.cardBody}>
+                Form a crew with coworkers you trust. Selected people get an in-app invite; everyone can still use
+                the invite code. Coordinate in daily crew chat and take turns driving.
+              </Text>
+              <Pressable
+                style={[styles.crewCta, !commuteRouteReady && styles.crewCtaDisabled]}
+                onPress={() => {
+                  if (!commuteRouteReady) {
+                    showAlert(
+                      "Choose a route",
+                      "Pick your usual commute route in the section above, then form a crew."
+                    );
+                    return;
+                  }
+                  setCrewModalOpen(true);
+                }}
+              >
+                <Text style={styles.crewCtaText}>Form your Crew</Text>
+                <Ionicons name="arrow-forward" size={18} color="#fff" />
+              </Pressable>
+            </View>
           </View>
         )
       ) : (
@@ -447,6 +569,14 @@ export function RoutinePoolynCrewMingleBlock({
           onCrewCreated?.();
         }}
       />
+      <JoinCrewByCodeModal
+        visible={joinModalOpen}
+        onClose={() => setJoinModalOpen(false)}
+        onJoined={async (crewId) => {
+          await loadRoutineData();
+          setExpandedCrewId(crewId);
+        }}
+      />
     </View>
   );
 }
@@ -529,6 +659,12 @@ const styles = StyleSheet.create({
   loadingCard: { alignItems: "center", gap: Spacing.sm, paddingVertical: Spacing.xl },
   loadingText: { fontSize: FontSize.sm, color: Colors.textSecondary },
   crewHasWrap: { gap: Spacing.sm },
+  crewEmptyBlurb: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    marginBottom: Spacing.sm,
+  },
   cardMingle: {
     backgroundColor: MINGLE_CARD_BG,
     borderColor: MINGLE_CARD_BORDER,

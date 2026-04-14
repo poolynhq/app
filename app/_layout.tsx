@@ -21,6 +21,7 @@ import {
 } from "@/lib/poolynSignupClosed";
 import { View, ActivityIndicator, StyleSheet, LogBox, Platform } from "react-native";
 import { CommuteLocationGateHost } from "@/components/CommuteLocationGateHost";
+import { StripeProviderGate } from "@/components/StripeProviderGate";
 
 if (__DEV__) {
   LogBox.ignoreLogs([/expo-notifications: Android Push notifications/]);
@@ -221,9 +222,11 @@ function NavigationGuard() {
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <StatusBar style="dark" />
-      <NavigationGuard />
-      <CommuteLocationGateHost />
+      <StripeProviderGate>
+        <StatusBar style="dark" />
+        <NavigationGuard />
+        <CommuteLocationGateHost />
+      </StripeProviderGate>
     </AuthProvider>
   );
 }

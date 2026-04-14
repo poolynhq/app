@@ -13,6 +13,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "@/lib/supabase";
+import { showAlert } from "@/lib/platformAlert";
+import {
+  shortActivityCta,
+  summarizeActivityNotification,
+} from "@/lib/activityNotificationCopy";
 import type { Notification } from "@/types/database";
 import {
   Colors,
@@ -57,18 +62,44 @@ export default function ActivityScreen() {
     [rows, dismissedIds]
   );
 
+  async function persistDismissedIds(next: Set<string>) {
+    await AsyncStorage.setItem(ACTIVITY_DISMISSED_KEY, JSON.stringify([...next]));
+  }
+
   async function dismissNotification(id: string) {
-    setDismissedIds((prev) => new Set([...prev, id]));
-    let arr: string[] = [];
-    try {
-      const raw = await AsyncStorage.getItem(ACTIVITY_DISMISSED_KEY);
-      const parsed = JSON.parse(raw ?? "[]");
-      arr = Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
-    } catch {
-      arr = [];
-    }
-    if (!arr.includes(id)) arr.push(id);
-    await AsyncStorage.setItem(ACTIVITY_DISMISSED_KEY, JSON.stringify(arr));
+    setDismissedIds((prev) => {
+      const n = new Set([...prev, id]);
+      void persistDismissedIds(n);
+      return n;
+    });
+  }
+
+  function promptClearAll() {
+    if (rows.length === 0) return;
+    showAlert(
+      "Clear all from Activity?",
+      "Hides every notification in this list. New ones will still show up when they arrive.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear all",
+          style: "destructive",
+          onPress: () => void clearAllNotifications(),
+        },
+      ]
+    );
+  }
+
+  async function clearAllNotifications() {
+    const ids = rows.map((r) => r.id);
+    if (ids.length === 0) return;
+    setDismissedIds((prev) => {
+      const n = new Set([...prev, ...ids]);
+      void persistDismissedIds(n);
+      return n;
+    });
+    await supabase.from("notifications").update({ read: true }).in("id", ids);
+    setRows((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, read: true } : r)));
   }
 
   const load = useCallback(async () => {
@@ -130,13 +161,36 @@ export default function ActivityScreen() {
           />
         }
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="notifications-outline" size={40} color={Colors.textTertiary} />
-            <Text style={styles.emptyTitle}>No activity yet</Text>
-            <Text style={styles.emptyBody}>
-              Workplace invites and updates from Poolyn will show up here.
-            </Text>
-          </View>
+          rows.length > 0 ? (
+            <View style={styles.empty}>
+              <Ionicons name="checkmark-done-outline" size={40} color={Colors.textTertiary} />
+              <Text style={styles.emptyTitle}>List cleared</Text>
+              <Text style={styles.emptyBody}>
+                Pull down to refresh. New notifications will appear here when they arrive.
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.empty}>
+              <Ionicons name="notifications-outline" size={40} color={Colors.textTertiary} />
+              <Text style={styles.emptyTitle}>No activity yet</Text>
+              <Text style={styles.emptyBody}>
+                Workplace invites and updates from Poolyn will show up here.
+              </Text>
+            </View>
+          )
+        }
+        ListFooterComponent={
+          visibleRows.length > 0 ? (
+            <TouchableOpacity
+              style={styles.clearAllBtn}
+              onPress={promptClearAll}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Clear all notifications from this list"
+            >
+              <Text style={styles.clearAllText}>Clear all from this list</Text>
+            </TouchableOpacity>
+          ) : null
         }
         renderItem={({ item }) => {
           const isJoinInvite = item.type === "network_join_invite";
@@ -153,11 +207,18 @@ export default function ActivityScreen() {
             item.type === "adhoc_driver_removed_you" ||
             item.type === "adhoc_trip_cancelled_by_driver" ||
             item.type === "adhoc_you_cancelled_seat";
+          const summary = summarizeActivityNotification({
+            type: item.type,
+            title: item.title,
+            body: item.body,
+          });
+          const cta = shortActivityCta({ type: item.type });
           return (
             <View style={[styles.row, !item.read && styles.rowUnread]}>
               {!item.read ? <View style={styles.unreadDot} /> : null}
               <TouchableOpacity
                 style={styles.rowTextCol}
+                accessibilityHint={cta ?? undefined}
                 onPress={() => {
                   if (isJoinInvite) {
                     openJoinInvite(item);
@@ -192,24 +253,14 @@ export default function ActivityScreen() {
                 }}
                 activeOpacity={0.75}
               >
-                <Text style={styles.rowTitle}>{item.title}</Text>
-                {item.body ? <Text style={styles.rowBody}>{item.body}</Text> : null}
+                <Text style={styles.rowTitle}>{summary.title}</Text>
+                {summary.body ? (
+                  <Text style={styles.rowBody} numberOfLines={4}>
+                    {summary.body}
+                  </Text>
+                ) : null}
                 <Text style={styles.rowMeta}>{new Date(item.created_at).toLocaleString()}</Text>
-                {isJoinInvite ? (
-                  <Text style={styles.rowCta}>Tap to join with invite code →</Text>
-                ) : null}
-                {isRideRequest ? (
-                  <Text style={styles.rowCta}>Tap to open Respond on My Rides →</Text>
-                ) : null}
-                {isCrewTripStarted ? (
-                  <Text style={styles.rowCta}>Tap to open Home and confirm pickup readiness</Text>
-                ) : null}
-                {isContributionUpdated ? (
-                  <Text style={styles.rowCta}>Tap to open My Rides for pricing details →</Text>
-                ) : null}
-                {isAdhocSeatOrTrip ? (
-                  <Text style={styles.rowCta}>Tap to open My Rides →</Text>
-                ) : null}
+                {cta ? <Text style={styles.rowCta}>{cta}</Text> : null}
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.dismissBtn}
@@ -275,5 +326,21 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: Spacing.xl,
     lineHeight: 20,
+  },
+  clearAllBtn: {
+    marginTop: Spacing.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  clearAllText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary,
   },
 });

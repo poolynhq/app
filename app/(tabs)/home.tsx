@@ -44,7 +44,9 @@ import { RoutinePoolynCrewMingleBlock } from "@/components/home/RoutinePoolynCre
 import { HomeNetworkHub } from "@/components/home/HomeNetworkHub";
 import { CommuteRouteChoicePanel } from "@/components/home/CommuteRouteChoicePanel";
 import { RoutePeopleSearchModal } from "@/components/home/RoutePeopleSearchModal";
+/* FUTURE USE: hero Poolyn Credits chip (commute_credits_balance)
 import { formatPoolynCreditsBalance } from "@/lib/poolynCreditsUi";
+*/
 import { canViewerActAsPassenger } from "@/lib/commuteMatching";
 import { useUnreadNotificationCount } from "@/hooks/useUnreadNotificationCount";
 import { resolveAvatarDisplayUrl } from "@/lib/avatarStorage";
@@ -522,18 +524,13 @@ export default function Dashboard() {
                   >
                     {formatHomeDateLine()}
                   </Text>
+                  {/* FUTURE USE: Poolyn Credits balance chip → poolyn-credits screen
                   <TouchableOpacity
                     style={styles.heroCreditsTouch}
                     onPress={() => router.push("/(tabs)/profile/poolyn-credits")}
-                    activeOpacity={0.75}
-                    accessibilityRole="button"
-                    accessibilityLabel="Poolyn Credits"
-                  >
-                    <Ionicons name="sparkles" size={14} color={Colors.accent} />
-                    <Text style={styles.heroCreditsText}>
-                      {formatPoolynCreditsBalance(profile?.commute_credits_balance ?? 0)}
-                    </Text>
+                    ...
                   </TouchableOpacity>
+                  */}
                 </View>
               </View>
               <Text

@@ -45,6 +45,13 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.poolyn.app",
+          "enableGooglePay": true
+        }
+      ],
       "expo-secure-store",
       "expo-location",
       "expo-font",

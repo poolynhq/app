@@ -247,6 +247,26 @@ export async function fetchCrewMemberHomePins(crewId: string): Promise<CrewMembe
   return out;
 }
 
+/** Crew owner's saved commute pins (canonical corridor anchor for dice/wheel hints). */
+export async function fetchCrewOwnerHomeWork(
+  crewId: string
+): Promise<{ home_location: unknown; work_location: unknown } | null> {
+  const { data: row, error } = await supabase
+    .from("crew_members")
+    .select("user_id")
+    .eq("crew_id", crewId)
+    .eq("role", "owner")
+    .maybeSingle();
+  if (error || !row?.user_id) return null;
+  const { data: u, error: e2 } = await supabase
+    .from("users")
+    .select("home_location, work_location")
+    .eq("id", row.user_id as string)
+    .maybeSingle();
+  if (e2 || !u) return null;
+  return { home_location: u.home_location, work_location: u.work_location };
+}
+
 export type CrewRosterMember = { userId: string; fullName: string | null };
 
 /** People with a pending in-app invite — not yet in crew_members until they accept. */
@@ -483,7 +503,7 @@ export async function joinCrewByCode(
     crew_not_found: "No crew matches that code.",
     org_mismatch: "This crew belongs to another workplace. Use an invite from your organisation.",
     invalid_code: "Enter a valid invite code.",
-    too_many_crews: `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave one under Profile → Poolyn Crews before joining another.`,
+    too_many_crews: `You can be in up to ${MAX_CREWS_PER_USER} crews. Leave or delete one in Crew Poolyn on Home before joining another.`,
   };
   return { ok: false, reason: human[reason] ?? reason };
 }
@@ -581,6 +601,29 @@ export async function tryDepartureReadinessReminder(params: {
     p_local_minutes: params.localMinutesFromMidnight,
     p_trip_local_date: params.tripLocalDate,
   });
+}
+
+/**
+ * Updates the shared schedule snapshot on `crews` (anchor, mode, estimated pool drive).
+ * Any crew member may call this via `poolyn_crew_update_schedule_snapshot` (for example after the driver changes).
+ */
+export async function updateCrewScheduleSnapshot(params: {
+  crewId: string;
+  scheduleMode: CrewScheduleMode;
+  scheduleAnchorMinutes: number;
+  estimatedPoolDriveMinutes: number;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_crew_update_schedule_snapshot", {
+    p_crew_id: params.crewId,
+    p_schedule_mode: params.scheduleMode,
+    p_schedule_anchor_minutes: params.scheduleAnchorMinutes,
+    p_estimated_pool_drive_minutes: params.estimatedPoolDriveMinutes,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) return { ok: true };
+  const reason = typeof o?.reason === "string" ? o.reason.replace(/_/g, " ") : "Could not update schedule.";
+  return { ok: false, reason };
 }
 
 export async function updateCrewSettings(params: {
@@ -733,6 +776,111 @@ export async function setCrewDesignatedDriver(
     return { ok: true, driverId: o.designated_driver_user_id };
   }
   return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "set_driver_failed" };
+}
+
+export type CrewDriverSpinSessionRow = {
+  crew_trip_instance_id: string;
+  opened_by_user_id: string;
+  pool_user_ids: string[];
+  phase: "open" | "completed";
+  winner_user_id: string | null;
+  winner_index: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function parseSpinSessionRow(data: Record<string, unknown>): CrewDriverSpinSessionRow {
+  const pool = data.pool_user_ids;
+  const ids = Array.isArray(pool) ? pool.filter((x): x is string => typeof x === "string") : [];
+  return {
+    crew_trip_instance_id: data.crew_trip_instance_id as string,
+    opened_by_user_id: data.opened_by_user_id as string,
+    pool_user_ids: ids,
+    phase: data.phase === "completed" ? "completed" : "open",
+    winner_user_id: (data.winner_user_id as string | null) ?? null,
+    winner_index: typeof data.winner_index === "number" ? data.winner_index : null,
+    created_at: data.created_at as string,
+    updated_at: data.updated_at as string,
+  };
+}
+
+export async function fetchCrewDriverSpinSession(
+  tripInstanceId: string
+): Promise<CrewDriverSpinSessionRow | null> {
+  const { data, error } = await supabase
+    .from("crew_driver_spin_sessions")
+    .select("*")
+    .eq("crew_trip_instance_id", tripInstanceId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return parseSpinSessionRow(data as Record<string, unknown>);
+}
+
+export async function openCrewDriverSpinSession(params: {
+  tripInstanceId: string;
+}): Promise<
+  | { ok: true; openedByUserId: string; poolUserIds: string[] }
+  | { ok: false; reason: string }
+> {
+  const { data, error } = await supabase.rpc("poolyn_crew_driver_spin_open", {
+    p_trip_instance_id: params.tripInstanceId,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) {
+    const pool = o.pool_user_ids;
+    const ids = Array.isArray(pool) ? pool.filter((x): x is string => typeof x === "string") : [];
+    const ob = o.opened_by_user_id;
+    if (typeof ob === "string" && ids.length >= 2) {
+      return { ok: true, openedByUserId: ob, poolUserIds: ids };
+    }
+  }
+  return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "spin_open_failed" };
+}
+
+export async function toggleCrewDriverSpinPool(
+  tripInstanceId: string,
+  add: boolean
+): Promise<{ ok: true; poolUserIds: string[] } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_crew_driver_spin_toggle", {
+    p_trip_instance_id: tripInstanceId,
+    p_add: add,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) {
+    const pool = o.pool_user_ids;
+    const ids = Array.isArray(pool) ? pool.filter((x): x is string => typeof x === "string") : [];
+    return { ok: true, poolUserIds: ids };
+  }
+  return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "spin_toggle_failed" };
+}
+
+export async function executeCrewDriverSpin(tripInstanceId: string): Promise<
+  | { ok: true; winnerUserId: string; winnerIndex: number }
+  | { ok: false; reason: string }
+> {
+  const { data, error } = await supabase.rpc("poolyn_crew_driver_spin_execute", {
+    p_trip_instance_id: tripInstanceId,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true && typeof o.winner_user_id === "string" && typeof o.winner_index === "number") {
+    return { ok: true, winnerUserId: o.winner_user_id, winnerIndex: o.winner_index };
+  }
+  return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "spin_execute_failed" };
+}
+
+export async function abandonCrewDriverSpinSession(
+  tripInstanceId: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_crew_driver_spin_abandon", {
+    p_trip_instance_id: tripInstanceId,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) return { ok: true };
+  return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "spin_abandon_failed" };
 }
 
 export async function recordCrewTripStarted(
@@ -960,7 +1108,7 @@ export async function listTodaysCrewInboxRows(userId: string): Promise<CrewInbox
       const n = (u?.full_name as string | undefined)?.trim();
       subtitle = n ? `Driver today: ${n}` : "Driver today assigned";
     } else {
-      subtitle = "Roll dice to pick today’s driver";
+      subtitle = "Use Randomize Driver on Home to pick today’s driver";
     }
     rows.push({
       tripInstanceId: inst.row.id,

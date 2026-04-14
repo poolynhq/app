@@ -9,7 +9,7 @@ import {
   Shadow,
 } from "@/constants/theme";
 
-const poolynLoyo = require("../../../assets/poolyn_loyo.png");
+const poolynLogo = require("../../../assets/poolyn_logo.png");
 const poolynCircle = require("../../../assets/poolyn-Icon-white-circle.png");
 
 type Props = {
@@ -34,7 +34,7 @@ export function AuthBrandingHero({ kicker, subline }: Props) {
         <View style={styles.circleShadow}>
           <Image source={poolynCircle} style={styles.circleImg} resizeMode="contain" />
         </View>
-        <Image source={poolynLoyo} style={styles.loyo} resizeMode="contain" accessibilityLabel="Poolyn" />
+        <Image source={poolynLogo} style={styles.loyo} resizeMode="contain" accessibilityLabel="Poolyn" />
       </View>
       <Text style={styles.kicker}>{kicker}</Text>
       {subline ? <Text style={styles.subline}>{subline}</Text> : null}

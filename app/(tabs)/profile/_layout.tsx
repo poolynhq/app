@@ -33,6 +33,10 @@ export default function ProfileLayout() {
         name="poolyn-credits"
         options={{ title: "Poolyn Credits", headerBackTitle: "Profile" }}
       />
+      <Stack.Screen
+        name="payment-history"
+        options={{ title: "Transaction history", headerBackTitle: "Profile" }}
+      />
       <Stack.Screen name="workplace-network" options={{ title: "Workplace network" }} />
       <Stack.Screen name="route-groups" options={{ title: "Route groups" }} />
       <Stack.Screen name="crews" options={{ title: "Poolyn Crews" }} />

@@ -43,7 +43,7 @@ import type { WaitlistIntent } from "@/lib/waitlistSignup";
 type SectionKey = "how" | "features" | "impact" | "community" | "orgs";
 
 const heroBackground = require("../../../assets/hero-bg-poolyn.jpg");
-const poolynLogo = require("../../../assets/poolyn_loyo.png");
+const poolynLogo = require("../../../assets/poolyn_logo.png");
 const poolynFavicon = require("../../../assets/poolyn_favicon.png");
 
 /** Wordmark width ÷ height (horizontal logo); keeps layout stable if asset is replaced. */
@@ -465,7 +465,7 @@ export default function MarketingLanding() {
             <Step
               n="04"
               title="Fair cost sharing, zero hassle"
-              body="Our transparent calculator splits costs fairly. Drivers earn Poolyn Credits for future rides."
+              body="Our transparent calculator splits costs fairly. Drivers recover costs fairly; riders pay their share."
               icon="cash-outline"
             />
           </View>

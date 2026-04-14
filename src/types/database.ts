@@ -49,7 +49,7 @@ export type PassengerStatus =
   | "completed"
   | "cancelled"
   | "no_show";
-export type RidePassengerPaymentStatus = "pending" | "paid" | "failed";
+export type RidePassengerPaymentStatus = "pending" | "paid" | "failed" | "refunded";
 export type SuggestionPartyStatus = "pending" | "accepted" | "declined";
 export type SuggestionStatus = "pending" | "accepted" | "declined" | "expired";
 export type MatchNetworkScope = "network" | "extended";
@@ -265,6 +265,8 @@ export interface Database {
           created_at: string;
           updated_at: string;
           notification_preferences: Json;
+          stripe_connect_account_id: string | null;
+          stripe_connect_onboarding_complete: boolean;
         };
         Insert: {
           id: string;
@@ -302,6 +304,8 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
           notification_preferences?: Json;
+          stripe_connect_account_id?: string | null;
+          stripe_connect_onboarding_complete?: boolean;
         };
         Update: {
           org_id?: string | null;
@@ -332,6 +336,8 @@ export interface Database {
           active?: boolean;
           updated_at?: string;
           notification_preferences?: Json;
+          stripe_connect_account_id?: string | null;
+          stripe_connect_onboarding_complete?: boolean;
         };
       };
 
@@ -485,6 +491,37 @@ export interface Database {
           sent_at?: string;
         };
         Update: never;
+      };
+
+      crew_driver_spin_sessions: {
+        Row: {
+          crew_trip_instance_id: string;
+          opened_by_user_id: string;
+          pool_user_ids: string[];
+          phase: string;
+          winner_user_id: string | null;
+          winner_index: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          crew_trip_instance_id: string;
+          opened_by_user_id: string;
+          pool_user_ids: string[];
+          phase: string;
+          winner_user_id?: string | null;
+          winner_index?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          opened_by_user_id?: string;
+          pool_user_ids?: string[];
+          phase?: string;
+          winner_user_id?: string | null;
+          winner_index?: number | null;
+          updated_at?: string;
+        };
       };
 
       crew_trip_instances: {
@@ -907,6 +944,11 @@ export interface Database {
           cash_to_charge_cents: number;
           payment_status: RidePassengerPaymentStatus;
           stripe_payment_intent_id: string | null;
+          fee_product_type:
+            | "organization_member"
+            | "solo_driver"
+            | "group_trip"
+            | null;
           created_at: string;
         };
         Insert: {
@@ -927,6 +969,11 @@ export interface Database {
           cash_to_charge_cents?: number;
           payment_status?: RidePassengerPaymentStatus;
           stripe_payment_intent_id?: string | null;
+          fee_product_type?:
+            | "organization_member"
+            | "solo_driver"
+            | "group_trip"
+            | null;
           created_at?: string;
         };
         Update: {
@@ -944,6 +991,11 @@ export interface Database {
           cash_to_charge_cents?: number;
           payment_status?: RidePassengerPaymentStatus;
           stripe_payment_intent_id?: string | null;
+          fee_product_type?:
+            | "organization_member"
+            | "solo_driver"
+            | "group_trip"
+            | null;
         };
       };
 
@@ -1617,6 +1669,10 @@ export interface Database {
         Returns: Json;
       };
       poolyn_prepare_ride_passenger_for_payment: {
+        Args: { p_ride_passenger_id: string; p_skip_commute_credits?: boolean };
+        Returns: Json;
+      };
+      poolyn_ride_passenger_pricing_quote: {
         Args: { p_ride_passenger_id: string };
         Returns: Json;
       };
@@ -1688,6 +1744,15 @@ export interface Database {
       };
       poolyn_crew_roll_driver: {
         Args: { p_trip_instance_id: string; p_eligible_user_ids?: string[] };
+        Returns: Json;
+      };
+      poolyn_crew_update_schedule_snapshot: {
+        Args: {
+          p_crew_id: string;
+          p_schedule_mode: string;
+          p_schedule_anchor_minutes: number;
+          p_estimated_pool_drive_minutes: number;
+        };
         Returns: Json;
       };
       poolyn_org_crew_route_candidates: {

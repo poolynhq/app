@@ -1,5 +1,7 @@
 import type { CrewMemberMapPin } from "@/lib/crewMessaging";
 
+const T_EPS = 1e-7;
+
 export function distanceMeters(
   a: { lat: number; lng: number },
   b: { lat: number; lng: number }
@@ -57,6 +59,29 @@ export function orderPickupsAlongCommute(
     return a.d0 - b.d0;
   });
   return scored.map((s) => s.pin);
+}
+
+/**
+ * Driving visit order when the driver may start **mid-corridor**: pick up everyone **behind** the driver
+ * along the commute segment (lower projection `t`) in order from the far end of that side toward the driver,
+ * then everyone **ahead** of the driver (higher `t`) toward the shared destination.
+ * Matches “go to the far pickup on that side first, then work toward destination.”
+ */
+export function orderPickupsForDriverPoolRoute(
+  driverPin: CrewMemberMapPin,
+  passengerPins: CrewMemberMapPin[],
+  segmentStart: { lat: number; lng: number },
+  segmentEnd: { lat: number; lng: number }
+): CrewMemberMapPin[] {
+  if (passengerPins.length === 0) return [];
+  const tDriver = projectionT(segmentStart, segmentEnd, { lat: driverPin.lat, lng: driverPin.lng });
+  const scored = passengerPins.map((pin) => ({
+    pin,
+    t: projectionT(segmentStart, segmentEnd, { lat: pin.lat, lng: pin.lng }),
+  }));
+  const behind = scored.filter((s) => s.t < tDriver - T_EPS).sort((a, b) => a.t - b.t);
+  const ahead = scored.filter((s) => s.t > tDriver + T_EPS).sort((a, b) => a.t - b.t);
+  return [...behind.map((s) => s.pin), ...ahead.map((s) => s.pin)];
 }
 
 /** Shortest distance from P to segment A→B (geodesic via plane approximation on small segments). */
