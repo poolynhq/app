@@ -61,7 +61,10 @@ import { modMinutes, formatMinutesAsTime } from "@/lib/crewSchedulePlan";
 import { computeCrewSchedulePlanForDriver } from "@/lib/crewScheduleForDriver";
 import { CrewTripStartSummaryModal } from "@/components/home/CrewTripStartSummaryModal";
 import { CrewTripScheduleModal } from "@/components/home/CrewTripScheduleModal";
-import { computeCrewEqualCorridorRiderBreakdown } from "@/lib/costModel";
+import {
+  computeCrewEqualCorridorRiderBreakdown,
+  computeCrewPerRiderDetourAttributedContributions,
+} from "@/lib/costModel";
 import { PassengerPaymentCostLines } from "@/components/home/PassengerPaymentCostLines";
 import type { User } from "@/types/database";
 import {
@@ -220,8 +223,8 @@ export function MyCrewRoutineCard({
       return;
     }
 
-    const home = parseGeoPoint(profilePins.home_location as unknown);
-    const work = parseGeoPoint(profilePins.work_location as unknown);
+    const home = parseGeoPoint((ownerHw?.home_location ?? profilePins.home_location) as unknown);
+    const work = parseGeoPoint((ownerHw?.work_location ?? profilePins.work_location) as unknown);
 
     let url: string | null = null;
     const designatedId = tripRow?.designated_driver_user_id ?? null;
@@ -257,9 +260,7 @@ export function MyCrewRoutineCard({
           }
           const routeCoords = await fetchDrivingRouteThroughWaypoints(waypoints);
           if (routeCoords && routeCoords.length >= 2) {
-            const othersForPins = pins
-              .filter((p) => p.userId !== designatedId)
-              .map((p) => ({ lat: p.lat, lng: p.lng }));
+            const othersForPins = ordered.map((p) => ({ lat: p.lat, lng: p.lng }));
             url = buildCrewPoolRouteStaticMapUrl(routeCoords, {
               driver: { lat: driverPin.lat, lng: driverPin.lng },
               destination: g.finalDestination,
@@ -428,7 +429,7 @@ export function MyCrewRoutineCard({
         const overflow = unready.length > 3 ? ` and ${unready.length - 3} more` : "";
         showAlert(
           "Riders not yet ready",
-          `${nameList}${overflow} ${unready.length === 1 ? "has" : "have"} not confirmed pickup readiness yet. You can wait for them to tap ready, or go to chat now to finish and settle.`,
+          `${nameList}${overflow} ${unready.length === 1 ? "has" : "have"} not confirmed pickup readiness yet. You can wait for them to tap ready, or go to chat now to finish the trip.`,
           [
             { text: "Wait", style: "cancel" },
             { text: "Go to chat", style: "default", onPress: () => router.push(dest) },
@@ -532,6 +533,8 @@ export function MyCrewRoutineCard({
   );
 
   const designatedDriverId = todayTrip?.designated_driver_user_id ?? null;
+  /** Show owner- or dice-assigned driver; if missing on legacy rows, fall back to who started the run. */
+  const todaysDriverDisplayId = designatedDriverId ?? todayTrip?.trip_started_by_user_id ?? null;
 
   /** All accepted passengers who should appear in pickup order (includes viewer when they ride). */
   const passengerPinsForLegPreview = useMemo(() => {
@@ -545,8 +548,8 @@ export function MyCrewRoutineCard({
 
   const orderedLegsPreview = useMemo(() => {
     if (passengerPinsForLegPreview.length === 0) return [];
-    const home = parseGeoPoint(profilePins.home_location as unknown);
-    const work = parseGeoPoint(profilePins.work_location as unknown);
+    const home = parseGeoPoint((crewOwnerAnchor?.home ?? profilePins.home_location) as unknown);
+    const work = parseGeoPoint((crewOwnerAnchor?.work ?? profilePins.work_location) as unknown);
     const pattern = crew.commute_pattern ?? "to_work";
     const activeLeg: ResolvedCommuteLeg = pattern === "to_home" ? "to_home" : "to_work";
     const g =
@@ -588,16 +591,18 @@ export function MyCrewRoutineCard({
     passengerPinsForLegPreview,
     profilePins.home_location,
     profilePins.work_location,
+    crewOwnerAnchor?.home,
+    crewOwnerAnchor?.work,
     crew.commute_pattern,
     designatedDriverId,
     acceptedMemberPins,
   ]);
 
   const todaysDriverFullName = useMemo(() => {
-    if (!designatedDriverId) return null;
-    const n = (roster.find((m) => m.userId === designatedDriverId)?.fullName ?? "").trim();
+    if (!todaysDriverDisplayId) return null;
+    const n = (roster.find((m) => m.userId === todaysDriverDisplayId)?.fullName ?? "").trim();
     return n || null;
-  }, [designatedDriverId, roster]);
+  }, [todaysDriverDisplayId, roster]);
   const isTodaysDriver = !!(designatedDriverId && userId === designatedDriverId);
   const pickupDriverishId = todayTrip ? crewTripPickupAckDriverishId(todayTrip) : null;
   const riderReadyMap = useMemo(
@@ -624,9 +629,20 @@ export function MyCrewRoutineCard({
   // be able to see both the Resume and Finish buttons for the trip they are running.
   const isTripStarter = !!(todayTrip?.trip_started_by_user_id && todayTrip.trip_started_by_user_id === userId);
 
-  /** Until a driver is picked, any member may start; after that, only the designated driver OR the
-   *  person who already started the trip (so they can resume navigation if Maps was lost). */
-  const canUseStartPoolyn = designatedDriverId == null || isTodaysDriver || isTripStarter;
+  /**
+   * First start: only the designated driver (defaults to crew owner each day). Resume: designated
+   * driver or whoever already started this run (Maps reopen / legacy rows).
+   */
+  const canUseStartPoolyn = (() => {
+    if (!todayTrip || todayTrip.trip_finished_at) return false;
+    if (!todayTrip.trip_started_at) {
+      return designatedDriverId != null && userId === designatedDriverId;
+    }
+    return (
+      (designatedDriverId != null && userId === designatedDriverId) ||
+      todayTrip.trip_started_by_user_id === userId
+    );
+  })();
 
   /** Finish button is visible to the designated driver, crew owner, or whoever started this run. */
   const canUseFinishPoolyn =
@@ -724,16 +740,80 @@ export function MyCrewRoutineCard({
 
   const riderCostPreview = useMemo(() => {
     if (!commuteStats?.distance_m) return null;
-    const poolRiders = memberCount - 1;
+    const driverId = todayTrip?.designated_driver_user_id ?? null;
+    const ex = new Set(todayTrip?.excluded_pickup_user_ids ?? []);
+
+    if (!driverId) {
+      const poolRiders = memberCount - 1;
+      if (poolRiders < 1) return null;
+      const bd = computeCrewEqualCorridorRiderBreakdown({
+        lockedRouteDistanceM: commuteStats.distance_m,
+        lockedRouteDurationS: commuteStats.duration_s,
+        poolRiderCount: poolRiders,
+      });
+      if (!bd) return null;
+      const c = bd.total_contribution;
+      return { poolRiders, centsMin: c, centsMax: c, feePreviewCents: c };
+    }
+
+    const payingIds = roster
+      .filter((m) => m.userId !== driverId && !ex.has(m.userId))
+      .map((m) => m.userId);
+    const poolRiders = payingIds.length;
     if (poolRiders < 1) return null;
+
+    const home = parseGeoPoint((crewOwnerAnchor?.home ?? profilePins.home_location) as unknown);
+    const work = parseGeoPoint((crewOwnerAnchor?.work ?? profilePins.work_location) as unknown);
+    const pattern = crew.commute_pattern ?? "to_work";
+    const activeLeg: ResolvedCommuteLeg = pattern === "to_home" ? "to_home" : "to_work";
+    const g = home && work ? resolveCommuteGeometry({ pattern, activeLeg, home, work }) : null;
+
+    const latLngByUserId: Record<string, { lat: number; lng: number } | undefined> = {};
+    for (const p of acceptedMemberPins) {
+      latLngByUserId[p.userId] = { lat: p.lat, lng: p.lng };
+    }
+
+    if (g) {
+      const det = computeCrewPerRiderDetourAttributedContributions({
+        lockedRouteDistanceM: commuteStats.distance_m,
+        lockedRouteDurationS: commuteStats.duration_s,
+        payingRiderUserIds: payingIds,
+        segmentStart: g.segmentStart,
+        segmentEnd: g.segmentEnd,
+        latLngByUserId,
+      });
+      if (det) {
+        const amounts = payingIds.map((id) => det.byUserId[id] ?? 0);
+        return {
+          poolRiders,
+          centsMin: Math.min(...amounts),
+          centsMax: Math.max(...amounts),
+          feePreviewCents: Math.max(...amounts),
+        };
+      }
+    }
+
     const bd = computeCrewEqualCorridorRiderBreakdown({
       lockedRouteDistanceM: commuteStats.distance_m,
       lockedRouteDurationS: commuteStats.duration_s,
       poolRiderCount: poolRiders,
     });
     if (!bd) return null;
-    return { poolRiders, cents: bd.total_contribution };
-  }, [commuteStats, memberCount]);
+    const c = bd.total_contribution;
+    return { poolRiders, centsMin: c, centsMax: c, feePreviewCents: c };
+  }, [
+    commuteStats,
+    roster,
+    memberCount,
+    todayTrip?.designated_driver_user_id,
+    todayTrip?.excluded_pickup_user_ids,
+    crew.commute_pattern,
+    crewOwnerAnchor?.home,
+    crewOwnerAnchor?.work,
+    profilePins.home_location,
+    profilePins.work_location,
+    acceptedMemberPins,
+  ]);
 
   /** Solo corridor minutes for schedule math (locked crew route, then profile). */
   const baseCorridorMinForSchedule = useMemo(() => {
@@ -869,13 +949,21 @@ export function MyCrewRoutineCard({
           {riderCostPreview ? (
             <View style={styles.riderCostBlock}>
               <PassengerPaymentCostLines
-                contributionCents={riderCostPreview.cents}
+                contributionCents={riderCostPreview.feePreviewCents}
                 passengerHasWorkplaceOrgOnProfile={hasWorkplaceNetworkOnProfile}
                 context="crew"
                 textStyle="meta"
-                primaryLine={`Est. rider share (${riderCostPreview.poolRiders} rider${
-                  riderCostPreview.poolRiders === 1 ? "" : "s"
-                }): ~$${(riderCostPreview.cents / 100).toFixed(2)} (incl. $1 stop fee)`}
+                primaryLine={
+                  riderCostPreview.centsMin === riderCostPreview.centsMax
+                    ? `Est. rider share (${riderCostPreview.poolRiders} rider${
+                        riderCostPreview.poolRiders === 1 ? "" : "s"
+                      }): ~$${(riderCostPreview.centsMin / 100).toFixed(2)} (incl. $1 stop fee)`
+                    : `Est. rider share (${riderCostPreview.poolRiders} riders): about $${(
+                        riderCostPreview.centsMin / 100
+                      ).toFixed(2)} to $${(riderCostPreview.centsMax / 100).toFixed(
+                        2
+                      )} (incl. $1 stop fee). Off-corridor pickup adds to that rider only.`
+                }
               />
             </View>
           ) : null}
@@ -915,6 +1003,33 @@ export function MyCrewRoutineCard({
           </View>
         )}
       </Pressable>
+      {mapUrl && !loadingMap ? (
+        designatedDriverId ? (
+          <View style={styles.mapRouteKey}>
+            
+            <View style={styles.mapRouteKeyRow}>
+              <Text style={styles.mapRouteKeyTag}>START</Text>
+              <Text style={styles.mapRouteKeyText}> {todaysDriverFullName ?? "Driver"}</Text>
+            </View>
+            {orderedLegsPreview.map((p, i) => (
+              <View key={`mapkey-${p.userId}`} style={styles.mapRouteKeyRow}>
+                <Text style={styles.mapRouteKeyTag}>STOP {i + 1}</Text>
+                <Text style={styles.mapRouteKeyText}> {(p.fullName || "Crewmate").trim()}</Text>
+              </View>
+            ))}
+            {finalNavPoint ? (
+              <View style={styles.mapRouteKeyRow}>
+                <Text style={styles.mapRouteKeyTag}>END</Text>
+                <Text style={styles.mapRouteKeyText}> {finalNavLabel}</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : (
+          <Text style={styles.mapLegend}>
+            Green route and pins: your commute line and crew homes (approximate areas).
+          </Text>
+        )
+      ) : null}
 
       <View
         style={[
@@ -1028,7 +1143,7 @@ export function MyCrewRoutineCard({
           {finishTripActive ? (
             <Text style={styles.finishHint}>
               Maps does not report back to Poolyn. In chat, use{" "}
-              <Text style={styles.finishHintBold}>Finish trip and settle credits</Text>.
+              <Text style={styles.finishHintBold}>Finish trip</Text> to settle rider shares from Poolyn balances.
             </Text>
           ) : (
             <Text style={styles.finishHintMuted}>
@@ -1162,8 +1277,8 @@ export function MyCrewRoutineCard({
             <View style={styles.legsBlock}>
               <Text style={styles.legsTitle}>Pickup order &amp; legs</Text>
               <Text style={styles.legsExplainer}>
-                Poolyn does not track arrivals — confirm stops in Google Maps. If Maps does not advance, open the next
-                row here.
+                Order uses the crew corridor (same for everyone). It does not come from the driver wheel. Poolyn does
+                not track arrivals. Confirm stops in Google Maps. If Maps does not advance, open the next row here.
               </Text>
               {orderedLegsPreview.map((p, i) => (
                 <View key={p.userId} style={styles.legRow}>
@@ -1275,11 +1390,11 @@ export function MyCrewRoutineCard({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: "#F0FDF4",
-    borderRadius: BorderRadius.xl,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(11, 132, 87, 0.2)",
+    borderColor: "rgba(11, 132, 87, 0.28)",
     ...Shadow.sm,
   },
   banner: {
@@ -1296,9 +1411,9 @@ const styles = StyleSheet.create({
   },
   bannerEmojiText: { fontSize: 28 },
   cardPad: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.lg,
-    paddingTop: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.md,
+    paddingTop: Spacing.sm,
   },
   compactHeader: {
     flexDirection: "row",
@@ -1454,6 +1569,45 @@ const styles = StyleSheet.create({
   mapLoaderWrap: {
     justifyContent: "center",
     alignItems: "center",
+  },
+  mapLegend: {
+    fontSize: 10,
+    lineHeight: 14,
+    color: Colors.textTertiary,
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.sm,
+  },
+  mapRouteKey: {
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.sm,
+    gap: 4,
+  },
+  mapRouteKeyIntro: {
+    fontSize: 10,
+    lineHeight: 14,
+    color: Colors.textTertiary,
+    marginBottom: 4,
+  },
+  mapRouteKeyRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    gap: 4,
+  },
+  mapRouteKeyTag: {
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryDark,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+    minWidth: 52,
+  },
+  mapRouteKeyText: {
+    flex: 1,
+    fontSize: 10,
+    lineHeight: 14,
+    color: Colors.textSecondary,
   },
   mapPlaceholder: {
     alignItems: "center",

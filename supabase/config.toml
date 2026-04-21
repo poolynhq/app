@@ -41,3 +41,7 @@ verify_jwt = true
 
 [functions.booking-refund]
 verify_jwt = true
+
+# In-app support contact (user JWT); emails poolynhq@gmail.com via Resend.
+[functions.submit-support-contact]
+verify_jwt = true

@@ -38,7 +38,6 @@ export default function ProfileLayout() {
         options={{ title: "Transaction history", headerBackTitle: "Profile" }}
       />
       <Stack.Screen name="workplace-network" options={{ title: "Workplace network" }} />
-      <Stack.Screen name="route-groups" options={{ title: "Route groups" }} />
       <Stack.Screen name="crews" options={{ title: "Poolyn Crews" }} />
       <Stack.Screen name="crew-settings/[crewId]" options={{ title: "Crew settings" }} />
       <Stack.Screen name="crew-chat/[tripInstanceId]" options={{ title: "Crew chat" }} />

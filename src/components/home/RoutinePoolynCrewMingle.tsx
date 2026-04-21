@@ -260,23 +260,27 @@ export function RoutinePoolynCrewMingleBlock({
           style={[styles.toggleChip, mode === "crew" && styles.toggleChipOn]}
           onPress={() => setMode("crew")}
         >
-          <Ionicons
-            name="people"
-            size={18}
-            color={mode === "crew" ? "#fff" : Colors.primary}
-          />
-          <Text style={[styles.toggleText, mode === "crew" && styles.toggleTextOn]}>Crew Poolyn</Text>
+          <View style={styles.toggleChipInner}>
+            <Ionicons
+              name="people"
+              size={17}
+              color={mode === "crew" ? "#fff" : Colors.primary}
+            />
+            <Text style={[styles.toggleText, mode === "crew" && styles.toggleTextOn]}>Crew Poolyn</Text>
+          </View>
         </Pressable>
         <Pressable
           style={[styles.toggleChip, mode === "mingle" && styles.toggleChipOnMingle]}
           onPress={() => setMode("mingle")}
         >
-          <Ionicons
-            name="git-network-outline"
-            size={18}
-            color={mode === "mingle" ? "#fff" : MINGLE_AMBER}
-          />
-          <Text style={[styles.toggleText, mode === "mingle" && styles.toggleTextOn]}>Mingle Poolyn</Text>
+          <View style={styles.toggleChipInner}>
+            <Ionicons
+              name="git-network-outline"
+              size={17}
+              color={mode === "mingle" ? "#fff" : MINGLE_AMBER}
+            />
+            <Text style={[styles.toggleText, mode === "mingle" && styles.toggleTextOn]}>Mingle Poolyn</Text>
+          </View>
         </Pressable>
       </View>
 
@@ -582,7 +586,7 @@ export function RoutinePoolynCrewMingleBlock({
 }
 
 const styles = StyleSheet.create({
-  wrap: { marginBottom: Spacing.lg },
+  wrap: { marginBottom: 0 },
   invitesBlock: { marginTop: Spacing.md, marginBottom: Spacing.md },
   invitesEyebrow: {
     fontSize: FontSize.xs,
@@ -624,25 +628,32 @@ const styles = StyleSheet.create({
   toggleRow: {
     flexDirection: "row",
     gap: Spacing.sm,
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
     zIndex: 2,
-    padding: Spacing.sm,
-    borderRadius: BorderRadius.lg,
-    backgroundColor: "rgba(255,255,255,0.88)",
+    padding: Spacing.xs,
+    borderRadius: BorderRadius.md,
+    backgroundColor: "rgba(255,255,255,0.92)",
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
+    borderColor: "rgba(15, 23, 42, 0.06)",
   },
   toggleChip: {
     flex: 1,
-    flexDirection: "row",
+    minWidth: 0,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: BorderRadius.lg,
+    paddingVertical: 10,
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  toggleChipInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 4,
+    maxWidth: "100%",
   },
   toggleChipOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   toggleChipOnMingle: { backgroundColor: MINGLE_AMBER, borderColor: "#B45309" },

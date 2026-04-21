@@ -1,10 +1,15 @@
 /**
  * Cost-sharing (integer cents). Crew Poolyn + Mingle Poolyn + reservations.
- * Tunables live in `poolynPricingConfig.ts` only.
+ * Rate/stop/factor tunables: `poolynPricingConfig.ts`.
+ * Crew corridor split vs per-passenger detour attribution: this file (`computeCrewPerRiderDetourAttributedContributions`).
  */
 
 import {
+  POOLYN_CREW_DETOUR_AVG_SPEED_KMH,
+  POOLYN_CREW_DETOUR_CHARGE_ROUND_TRIP,
   POOLYN_CREW_MAX_ASSUMED_RIDERS,
+  POOLYN_CREW_MAX_PERPENDICULAR_DETOUR_M,
+  POOLYN_CREW_MIN_PERPENDICULAR_DETOUR_M,
   POOLYN_DEFAULT_VEHICLE_CLASS,
   POOLYN_MAX_POOL_RIDERS_FOR_SPLIT,
   POOLYN_MINGLE_MIN_POOL_RIDERS,
@@ -15,6 +20,7 @@ import {
   poolynDistanceRateAudPerKm,
   type PoolynVehicleClass,
 } from "@/lib/poolynPricingConfig";
+import { distancePointToSegmentMeters } from "@/lib/geoSegmentDistance";
 
 export type { PoolynVehicleClass } from "@/lib/poolynPricingConfig";
 
@@ -327,6 +333,77 @@ export function computeCrewEqualCorridorRiderBreakdown(input: {
     poolRideAlongPassengerCount: capped,
     vehicleClass: input.vehicleClass ?? undefined,
   });
+}
+
+/**
+ * Crew Poolyn: locked corridor variable + stop is split equally (`computeCrewEqualCorridorRiderBreakdown`).
+ * Extra perpendicular distance off the main commute segment for each paying rider is charged in full to
+ * that rider only (Phase 3 distance + time, not divided by pool size). Tunable thresholds and speed:
+ * `POOLYN_CREW_*` in `poolynPricingConfig.ts`.
+ */
+export function computeCrewPerRiderDetourAttributedContributions(input: {
+  lockedRouteDistanceM: number;
+  lockedRouteDurationS: number;
+  /** Paying riders today (non-driver, not excluded), stable order. */
+  payingRiderUserIds: string[];
+  segmentStart: { lat: number; lng: number };
+  segmentEnd: { lat: number; lng: number };
+  /** Home pin per user; missing entry means no detour line item for that rider. */
+  latLngByUserId: Record<string, { lat: number; lng: number } | undefined>;
+  vehicleClass?: string | null;
+}): {
+  byUserId: Record<string, number>;
+  equalCorridorCentsPerRider: number;
+  detourCentsByUserId: Record<string, number>;
+} | null {
+  const poolN = input.payingRiderUserIds.length;
+  if (poolN < 1) return null;
+
+  const equal = computeCrewEqualCorridorRiderBreakdown({
+    lockedRouteDistanceM: input.lockedRouteDistanceM,
+    lockedRouteDurationS: input.lockedRouteDurationS,
+    poolRiderCount: poolN,
+    vehicleClass: input.vehicleClass,
+  });
+  if (!equal) return null;
+
+  const equalBase = equal.total_contribution;
+  const rate = poolynDistanceRateAudPerKm(input.vehicleClass ?? POOLYN_DEFAULT_VEHICLE_CLASS);
+
+  const byUserId: Record<string, number> = {};
+  const detourCentsByUserId: Record<string, number> = {};
+
+  for (const uid of input.payingRiderUserIds) {
+    const ll = input.latLngByUserId[uid];
+    let detourCents = 0;
+    if (ll) {
+      const perpM = distancePointToSegmentMeters(
+        { lat: ll.lat, lng: ll.lng },
+        input.segmentStart,
+        input.segmentEnd
+      );
+      const rawBillable = Math.max(
+        0,
+        Math.min(perpM, POOLYN_CREW_MAX_PERPENDICULAR_DETOUR_M) -
+          POOLYN_CREW_MIN_PERPENDICULAR_DETOUR_M
+      );
+      const extraKm =
+        (rawBillable / 1000) * (POOLYN_CREW_DETOUR_CHARGE_ROUND_TRIP ? 2 : 1);
+      const spd = POOLYN_CREW_DETOUR_AVG_SPEED_KMH;
+      const addedDurationSeconds = spd > 0 ? (extraKm / spd) * 3600 : 0;
+      const p3 = computePhase3DetourPricingCents({
+        addedDistanceKm: extraKm,
+        addedDurationSeconds,
+        isDetourChargeable: rawBillable > 0,
+        distanceRateAudPerKm: rate,
+      });
+      detourCents = p3.detour_cost + p3.time_cost;
+    }
+    detourCentsByUserId[uid] = detourCents;
+    byUserId[uid] = equalBase + detourCents;
+  }
+
+  return { byUserId, equalCorridorCentsPerRider: equalBase, detourCentsByUserId };
 }
 
 /**

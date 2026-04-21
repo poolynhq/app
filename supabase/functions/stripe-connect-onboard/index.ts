@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
 
   const { data: profile, error: profErr } = await userClient
     .from("users")
-    .select("id, stripe_connect_account_id, email, full_name")
+    .select("id, stripe_connect_account_id, email, full_name, billing_currency_user_code")
     .eq("id", userId)
     .maybeSingle();
 
@@ -70,7 +70,26 @@ Deno.serve(async (req) => {
   let accountId = profile.stripe_connect_account_id as string | null;
 
   if (!accountId) {
-    const country = (Deno.env.get("STRIPE_CONNECT_ACCOUNT_COUNTRY") ?? "AU").toUpperCase();
+    /** When set during onboarding, map ISO 4217 to a Stripe Connect country (single-currency markets only). */
+    const CC_TO_COUNTRY: Record<string, string> = {
+      AUD: "AU",
+      NZD: "NZ",
+      USD: "US",
+      GBP: "GB",
+      CAD: "CA",
+      SGD: "SG",
+      JPY: "JP",
+      HKD: "HK",
+    };
+    const userCode = String(
+      (profile as { billing_currency_user_code?: string | null }).billing_currency_user_code ?? ""
+    )
+      .trim()
+      .toUpperCase();
+    const fromProfile =
+      userCode && CC_TO_COUNTRY[userCode] ? CC_TO_COUNTRY[userCode]! : null;
+    const country =
+      fromProfile ?? (Deno.env.get("STRIPE_CONNECT_ACCOUNT_COUNTRY") ?? "AU").toUpperCase();
 
     const account = await stripe.accounts.create({
       type: "express",

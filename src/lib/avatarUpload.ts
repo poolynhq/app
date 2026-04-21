@@ -1,6 +1,6 @@
 import * as ImageManipulator from "expo-image-manipulator";
-import { Platform } from "react-native";
 import { supabase } from "@/lib/supabase";
+import { storageUploadBody } from "@/lib/storageImageMeta";
 
 const AVATAR_MAX_WIDTH = 640;
 const AVATAR_JPEG_QUALITY = 0.62;
@@ -62,19 +62,8 @@ function storageStatusCodeField(err: unknown): string | null {
   return null;
 }
 
-/**
- * Supabase Storage on web often rejects raw ArrayBuffer/Uint8Array with HTTP 400; Blob + image/jpeg is reliable.
- * Native: Blob when available, else Uint8Array.
- */
 function toStorageFileBody(buffer: ArrayBuffer): Blob | Uint8Array {
-  if (Platform.OS === "web" || typeof Blob !== "undefined") {
-    try {
-      return new Blob([buffer], { type: "image/jpeg" });
-    } catch {
-      /* fall through */
-    }
-  }
-  return new Uint8Array(buffer);
+  return storageUploadBody(buffer, "image/jpeg");
 }
 
 export type AvatarUploadResult =

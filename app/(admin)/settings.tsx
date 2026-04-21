@@ -7,6 +7,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Switch,
+  Platform,
+  Linking,
 } from "react-native";
 import { showAlert } from "@/lib/platformAlert";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -24,13 +26,10 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { ORG_PLAN_LABELS } from "@/lib/orgPlanLabels";
 
-const PLAN_LABELS: Record<string, string> = {
-  free: "Scout Basic",
-  starter: "Momentum Growth",
-  business: "Pulse Business",
-  enterprise: "Orbit Enterprise",
-};
+const PLAN_SUPPORT_MAILTO =
+  "mailto:hello@poolyn.com?subject=Poolyn%20organization%20plans";
 
 export default function AdminSettings() {
   const { profile, signOut } = useAuth();
@@ -113,7 +112,8 @@ export default function AdminSettings() {
     );
   }
 
-  const planLabel = PLAN_LABELS[org?.plan ?? "free"] ?? "Free";
+  const planLabel = ORG_PLAN_LABELS[org?.plan ?? "free"] ?? "Plan";
+  const canSelfServeUpgrade = profile?.org_role === "admin" && org?.plan !== "enterprise";
 
   async function handleAutoAssignToggle(value: boolean) {
     if (!org?.id) return;
@@ -147,7 +147,7 @@ export default function AdminSettings() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, Platform.OS === "web" && styles.contentWebDesktop]}
         showsVerticalScrollIndicator={false}
       >
         <Text style={styles.heading}>Settings</Text>
@@ -195,6 +195,37 @@ export default function AdminSettings() {
               <Text style={styles.planBadgeText}>{planLabel}</Text>
             </View>
           </View>
+
+          {canSelfServeUpgrade ? (
+            <>
+              <View style={styles.infoDivider} />
+              <TouchableOpacity
+                style={styles.upgradeCta}
+                activeOpacity={0.85}
+                onPress={() => router.push("/(admin)/org-paywall?intent=upgrade")}
+                accessibilityRole="button"
+                accessibilityLabel="Upgrade organization plan"
+              >
+                <Ionicons name="rocket-outline" size={22} color={Colors.textOnPrimary} />
+                <Text style={styles.upgradeCtaText}>Upgrade</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+
+          {profile?.org_role === "admin" ? (
+            <>
+              <View style={styles.infoDivider} />
+              <Text style={styles.planDowngradeNote}>Contact support for plan-related queries.</Text>
+              <TouchableOpacity
+                onPress={() => void Linking.openURL(PLAN_SUPPORT_MAILTO)}
+                activeOpacity={0.7}
+                accessibilityRole="link"
+                accessibilityLabel="Email support about plans"
+              >
+                <Text style={styles.planSupportLink}>hello@poolyn.com</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
         </View>
 
         <Text style={styles.sectionTitle}>ADMIN</Text>
@@ -348,6 +379,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.base,
     paddingBottom: Spacing["4xl"],
+  },
+  contentWebDesktop: {
+    maxWidth: 960,
+    width: "100%",
+    alignSelf: "center",
+  },
+  upgradeCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.base,
+    marginBottom: Spacing.base,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary,
+    ...Shadow.sm,
+  },
+  upgradeCtaText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textOnPrimary,
+  },
+  planDowngradeNote: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    paddingHorizontal: Spacing.base,
+    paddingTop: Spacing.xs,
+    textAlign: "center",
+  },
+  planSupportLink: {
+    fontSize: FontSize.xs,
+    color: Colors.primary,
+    fontWeight: FontWeight.semibold,
+    textAlign: "center",
+    paddingBottom: Spacing.base,
   },
   heading: {
     fontSize: FontSize["2xl"],

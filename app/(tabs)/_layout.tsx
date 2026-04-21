@@ -70,9 +70,9 @@ export default function TabsLayout() {
     Inter_700Bold,
   });
   const insets = useSafeAreaInsets();
-  const tabBarBottom = Math.max(insets.bottom, Platform.OS === "web" ? 12 : 8);
-  /** Room for icon + label above home indicator (taller bar avoids clipping multi-word labels). */
-  const tabBarContentMin = Platform.OS === "android" ? 64 : Platform.OS === "ios" ? 58 : 56;
+  const tabBarBottom = Math.max(insets.bottom, Platform.OS === "web" ? 8 : 6);
+  /** Icon + label row; extra height avoids clipping labels under the home indicator. */
+  const tabBarContentMin = Platform.OS === "android" ? 62 : Platform.OS === "ios" ? 60 : 56;
   const tabBarHeight = tabBarContentMin + tabBarBottom;
 
   if (!fontsLoaded) {
@@ -84,26 +84,28 @@ export default function TabsLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
+          tabBarShowLabel: true,
           tabBarActiveTintColor: Colors.primary,
           tabBarInactiveTintColor: Colors.textTertiary,
           tabBarAllowFontScaling: false,
           tabBarLabelStyle: {
-            fontSize: 9,
+            fontSize: 10,
             fontWeight: FontWeight.semibold,
-            marginTop: 2,
-            marginBottom: Platform.OS === "ios" ? 6 : 8,
-            lineHeight: 11,
+            marginTop: 0,
+            marginBottom: 0,
+            lineHeight: 13,
+            maxWidth: 76,
           },
           tabBarIconStyle: {
-            marginTop: Platform.OS === "android" ? 2 : 2,
-            marginBottom: 0,
+            marginTop: Platform.OS === "android" ? 2 : 0,
+            marginBottom: 2,
           },
           tabBarItemStyle: {
-            paddingTop: 4,
-            paddingBottom: 0,
+            paddingTop: 6,
+            paddingBottom: 2,
           },
           tabBarStyle: {
-            paddingTop: Platform.OS === "android" ? 4 : 6,
+            paddingTop: Platform.OS === "android" ? 2 : 4,
             paddingBottom: tabBarBottom,
             height: tabBarHeight,
             minHeight: tabBarHeight,

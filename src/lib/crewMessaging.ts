@@ -2,7 +2,11 @@ import { supabase } from "@/lib/supabase";
 import type { Json } from "@/types/database";
 import { localDateKey } from "@/lib/dailyCommuteLocationGate";
 import { parseGeoPoint } from "@/lib/parseGeoPoint";
-import { computeCrewEqualCorridorRiderBreakdown } from "@/lib/costModel";
+import {
+  computeCrewEqualCorridorRiderBreakdown,
+  computeCrewPerRiderDetourAttributedContributions,
+} from "@/lib/costModel";
+import { resolveCommuteGeometry, type ResolvedCommuteLeg } from "@/lib/crewRouteOrdering";
 
 const MAX_BODY_LEN = 2000;
 
@@ -45,6 +49,8 @@ export type CrewTripInstanceRow = {
   /** Map of user id to ISO time when they tapped ready for pickup. */
   rider_pickup_ready_at: Json | null;
   departure_readiness_reminder_sent_at: string | null;
+  /** Per rider: joining | declining this day's pool (before Start Poolyn). */
+  pool_rider_commitment: Json | null;
 };
 
 /** Driver or trip starter: not expected to send rider pickup ack. */
@@ -125,7 +131,9 @@ export type CrewTripSettlementSummary = {
   commute_pattern?: string;
   distance_km?: number | null;
   duration_mins?: number | null;
+  /** @deprecated Prefer contribution_credits_by_rider */
   contribution_credits_per_rider?: number;
+  contribution_credits_by_rider?: Record<string, number> | Json;
   crew_explorer_admin_fee_rate?: number;
   riders?: CrewTripSettlementRiderLine[];
   driver_user_id?: string;
@@ -508,6 +516,7 @@ export async function joinCrewByCode(
   return { ok: false, reason: human[reason] ?? reason };
 }
 
+// Do not list pool_rider_commitment here until migration 0102 is applied on the DB; PostgREST errors if the column is missing.
 const CREW_TRIP_INSTANCE_SELECT =
   "id, crew_id, trip_date, designated_driver_user_id, excluded_pickup_user_ids, trip_started_at, trip_finished_at, poolyn_credits_settled_at, settlement_summary, trip_started_by_user_id, rider_pickup_ready_at, departure_readiness_reminder_sent_at";
 
@@ -527,7 +536,52 @@ function crewTripInstanceFromRow(row: Record<string, unknown>): CrewTripInstance
     rider_pickup_ready_at: (row.rider_pickup_ready_at as Json | null) ?? null,
     departure_readiness_reminder_sent_at:
       (row.departure_readiness_reminder_sent_at as string | null) ?? null,
+    pool_rider_commitment:
+      "pool_rider_commitment" in row
+        ? ((row.pool_rider_commitment as Json | null) ?? null)
+        : null,
   };
+}
+
+/** Parsed pool-day commitment entry from `pool_rider_commitment` JSON. */
+export function parsePoolRiderCommitment(
+  raw: Json | null | undefined
+): Record<string, { status?: string; at?: string }> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const o = raw as Record<string, unknown>;
+  const out: Record<string, { status?: string; at?: string }> = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const e = v as Record<string, unknown>;
+      out[k] = {
+        status: typeof e.status === "string" ? e.status : undefined,
+        at: typeof e.at === "string" ? e.at : undefined,
+      };
+    }
+  }
+  return out;
+}
+
+export async function setCrewPoolDayCommitment(
+  tripInstanceId: string,
+  joining: boolean
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_crew_trip_set_pool_commitment", {
+    p_trip_instance_id: tripInstanceId,
+    p_joining: joining,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o?.ok === true) return { ok: true };
+  const raw = typeof o?.reason === "string" ? o.reason : "commit_failed";
+  const human: Record<string, string> = {
+    not_authenticated: "Sign in again.",
+    trip_not_found: "This trip is no longer available.",
+    not_in_crew: "You are not in this crew.",
+    driver_no_commitment: "The designated driver does not use this control.",
+    trip_already_started: "This trip already started. Chat with your crew if plans changed.",
+  };
+  return { ok: false, reason: human[raw] ?? raw.replace(/_/g, " ") };
 }
 
 /**
@@ -883,6 +937,14 @@ export async function abandonCrewDriverSpinSession(
   return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "spin_abandon_failed" };
 }
 
+const RECORD_TRIP_STARTED_REASONS: Record<string, string> = {
+  not_authenticated: "Sign in again.",
+  trip_not_found: "This trip is no longer available.",
+  not_in_crew: "You are not in this crew.",
+  not_todays_driver:
+    "Only today's designated driver can start the trip. Open crew chat to change driver if needed.",
+};
+
 export async function recordCrewTripStarted(
   tripInstanceId: string
 ): Promise<{ ok: true; idempotent?: boolean } | { ok: false; reason: string }> {
@@ -892,7 +954,8 @@ export async function recordCrewTripStarted(
   if (error) return { ok: false, reason: error.message };
   const o = data as Record<string, unknown> | null;
   if (o?.ok === true) return { ok: true, idempotent: o.idempotent === true };
-  return { ok: false, reason: typeof o?.reason === "string" ? o.reason : "start_failed" };
+  const raw = typeof o?.reason === "string" ? o.reason : "start_failed";
+  return { ok: false, reason: RECORD_TRIP_STARTED_REASONS[raw] ?? raw };
 }
 
 const ACK_PICKUP_REASONS: Record<string, string> = {
@@ -921,14 +984,15 @@ export async function ackCrewTripPickupReady(
 
 export async function finishAndSettleCrewTripCredits(params: {
   tripInstanceId: string;
-  contributionCreditsPerRider: number;
+  /** Integer cents per paying rider (user id from auth.users). */
+  contributionCreditsByRider: Record<string, number>;
 }): Promise<
   | { ok: true; idempotent?: boolean; settlementSummary: CrewTripSettlementSummary | null }
   | { ok: false; reason: string; needed?: number; balance?: number }
 > {
   const { data, error } = await supabase.rpc("poolyn_crew_trip_finish_and_settle_credits", {
     p_trip_instance_id: params.tripInstanceId,
-    p_contribution_credits_per_rider: params.contributionCreditsPerRider,
+    p_contribution_credits_by_rider: params.contributionCreditsByRider,
   });
   if (error) return { ok: false, reason: error.message };
   const o = data as Record<string, unknown> | null;
@@ -956,34 +1020,55 @@ export async function finishAndSettleCrewTripCredits(params: {
 }
 
 /**
- * Same rider share as the crew card (locked corridor split). Credits use the same integer units as cents.
+ * Crew trip settlement preview: equal locked-corridor share plus per-rider detour off the commute
+ * segment (see `computeCrewPerRiderDetourAttributedContributions` in `costModel.ts`).
  */
 export async function fetchCrewTripContributionForSettlement(params: {
   crewId: string;
   viewerUserId: string;
-  /** Crew members paying today: not the designated driver and not in excluded pickups. */
-  payingRiderCount: number;
+  /** Paying riders today (non-driver, not excluded), stable order. */
+  payingRiderUserIds: string[];
+  /** Round-trip crews: corridor segment for detour math (defaults like dice pool). */
+  activeLeg?: ResolvedCommuteLeg;
 }): Promise<
   | {
       ok: true;
+      /** Largest per-rider total (explorer fee line uses this as a conservative upper bound). */
       contributionCredits: number;
+      /** Equal corridor + stop share only (before per-rider detour). */
+      contributionCentsPerRider: number;
+      contributionCentsMin: number;
+      contributionCentsMax: number;
+      contributionCentsByRider: Record<string, number>;
+      equalCorridorCentsPerRider: number;
       poolRiders: number;
       distanceM: number | null;
       durationS: number | null;
     }
   | { ok: false; reason: string }
 > {
+  const poolRiders = Math.max(0, Math.floor(params.payingRiderUserIds.length));
+  if (poolRiders < 1) {
+    return {
+      ok: true,
+      contributionCredits: 0,
+      contributionCentsPerRider: 0,
+      contributionCentsMin: 0,
+      contributionCentsMax: 0,
+      contributionCentsByRider: {},
+      equalCorridorCentsPerRider: 0,
+      poolRiders: 0,
+      distanceM: null,
+      durationS: null,
+    };
+  }
+
   const { data: crew, error: e1 } = await supabase
     .from("crews")
-    .select("locked_route_distance_m, locked_route_duration_s")
+    .select("locked_route_distance_m, locked_route_duration_s, commute_pattern")
     .eq("id", params.crewId)
     .maybeSingle();
   if (e1 || !crew) return { ok: false, reason: "crew_not_found" };
-
-  const poolRiders = Math.max(0, Math.floor(params.payingRiderCount));
-  if (poolRiders < 1) {
-    return { ok: true, contributionCredits: 0, poolRiders: 0, distanceM: null, durationS: null };
-  }
 
   let distanceM =
     typeof crew.locked_route_distance_m === "number" ? crew.locked_route_distance_m : null;
@@ -1007,6 +1092,52 @@ export async function fetchCrewTripContributionForSettlement(params: {
     return { ok: false, reason: "no_route_stats" };
   }
 
+  const [ownerHw, pins] = await Promise.all([
+    fetchCrewOwnerHomeWork(params.crewId),
+    fetchCrewMemberHomePins(params.crewId),
+  ]);
+
+  const latLngByUserId: Record<string, { lat: number; lng: number } | undefined> = {};
+  for (const p of pins) {
+    latLngByUserId[p.userId] = { lat: p.lat, lng: p.lng };
+  }
+
+  const pattern = (crew.commute_pattern as "to_work" | "to_home" | "round_trip") ?? "to_work";
+  const activeLeg: ResolvedCommuteLeg =
+    params.activeLeg ?? (pattern === "to_home" ? "to_home" : "to_work");
+  const home = parseGeoPoint(ownerHw?.home_location ?? null);
+  const work = parseGeoPoint(ownerHw?.work_location ?? null);
+  const geom =
+    home && work ? resolveCommuteGeometry({ pattern, activeLeg, home, work }) : null;
+
+  if (geom) {
+    const det = computeCrewPerRiderDetourAttributedContributions({
+      lockedRouteDistanceM: distanceM,
+      lockedRouteDurationS: durationS,
+      payingRiderUserIds: params.payingRiderUserIds,
+      segmentStart: geom.segmentStart,
+      segmentEnd: geom.segmentEnd,
+      latLngByUserId,
+    });
+    if (det) {
+      const amounts = params.payingRiderUserIds.map((id) => det.byUserId[id] ?? 0);
+      const minC = Math.min(...amounts);
+      const maxC = Math.max(...amounts);
+      return {
+        ok: true,
+        contributionCredits: maxC,
+        contributionCentsPerRider: det.equalCorridorCentsPerRider,
+        contributionCentsMin: minC,
+        contributionCentsMax: maxC,
+        contributionCentsByRider: det.byUserId,
+        equalCorridorCentsPerRider: det.equalCorridorCentsPerRider,
+        poolRiders,
+        distanceM,
+        durationS,
+      };
+    }
+  }
+
   const bd = computeCrewEqualCorridorRiderBreakdown({
     lockedRouteDistanceM: distanceM,
     lockedRouteDurationS: durationS,
@@ -1014,9 +1145,18 @@ export async function fetchCrewTripContributionForSettlement(params: {
   });
   if (!bd) return { ok: false, reason: "pricing_unavailable" };
 
+  const c = bd.total_contribution;
+  const byUser: Record<string, number> = {};
+  for (const id of params.payingRiderUserIds) byUser[id] = c;
+
   return {
     ok: true,
-    contributionCredits: bd.total_contribution,
+    contributionCredits: c,
+    contributionCentsPerRider: c,
+    contributionCentsMin: c,
+    contributionCentsMax: c,
+    contributionCentsByRider: byUser,
+    equalCorridorCentsPerRider: c,
     poolRiders,
     distanceM,
     durationS,

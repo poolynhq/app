@@ -57,6 +57,27 @@ export const POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION = 0.15;
  */
 export const POOLYN_CREW_EXPLORER_ADMIN_FEE_FRACTION = 0.1;
 
+/**
+ * Explorer admin fee rate applied in `poolyn_crew_trip_finish_and_settle_credits` on each rider’s
+ * contribution (Poolyn balance settlement). Must stay aligned with crew trip SQL migrations (currently 4%).
+ * Display copy and transaction history use this for labels; changing billing requires a migration too.
+ */
+export const POOLYN_CREW_CREDITS_SETTLEMENT_EXPLORER_FEE_RATE = 0.04;
+
+// --- Crew Poolyn: detour attributed to each passenger (off main commute segment) ---
+
+/** Below this perpendicular distance (m) from the corridor segment, no detour surcharge. */
+export const POOLYN_CREW_MIN_PERPENDICULAR_DETOUR_M = 40;
+
+/** Cap perpendicular distance (m) used for detour pricing. */
+export const POOLYN_CREW_MAX_PERPENDICULAR_DETOUR_M = 8000;
+
+/** If true, chargeable detour km uses 2× perpendicular distance (hook out and back). If false, one-way. */
+export const POOLYN_CREW_DETOUR_CHARGE_ROUND_TRIP = true;
+
+/** Average speed (km/h) for extra time on detour legs. */
+export const POOLYN_CREW_DETOUR_AVG_SPEED_KMH = 35;
+
 /** @deprecated Use {@link POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION} or crew fraction by context. */
 export const POOLYN_EXPLORER_NETWORK_FEE_FRACTION = POOLYN_MINGLE_EXPLORER_CASH_FEE_FRACTION;
 

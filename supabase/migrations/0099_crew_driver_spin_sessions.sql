@@ -1,6 +1,7 @@
 -- Collaborative driver spin session (crew chat): shared pool, server randomness, realtime sync.
+-- Idempotent: remote DBs may already have this table from a manual or partial apply.
 
-CREATE TABLE public.crew_driver_spin_sessions (
+CREATE TABLE IF NOT EXISTS public.crew_driver_spin_sessions (
   crew_trip_instance_id uuid PRIMARY KEY REFERENCES public.crew_trip_instances (id) ON DELETE CASCADE,
   opened_by_user_id uuid NOT NULL REFERENCES public.users (id),
   pool_user_ids uuid[] NOT NULL,
@@ -14,10 +15,11 @@ CREATE TABLE public.crew_driver_spin_sessions (
 COMMENT ON TABLE public.crew_driver_spin_sessions IS
   'Ephemeral shared state for the crew chat driver wheel; replaced on each new open.';
 
-CREATE INDEX idx_crew_driver_spin_sessions_updated ON public.crew_driver_spin_sessions (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_crew_driver_spin_sessions_updated ON public.crew_driver_spin_sessions (updated_at DESC);
 
 ALTER TABLE public.crew_driver_spin_sessions ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Crew members can read spin session for their trip" ON public.crew_driver_spin_sessions;
 CREATE POLICY "Crew members can read spin session for their trip"
   ON public.crew_driver_spin_sessions
   FOR SELECT

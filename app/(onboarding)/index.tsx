@@ -161,7 +161,7 @@ export default function RoleSelect() {
     }
 
     setLoading(false);
-    router.push("/(onboarding)/location");
+    router.push("/(onboarding)/currency");
   }
 
   return (

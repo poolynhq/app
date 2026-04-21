@@ -190,6 +190,15 @@ export function buildStaticCommuteMapUrl(
 
 const CREW_PIN_COLORS = ["0B8457", "E74C3C", "2563EB", "D97706", "7C3AED", "DB2777"];
 
+/**
+ * Mapbox Static Images requires HTTPS marker URLs it can fetch. placehold.co returns a small PNG
+ * with a stop number so riders match the list below the map.
+ */
+function crewPoolNumberedStopMarkerUrl(stopIndex1Based: number, bgHexNoHash: string): string {
+  const n = Math.min(Math.max(1, stopIndex1Based), 99);
+  return `https://placehold.co/44x44/${bgHexNoHash}/FFFFFF/png?text=${encodeURIComponent(String(n))}`;
+}
+
 /** Static map with one pin per commute home (general area only). */
 export function buildCrewMemberPinsMapUrl(
   points: { lat: number; lng: number }[],
@@ -313,7 +322,7 @@ export async function fetchDrivingRouteThroughWaypoints(
 }
 
 /**
- * Pool preview map: actual driving polyline plus driver (yellow), destination (red), other homes (small pins).
+ * Pool preview map: green line; numbered stop markers; large yellow START (driver) and red END on top.
  */
 export function buildCrewPoolRouteStaticMapUrl(
   routeLine: [number, number][],
@@ -339,7 +348,8 @@ export function buildCrewPoolRouteStaticMapUrl(
   for (let i = 0; i < pins.others.length; i++) {
     const p = pins.others[i];
     const hex = CREW_PIN_COLORS[(i + 2) % CREW_PIN_COLORS.length];
-    overlays.push(`pin-s+${hex}(${p.lng},${p.lat})`);
+    const markerUrl = crewPoolNumberedStopMarkerUrl(i + 1, hex);
+    overlays.push(`url-${encodeURIComponent(markerUrl)}(${p.lng},${p.lat})`);
   }
   overlays.push(`pin-l+FACC15(${pins.driver.lng},${pins.driver.lat})`);
   overlays.push(`pin-l+E74C3C(${pins.destination.lng},${pins.destination.lat})`);

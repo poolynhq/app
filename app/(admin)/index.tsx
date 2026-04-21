@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   Modal,
   Pressable,
   Image,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -22,6 +23,13 @@ import { supabase, extractDomain } from "@/lib/supabase";
 import { orgRequiresFullActivationPaywall } from "@/lib/orgNetworkUi";
 import { AdminOrgStatusBanner } from "@/components/AdminOrgStatusBanner";
 import { Organisation } from "@/types/database";
+import * as ImagePicker from "expo-image-picker";
+import { logoObjectNameAndContentType, storageUploadBody } from "@/lib/storageImageMeta";
+import {
+  getOrganisationLogoPublicUrl,
+  organisationSettingsRecord,
+  uploadOrganisationLogoObject,
+} from "@/lib/orgLogo";
 import {
   Colors,
   Spacing,
@@ -30,13 +38,28 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { ORG_PLAN_LABELS } from "@/lib/orgPlanLabels";
+import { OrgAdminCorridorsMap } from "@/components/admin/OrgAdminCorridorsMap";
 
-const PLAN_LABELS: Record<string, string> = {
-  free: "Scout Basic",
-  starter: "Momentum Growth",
-  business: "Pulse Business",
-  enterprise: "Orbit Enterprise",
-};
+const EMPTY_CORRIDOR_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
+function isFeatureCollection(x: unknown): x is GeoJSON.FeatureCollection {
+  return (
+    typeof x === "object" &&
+    x !== null &&
+    (x as GeoJSON.FeatureCollection).type === "FeatureCollection" &&
+    Array.isArray((x as GeoJSON.FeatureCollection).features)
+  );
+}
+
+function parseWorkCentroidJson(x: unknown): { lng: number; lat: number } | null {
+  if (x == null || typeof x !== "object") return null;
+  const o = x as Record<string, unknown>;
+  const lng = Number(o.lng);
+  const lat = Number(o.lat);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+  return { lng, lat };
+}
 
 const ADMIN_NETWORK_WELCOME_KEY = "@poolyn/admin_network_dashboard_welcome_v1";
 
@@ -67,15 +90,52 @@ function parseDashboardRpcPayload(data: unknown): Record<string, unknown> | null
   return null;
 }
 
-function SectionHeader({ eyebrow, title }: { eyebrow: string; title: string }) {
+function SectionHeader({
+  eyebrow,
+  title,
+  onInfoPress,
+  infoAccessibilityLabel,
+}: {
+  eyebrow: string;
+  title: string;
+  onInfoPress?: () => void;
+  infoAccessibilityLabel?: string;
+}) {
   return (
     <View style={styles.sectionHeaderWrap}>
       <View style={styles.sectionHeaderAccent} />
-      <View style={styles.sectionHeaderTextCol}>
-        <Text style={styles.sectionEyebrow}>{eyebrow}</Text>
-        <Text style={styles.sectionHeaderTitle}>{title}</Text>
+      <View style={styles.sectionHeaderBody}>
+        <View style={styles.sectionHeaderTextCol}>
+          <Text style={styles.sectionEyebrow}>{eyebrow}</Text>
+          <Text style={styles.sectionHeaderTitle}>{title}</Text>
+        </View>
+        {onInfoPress ? (
+          <InlineInfoButton
+            onPress={onInfoPress}
+            accessibilityLabel={infoAccessibilityLabel ?? "More information"}
+          />
+        ) : null}
       </View>
     </View>
+  );
+}
+
+function InlineInfoButton({
+  onPress,
+  accessibilityLabel,
+}: {
+  onPress: () => void;
+  accessibilityLabel: string;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      hitSlop={10}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+    >
+      <Ionicons name="information-circle-outline" size={18} color={Colors.textTertiary} />
+    </TouchableOpacity>
   );
 }
 
@@ -87,12 +147,13 @@ export default function AdminOverview() {
   const [memberCount, setMemberCount] = useState(0);
   /** Same email domain as org, not in the workplace network (explorers). */
   const [domainExplorersCount, setDomainExplorersCount] = useState(0);
-  const [totalRides, setTotalRides] = useState(0);
+  /** Pooled org trips this calendar month (same basis as CO₂ in get_org_analytics_summary). */
+  const [esgPooledTripsMonth, setEsgPooledTripsMonth] = useState(0);
+  const [esgReportMonthLabel, setEsgReportMonthLabel] = useState("");
   /** Members with ride/request activity this calendar month (billing / engagement). */
   const [monthlyActiveCommuters, setMonthlyActiveCommuters] = useState(0);
   const [pendingRequests, setPendingRequests] = useState(0);
   const [scheduledRides, setScheduledRides] = useState(0);
-  const [peakHour, setPeakHour] = useState<string>("--");
   const [co2Saved, setCo2Saved] = useState(0);
   const [overageUsers, setOverageUsers] = useState(0);
   const [overageCost, setOverageCost] = useState(0);
@@ -100,9 +161,28 @@ export default function AdminOverview() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAdminWelcome, setShowAdminWelcome] = useState(false);
-  const [routeGroups, setRouteGroups] = useState<
-    { id: string; name: string; description: string | null; memberCount: number }[]
+  /** PostGIS clusters from member home_location (RPC). */
+  const [autoCorridors, setAutoCorridors] = useState<
+    {
+      clusterId: number;
+      name: string;
+      memberCount: number;
+      subtitle: string;
+      centroidLng?: number;
+      centroidLat?: number;
+    }[]
   >([]);
+  const [corridorHomesGeo, setCorridorHomesGeo] =
+    useState<GeoJSON.FeatureCollection>(EMPTY_CORRIDOR_FC);
+  const [corridorAxesGeo, setCorridorAxesGeo] =
+    useState<GeoJSON.FeatureCollection>(EMPTY_CORRIDOR_FC);
+  const [corridorWorkCentroid, setCorridorWorkCentroid] = useState<{
+    lng: number;
+    lat: number;
+  } | null>(null);
+  /** Poolyn Crews linked to org_id (Crew Poolyn on Home). */
+  const [orgCrews, setOrgCrews] = useState<{ id: string; name: string; memberCount: number }[]>([]);
+  const [logoUploading, setLogoUploading] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!profile?.org_id) {
@@ -117,12 +197,8 @@ export default function AdminOverview() {
 
       const monthRef = new Date().toISOString().slice(0, 10);
 
-      const [orgRes, membersListRes, dashRes, routeGroupsRes] = await Promise.all([
-        supabase
-          .from("organisations")
-          .select("*")
-          .eq("id", profile.org_id)
-          .single(),
+      const [orgRes, membersListRes, dashRes, crewSummaryRes, autoCorridorsRes] = await Promise.all([
+        supabase.from("organisations").select("*").eq("id", profile.org_id).single(),
         supabase
           .from("users")
           .select(
@@ -131,35 +207,88 @@ export default function AdminOverview() {
           .eq("org_id", profile.org_id)
           .order("full_name"),
         supabase.rpc("poolyn_org_admin_dashboard_stats", { p_org_id: profile.org_id }),
-        supabase
-          .from("org_route_groups")
-          .select("id, name, description, org_route_group_members(count)")
-          .eq("org_id", profile.org_id)
-          .eq("archived", false)
-          .order("name"),
+        supabase.rpc("poolyn_org_admin_crew_summary", { p_org_id: profile.org_id }),
+        supabase.rpc("poolyn_org_auto_route_corridors", { p_org_id: profile.org_id }),
       ]);
 
       if (orgRes.error) throw orgRes.error;
       if (membersListRes.error) throw membersListRes.error;
 
-      if (routeGroupsRes.error) {
-        if (__DEV__) console.warn("[admin overview] org_route_groups", routeGroupsRes.error.message);
-        setRouteGroups([]);
+      if (crewSummaryRes.error) {
+        if (__DEV__) {
+          console.warn("[admin overview] poolyn_org_admin_crew_summary", crewSummaryRes.error.message);
+        }
+        setOrgCrews([]);
       } else {
-        const rgRows = (routeGroupsRes.data ?? []) as Array<{
-          id: string;
-          name: string;
-          description: string | null;
-          org_route_group_members?: { count: number }[];
+        const crewRows = (crewSummaryRes.data ?? []) as Array<{
+          crew_id: string;
+          crew_name: string;
+          member_count: number | string;
         }>;
-        setRouteGroups(
-          rgRows.map((g) => ({
-            id: g.id,
-            name: g.name,
-            description: g.description,
-            memberCount: g.org_route_group_members?.[0]?.count ?? 0,
+        setOrgCrews(
+          crewRows.map((r) => ({
+            id: r.crew_id,
+            name: r.crew_name,
+            memberCount: Number(r.member_count ?? 0),
           }))
         );
+      }
+
+      if (autoCorridorsRes.error) {
+        if (__DEV__) {
+          console.warn("[admin overview] poolyn_org_auto_route_corridors", autoCorridorsRes.error.message);
+        }
+        setAutoCorridors([]);
+        setCorridorHomesGeo(EMPTY_CORRIDOR_FC);
+        setCorridorAxesGeo(EMPTY_CORRIDOR_FC);
+        setCorridorWorkCentroid(null);
+      } else {
+        let raw: unknown = autoCorridorsRes.data;
+        if (typeof raw === "string") {
+          try {
+            raw = JSON.parse(raw) as unknown;
+          } catch {
+            raw = null;
+          }
+        }
+        const mapRow = (row: Record<string, unknown>) => {
+          const clng = Number(row.centroid_lng);
+          const clat = Number(row.centroid_lat);
+          return {
+            clusterId: Number(row.cluster_id ?? 0),
+            name: String(row.name ?? "Corridor"),
+            memberCount: Math.floor(Number(row.member_count ?? 0)),
+            subtitle: String(row.subtitle ?? ""),
+            ...(Number.isFinite(clng) && Number.isFinite(clat)
+              ? { centroidLng: clng, centroidLat: clat }
+              : {}),
+          };
+        };
+        const arr = Array.isArray(raw) ? raw : null;
+        if (arr) {
+          setAutoCorridors(arr.map((row: Record<string, unknown>) => mapRow(row)));
+          setCorridorHomesGeo(EMPTY_CORRIDOR_FC);
+          setCorridorAxesGeo(EMPTY_CORRIDOR_FC);
+          setCorridorWorkCentroid(null);
+        } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+          const o = raw as Record<string, unknown>;
+          const list = Array.isArray(o.corridors) ? o.corridors : [];
+          setAutoCorridors(
+            (list as Record<string, unknown>[]).map((row) => mapRow(row))
+          );
+          setCorridorHomesGeo(
+            isFeatureCollection(o.homes_geojson) ? o.homes_geojson : EMPTY_CORRIDOR_FC
+          );
+          setCorridorAxesGeo(
+            isFeatureCollection(o.axis_lines_geojson) ? o.axis_lines_geojson : EMPTY_CORRIDOR_FC
+          );
+          setCorridorWorkCentroid(parseWorkCentroidJson(o.work_centroid));
+        } else {
+          setAutoCorridors([]);
+          setCorridorHomesGeo(EMPTY_CORRIDOR_FC);
+          setCorridorAxesGeo(EMPTY_CORRIDOR_FC);
+          setCorridorWorkCentroid(null);
+        }
       }
 
       const memberRows = membersListRes.data ?? [];
@@ -169,20 +298,15 @@ export default function AdminOverview() {
       const dashPayload = !dashRes.error ? parseDashboardRpcPayload(dashRes.data) : null;
 
       // Prefer same-org list from PostgREST when RLS returns rows (matches Members tab).
-      // Use SECURITY DEFINER RPC counts/ids only when the client list is empty (RLS gap, etc.).
+      // Use SECURITY DEFINER RPC counts when the client list is empty (RLS gap, etc.).
       let memberCountVal = memberRows.length;
       let domainExplorersVal = Number(dashPayload?.domain_explorers_count ?? 0);
       let monthlyCommutersVal = 0;
-      let orgUserIds: string[] = memberRows.map((r) => r.id);
 
       if (dashPayload) {
         monthlyCommutersVal = Number(dashPayload.monthly_active_commuters ?? 0);
         if (memberRows.length === 0) {
           memberCountVal = Number(dashPayload.total_members ?? 0);
-          const rawIds = dashPayload.member_user_ids;
-          if (Array.isArray(rawIds)) {
-            orgUserIds = rawIds.filter((x): x is string => typeof x === "string");
-          }
         }
       } else {
         const { data: mauData } = await supabase.rpc("org_active_user_count", {
@@ -191,16 +315,12 @@ export default function AdminOverview() {
         monthlyCommutersVal = typeof mauData === "number" ? mauData : 0;
       }
 
-      if (orgUserIds.length === 0) {
-        orgUserIds = memberRows.map((r) => r.id);
-      }
-
       if (__DEV__) {
         if (memberRows.length === 0 && memberCountVal > 0) {
           console.warn(
             "[admin overview] member list empty but RPC reports",
             memberCountVal,
-            "— check org_id",
+            "; check org_id",
             profile.org_id
           );
         }
@@ -216,69 +336,6 @@ export default function AdminOverview() {
       setMemberCount(memberCountVal);
       setDomainExplorersCount(domainExplorersVal);
       setMonthlyActiveCommuters(monthlyCommutersVal);
-
-      const [ridesRes, requestsRes, scheduledRidesRes, peakRidesRes] =
-        orgUserIds.length > 0
-          ? await Promise.all([
-              supabase
-                .from("rides")
-                .select("id", { count: "exact", head: true })
-                .in("driver_id", orgUserIds)
-                .in("status", ["scheduled", "active", "completed"]),
-              supabase
-                .from("ride_requests")
-                .select("id", { count: "exact", head: true })
-                .in("passenger_id", orgUserIds)
-                .eq("status", "pending"),
-              supabase
-                .from("rides")
-                .select("id", { count: "exact", head: true })
-                .in("driver_id", orgUserIds)
-                .eq("status", "scheduled"),
-              supabase
-                .from("rides")
-                .select("depart_at")
-                .in("driver_id", orgUserIds)
-                .in("status", ["scheduled", "active", "completed"])
-                .order("depart_at", { ascending: false })
-                .limit(200),
-            ])
-          : [
-              { count: 0, data: [], error: null },
-              { count: 0, data: [], error: null },
-              { count: 0, data: [], error: null },
-              { data: [], error: null },
-            ];
-
-      let totalRidesVal = 0;
-      let pendingVal = 0;
-      let scheduledVal = 0;
-      let peakRows: { depart_at: string }[] = [];
-
-      if (ridesRes.error) {
-        if (__DEV__) console.warn("[admin overview] rides count:", ridesRes.error.message);
-      } else {
-        totalRidesVal = ridesRes.count ?? 0;
-      }
-      if (requestsRes.error) {
-        if (__DEV__) console.warn("[admin overview] ride_requests count:", requestsRes.error.message);
-      } else {
-        pendingVal = requestsRes.count ?? 0;
-      }
-      if (scheduledRidesRes.error) {
-        if (__DEV__) console.warn("[admin overview] scheduled rides count:", scheduledRidesRes.error.message);
-      } else {
-        scheduledVal = scheduledRidesRes.count ?? 0;
-      }
-      if (peakRidesRes.error) {
-        if (__DEV__) console.warn("[admin overview] peak rides:", peakRidesRes.error.message);
-      } else {
-        peakRows = (peakRidesRes.data ?? []) as { depart_at: string }[];
-      }
-
-      setTotalRides(totalRidesVal);
-      setPendingRequests(pendingVal);
-      setScheduledRides(scheduledVal);
 
       const [{ data: analyticsData, error: analyticsErr }, { data: planUsageData, error: planErr }] =
         await Promise.all([
@@ -297,18 +354,18 @@ export default function AdminOverview() {
 
       const analytics = (analyticsData ?? {}) as Record<string, number>;
       const usage = (planUsageData ?? {}) as Record<string, number>;
+      setPendingRequests(Math.floor(Number(analytics.pending_requests ?? 0)));
+      setScheduledRides(Math.floor(Number(analytics.scheduled_rides ?? 0)));
+      setEsgPooledTripsMonth(Math.floor(Number(analytics.total_rides ?? 0)));
       setCo2Saved(Number(analytics.co2_saved_kg ?? 0));
       setOverageUsers(Number(usage.overage_users ?? 0));
       setOverageCost(Number(usage.estimated_overage_cost ?? 0));
-
-      const hourBuckets: Record<number, number> = {};
-      for (const item of peakRows) {
-        const dt = new Date(item.depart_at);
-        const h = dt.getHours();
-        hourBuckets[h] = (hourBuckets[h] ?? 0) + 1;
+      try {
+        const d = new Date(`${monthRef}T12:00:00`);
+        setEsgReportMonthLabel(d.toLocaleDateString(undefined, { month: "long", year: "numeric" }));
+      } catch {
+        setEsgReportMonthLabel("");
       }
-      const bestHour = Object.entries(hourBuckets).sort((a, b) => b[1] - a[1])[0]?.[0];
-      setPeakHour(bestHour ? `${bestHour}:00` : "--");
     } catch (e: any) {
       setError(e.message ?? "Failed to load dashboard data");
     } finally {
@@ -368,6 +425,85 @@ export default function AdminOverview() {
     fetchData();
   }, [fetchData]);
 
+  const handleChangeOrgLogo = useCallback(async () => {
+    if (profile?.org_role !== "admin" || !profile.org_id || !org?.id) return;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      showAlert("Photo access", "Allow photo library access to upload your company logo.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.85,
+      allowsEditing: true,
+      aspect: [1, 1],
+    });
+    if (result.canceled) return;
+    const uri = result.assets?.[0]?.uri;
+    if (!uri) return;
+    setLogoUploading(true);
+    try {
+      const response = await fetch(uri);
+      if (!response.ok) {
+        showAlert("Upload failed", `Could not read image (HTTP ${response.status}).`);
+        return;
+      }
+      const buf = await response.arrayBuffer();
+      const { objectName, contentType } = logoObjectNameAndContentType(
+        uri,
+        response.headers.get("content-type"),
+        buf
+      );
+      const path = `${org.id}/${objectName}`;
+      const fileBody = storageUploadBody(buf, contentType);
+      const { error: uploadError } = await uploadOrganisationLogoObject(path, fileBody, {
+        contentType,
+      });
+      if (uploadError) {
+        showAlert("Upload failed", uploadError.message);
+        return;
+      }
+      const nextSettings = { ...organisationSettingsRecord(org.settings), logo_path: path };
+      const { error: metaErr } = await supabase
+        .from("organisations")
+        .update({ settings: nextSettings })
+        .eq("id", org.id);
+      if (metaErr) {
+        showAlert("Save failed", metaErr.message);
+        return;
+      }
+      setOrg((prev) => {
+        const base = prev ?? org;
+        return base ? { ...base, settings: nextSettings } : prev;
+      });
+      showAlert("Logo updated", "Members see this on Home and Profile when they open company details.");
+    } catch (e) {
+      showAlert("Upload failed", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setLogoUploading(false);
+    }
+  }, [profile?.org_role, profile?.org_id, org?.id, org?.settings]);
+
+  const corridorMapFallbackCenter = useMemo((): [number, number] => {
+    const c = autoCorridors.find(
+      (x) => x.centroidLng != null && x.centroidLat != null
+    );
+    return c?.centroidLng != null && c.centroidLat != null
+      ? [c.centroidLng, c.centroidLat]
+      : [138.6, -34.85];
+  }, [autoCorridors]);
+
+  const corridorMapEmptyHint = useMemo(() => {
+    const noGeo =
+      corridorHomesGeo.features.length === 0 &&
+      corridorAxesGeo.features.length === 0 &&
+      corridorWorkCentroid == null;
+    if (autoCorridors.length > 0 && noGeo) {
+      return "Corridor names are showing, but map layers need the latest Poolyn database migration (corridors with GeoJSON). Apply pending Supabase migrations, then refresh.";
+    }
+    return undefined;
+  }, [autoCorridors, corridorHomesGeo, corridorAxesGeo, corridorWorkCentroid]);
+
   if (loading) {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -396,22 +532,12 @@ export default function AdminOverview() {
     );
   }
 
-  const planLabel = PLAN_LABELS[org?.plan ?? "free"] ?? "Free";
+  const planLabel = ORG_PLAN_LABELS[org?.plan ?? "free"] ?? "Plan";
   const isManagedNetwork = org?.org_type === "enterprise";
   const demandSupplyDelta = pendingRequests - scheduledRides;
 
-  let orgLogoPublicUrl: string | null = null;
-  if (
-    org?.settings &&
-    typeof org.settings === "object" &&
-    !Array.isArray(org.settings)
-  ) {
-    const lp = String((org.settings as { logo_path?: string }).logo_path ?? "").trim();
-    if (lp) {
-      orgLogoPublicUrl =
-        supabase.storage.from("org-logos").getPublicUrl(lp).data.publicUrl ?? null;
-    }
-  }
+  const orgLogoPublicUrl = getOrganisationLogoPublicUrl(org);
+  const adminCanEditLogo = profile?.org_role === "admin" && !!org?.id;
 
   const orgDomainRaw = org?.domain?.trim() ?? "";
   const emailDomainRaw = profile?.email ? extractDomain(profile.email) : "";
@@ -432,6 +558,41 @@ export default function AdminOverview() {
     showAlert(
       "Network types",
       "Managed network: a formal workplace on Poolyn (enterprise) with verified email domain, admin dashboard, member tools, and plan billing.\n\nCommunity network: an informal or organically grown network where colleagues joined without the full enterprise package. You still get a shared pool, with lighter org controls."
+    );
+  }
+
+  function explainDomainExplorers() {
+    showAlert(
+      "Domain explorers",
+      "People who verified a company email on your domain but are not members of this network yet. Open Join requests to invite them."
+    );
+  }
+
+  function explainRouteGroups() {
+    showAlert(
+      "Commute corridors on this screen",
+      "Poolyn assigns these from member geography only. We group people who saved a home pin and finished onboarding. Homes within about 10 km land in the same cluster. When enough people saved a workplace pin, clusters are named by compass direction from that workplace centroid.\n\nThe map shows home density (heatmap), a straight axis from the combined workplace centroid to each cluster (not turn-by-turn routing), and a blue workplace dot when work pins exist.\n\nMembers find who is near them on Home and form Poolyn Crews there. The crew list below is separate from these clusters."
+    );
+  }
+
+  function explainOrgCrewsOnDashboard() {
+    showAlert(
+      "Poolyn Crews (this list)",
+      "Carpool crews linked to your workplace when someone creates a crew while signed in with this organisation. Each line is one crew and how many people are in it."
+    );
+  }
+
+  function explainEsgSnapshot() {
+    showAlert(
+      "ESG snapshot (this month)",
+      "Pooled trips counts scheduled, active, and completed Poolyn rides in the calendar month where the driver belongs to your organisation.\n\nEstimated CO₂ avoided uses 2.3 kg per pooled trip for internal reporting. Adjust factors in your formal ESG process if your auditor requires a different emissions model."
+    );
+  }
+
+  function explainMonthlyActive() {
+    showAlert(
+      "Active members (this month)",
+      "Count of people in your org who drove, rode, or sent a ride request during the current calendar month. Plan limits use this count. It does not include domain explorers, who are not network members yet."
     );
   }
 
@@ -510,7 +671,7 @@ export default function AdminOverview() {
 
       <ScrollView
         style={styles.container}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, Platform.OS === "web" && styles.contentWebDesktop]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -521,17 +682,36 @@ export default function AdminOverview() {
         }
       >
         <AdminOrgStatusBanner />
-        {/* Header — company first; dashboard title secondary */}
+        {/* Header: company first; dashboard title secondary */}
         <View style={styles.dashboardHeader}>
-          <View style={styles.orgLogoWrap}>
-            {orgLogoPublicUrl ? (
-              <Image source={{ uri: orgLogoPublicUrl }} style={styles.orgLogoImage} />
-            ) : (
-              <View style={styles.orgLogoPlaceholder}>
-                <Ionicons name="business" size={28} color={Colors.textTertiary} />
+          <TouchableOpacity
+            style={styles.orgLogoOuter}
+            activeOpacity={adminCanEditLogo ? 0.82 : 1}
+            onPress={adminCanEditLogo ? () => void handleChangeOrgLogo() : undefined}
+            disabled={!adminCanEditLogo || logoUploading}
+            accessibilityRole={adminCanEditLogo ? "button" : "image"}
+            accessibilityLabel={adminCanEditLogo ? "Change company logo" : "Company logo"}
+          >
+            <View style={styles.orgLogoClip}>
+              {orgLogoPublicUrl ? (
+                <Image source={{ uri: orgLogoPublicUrl }} style={styles.orgLogoImage} />
+              ) : (
+                <View style={styles.orgLogoPlaceholder}>
+                  <Ionicons name="business" size={28} color={Colors.textTertiary} />
+                </View>
+              )}
+              {logoUploading ? (
+                <View style={styles.orgLogoUploading}>
+                  <ActivityIndicator color={Colors.primary} />
+                </View>
+              ) : null}
+            </View>
+            {adminCanEditLogo && !logoUploading ? (
+              <View style={styles.orgLogoEditBadge} pointerEvents="none">
+                <Ionicons name="camera" size={12} color={Colors.textOnPrimary} />
               </View>
-            )}
-          </View>
+            ) : null}
+          </TouchableOpacity>
           <View style={styles.dashboardHeaderText}>
             <Text style={styles.orgTitle} numberOfLines={2}>
               {orgDisplayName}
@@ -581,55 +761,111 @@ export default function AdminOverview() {
               <Text style={styles.statLabel}>Total members</Text>
             </View>
           </View>
-          <TouchableOpacity
-            style={styles.statCard}
-            activeOpacity={0.75}
-            onPress={() => {
-              if (profile?.org_role === "admin") {
-                router.push("/(admin)/domain-join-requests");
-              }
-            }}
-            disabled={profile?.org_role !== "admin"}
-            accessibilityRole="button"
-            accessibilityLabel="Open domain join requests"
-          >
-            <View style={[styles.statIcon, { backgroundColor: "#F3E8FF" }]}>
-              <Ionicons name="person-add-outline" size={18} color="#8B5CF6" />
-            </View>
-            <View style={styles.statTextCol}>
-              <Text style={styles.statValue}>{domainExplorersCount}</Text>
-              <Text style={styles.statLabel}>Domain explorers</Text>
-              <Text style={styles.statHint}>
-                Same company email, not on the network — send join requests
-              </Text>
-            </View>
-          </TouchableOpacity>
+          <View style={[styles.statCard, styles.statCardSplit]}>
+            <TouchableOpacity
+              style={styles.statCardSplitMain}
+              activeOpacity={0.75}
+              onPress={() => {
+                if (profile?.org_role === "admin") {
+                  router.push("/(admin)/domain-join-requests");
+                }
+              }}
+              disabled={profile?.org_role !== "admin"}
+              accessibilityRole="button"
+              accessibilityLabel="Open domain join requests"
+            >
+              <View style={[styles.statIcon, { backgroundColor: "#F3E8FF" }]}>
+                <Ionicons name="person-add-outline" size={18} color="#8B5CF6" />
+              </View>
+              <View style={styles.statTextCol}>
+                <Text style={styles.statValue}>{domainExplorersCount}</Text>
+                <Text style={styles.statLabel}>Domain explorers</Text>
+                <Text style={styles.statHint}>Same domain, not on the network yet</Text>
+              </View>
+            </TouchableOpacity>
+            <InlineInfoButton
+              onPress={explainDomainExplorers}
+              accessibilityLabel="What are domain explorers?"
+            />
+          </View>
         </View>
 
-        <SectionHeader eyebrow="Performance" title="Analytics" />
+        <SectionHeader
+          eyebrow="ESG"
+          title="Environmental snapshot"
+          onInfoPress={explainEsgSnapshot}
+          infoAccessibilityLabel="How ESG numbers are calculated"
+        />
+        {esgReportMonthLabel ? (
+          <Text style={styles.esgMonthLine}>{esgReportMonthLabel}</Text>
+        ) : null}
         <View style={styles.analyticsRow}>
-          <Text style={styles.analyticsItem}>Total rides: {totalRides}</Text>
-          <Text style={styles.analyticsItem}>CO₂ saved: {co2Saved} kg</Text>
-          <Text style={styles.analyticsItem}>Peak commute time: {peakHour}</Text>
+          <View style={styles.analyticsCell}>
+            <Text style={styles.analyticsValue}>{esgPooledTripsMonth}</Text>
+            <Text style={styles.analyticsLabel}>Pooled trips</Text>
+          </View>
+          <View style={styles.analyticsCell}>
+            <Text style={styles.analyticsValue}>
+              {co2Saved.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+            </Text>
+            <Text style={styles.analyticsLabel}>Est. CO₂ avoided (kg)</Text>
+          </View>
         </View>
 
-        <SectionHeader eyebrow="Route planning" title="Org route groups" />
+        <SectionHeader
+          eyebrow="Route planning"
+          title="Commute corridors"
+          onInfoPress={explainRouteGroups}
+          infoAccessibilityLabel="How corridors are built"
+        />
         <View style={styles.healthCard}>
-          {routeGroups.length === 0 ? (
+          {autoCorridors.length > 0 ? (
+            <>
+              <Text style={styles.healthMuted}>Assigned automatically from member home locations.</Text>
+              <OrgAdminCorridorsMap
+                homesGeoJson={corridorHomesGeo}
+                axisLinesGeoJson={corridorAxesGeo}
+                workCentroid={corridorWorkCentroid}
+                mapHeight={260}
+                fallbackCenter={corridorMapFallbackCenter}
+                emptyGeometryHint={corridorMapEmptyHint}
+              />
+              <View style={styles.corridorList}>
+                {autoCorridors.map((c) => (
+                  <View key={`auto-${c.clusterId}`}>
+                    <Text style={styles.healthBody}>
+                      {c.name}: {c.memberCount} member{c.memberCount === 1 ? "" : "s"}
+                    </Text>
+                    {c.subtitle ? <Text style={styles.corridorSubtitle}>{c.subtitle}</Text> : null}
+                  </View>
+                ))}
+              </View>
+            </>
+          ) : (
             <Text style={styles.healthBody}>
-              No route groups yet. Members can create named corridors (for example feeder areas) from
-              Profile → Route groups so you can see where interest clusters.
+              No corridors yet. Members need a saved home location and completed onboarding to appear in clusters.
+            </Text>
+          )}
+        </View>
+
+        <SectionHeader
+          eyebrow="Carpool crews"
+          title="Poolyn Crews (this organisation)"
+          onInfoPress={explainOrgCrewsOnDashboard}
+          infoAccessibilityLabel="What are Poolyn Crews on the dashboard?"
+        />
+        <View style={[styles.healthCard, { marginBottom: Spacing.sm }]}>
+          {orgCrews.length === 0 ? (
+            <Text style={styles.healthBody}>
+              No crews linked to this organisation yet. Crews created from Home (Crew Poolyn) while on this
+              workplace account are listed here with member counts.
             </Text>
           ) : (
             <>
-              <Text style={styles.healthMuted}>
-                Parent-defined corridors for planning. Member counts help show coverage across your
-                network.
-              </Text>
-              {routeGroups.map((g) => (
-                <Text key={g.id} style={[styles.healthBody, { marginTop: Spacing.sm }]}>
-                  {g.name}: {g.memberCount} member{g.memberCount === 1 ? "" : "s"}
-                  {g.description ? ` — ${g.description}` : ""}
+              <Text style={styles.healthMuted}>Workplace-linked crews from Home.</Text>
+              {orgCrews.map((c) => (
+                <Text key={c.id} style={[styles.healthBody, { marginTop: Spacing.sm }]}>
+                  {c.name}: {c.memberCount} member{c.memberCount === 1 ? "" : "s"}
                 </Text>
               ))}
             </>
@@ -639,29 +875,29 @@ export default function AdminOverview() {
         <SectionHeader eyebrow="Live signals" title="Network health" />
         <View style={styles.healthCard}>
           <Text style={styles.healthBody}>
-            Demand vs supply: {pendingRequests} requests vs {scheduledRides} rides
+            {pendingRequests} open requests · {scheduledRides} scheduled rides
           </Text>
-          <Text style={styles.healthBody}>
+          <Text style={styles.healthMuted}>
             {demandSupplyDelta > 0
-              ? `Drivers needed on key routes (${demandSupplyDelta} short).`
-              : "Current supply is keeping pace with demand."}
+              ? `${demandSupplyDelta} more seats needed on busy routes.`
+              : "Supply is keeping pace with demand."}
           </Text>
         </View>
 
         <SectionHeader eyebrow="Billing" title="Plan usage & monetization" />
         <View style={styles.healthCard}>
-          <Text style={styles.healthBody}>
-            Members with ride or request activity this month: {monthlyActiveCommuters}
-          </Text>
-          <Text style={styles.healthMuted}>
-            Counts people in your org who drove, rode, or sent a ride request in the current
-            calendar month (used for plan limits). Separate from domain explorers, who share your
-            email domain but are not members yet.
-          </Text>
+          <View style={styles.healthInlineRow}>
+            <Text style={[styles.healthBody, styles.healthInlineText]}>
+              Active this month: {monthlyActiveCommuters}
+            </Text>
+            <InlineInfoButton
+              onPress={explainMonthlyActive}
+              accessibilityLabel="How active members are counted"
+            />
+          </View>
           <Text style={[styles.healthBody, { marginTop: Spacing.sm }]}>
-            Overage users: {overageUsers}
+            Overage: {overageUsers} · Est. ${overageCost.toFixed(2)}
           </Text>
-          <Text style={styles.healthBody}>Estimated overage: ${overageCost.toFixed(2)}</Text>
         </View>
 
         <SectionHeader eyebrow="Shortcuts" title="Quick actions" />
@@ -730,21 +966,21 @@ export default function AdminOverview() {
           </View>
           <Text style={styles.planDesc}>
             {org?.plan === "free"
-              ? "Scout Basic: $29/month, up to 10 active users with basic matching."
+              ? "Pool pilot: up to 10 active members; core matching."
               : org?.plan === "starter"
-              ? "Momentum Growth: $49/month, includes 20 active users, then $2 per additional active user."
+              ? "MergeLane: $49/mo, 20 members included, $2 per extra member."
               : org?.plan === "business"
-              ? "Pulse Business: $99/month, includes 100 active users, then $1.50 per additional active user."
-              : "Orbit Enterprise includes SLA, guaranteed fallback rides, and custom integrations."}
+              ? "Convoy Run: $99/mo, 100 members included, $1.50 per extra member, full admin."
+              : "Orbit Enterprise: SLA, custom member counts, integrations."}
           </Text>
-          {(org?.plan === "free" || org?.plan === "starter") && (
+          {org?.plan !== "enterprise" && (
             <TouchableOpacity
               style={styles.upgradeBtn}
               activeOpacity={0.7}
-              onPress={() => router.push("/(admin)/settings")}
+              onPress={() => router.push("/(admin)/org-paywall?intent=upgrade")}
             >
               <Ionicons name="arrow-up-circle" size={18} color={Colors.textOnPrimary} />
-              <Text style={styles.upgradeBtnText}>Upgrade Plan</Text>
+              <Text style={styles.upgradeBtnText}>Upgrade plan</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -760,6 +996,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.base,
     paddingBottom: Spacing["5xl"],
+  },
+  /** Readable line length and map width on desktop browsers (org dashboard is web-first). */
+  contentWebDesktop: {
+    maxWidth: 960,
+    width: "100%",
+    alignSelf: "center",
   },
   center: {
     flex: 1,
@@ -791,12 +1033,17 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
     marginBottom: Spacing.md,
   },
-  orgLogoWrap: {
+  orgLogoOuter: {
+    width: 64,
+    height: 64,
+    flexShrink: 0,
+    position: "relative",
+  },
+  orgLogoClip: {
     width: 64,
     height: 64,
     borderRadius: BorderRadius.lg,
     overflow: "hidden",
-    flexShrink: 0,
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
@@ -805,9 +1052,31 @@ const styles = StyleSheet.create({
   orgLogoImage: { width: "100%", height: "100%" },
   orgLogoPlaceholder: {
     flex: 1,
+    width: "100%",
+    height: "100%",
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: Colors.background,
+  },
+  orgLogoUploading: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  orgLogoEditBadge: {
+    position: "absolute",
+    right: -4,
+    bottom: -4,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: Colors.surface,
+    ...Shadow.sm,
   },
   dashboardHeaderText: {
     flex: 1,
@@ -864,7 +1133,7 @@ const styles = StyleSheet.create({
   },
   sectionHeaderWrap: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: Spacing.md,
     marginTop: Spacing.md,
     marginBottom: Spacing.xs,
@@ -874,9 +1143,18 @@ const styles = StyleSheet.create({
     height: 28,
     borderRadius: 2,
     backgroundColor: Colors.primary,
+    marginTop: 2,
+  },
+  sectionHeaderBody: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    minWidth: 0,
   },
   sectionHeaderTextCol: {
     flex: 1,
+    minWidth: 0,
   },
   sectionEyebrow: {
     fontSize: 10,
@@ -898,20 +1176,38 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     marginBottom: Spacing.md,
   },
+  esgMonthLine: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.xs,
+    marginTop: -2,
+  },
   analyticsRow: {
+    flexDirection: "row",
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
     borderColor: Colors.border,
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-    marginBottom: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.sm,
+    marginBottom: Spacing.md,
     ...Shadow.sm,
   },
-  analyticsItem: {
-    fontSize: FontSize.sm,
+  analyticsCell: {
+    flex: 1,
+    alignItems: "center",
+    minWidth: 0,
+  },
+  analyticsValue: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+  },
+  analyticsLabel: {
+    fontSize: FontSize.xs,
     color: Colors.textSecondary,
-    lineHeight: 22,
+    marginTop: 4,
+    textAlign: "center",
   },
   healthCard: {
     backgroundColor: Colors.surface,
@@ -934,6 +1230,25 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: Spacing.xs,
   },
+  healthInlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  healthInlineText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  corridorList: {
+    marginTop: Spacing.xs,
+    gap: Spacing.sm,
+  },
+  corridorSubtitle: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    lineHeight: 16,
+    marginTop: 2,
+  },
   statCard: {
     width: "47%",
     flexDirection: "row",
@@ -946,6 +1261,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     ...Shadow.sm,
+  },
+  statCardSplit: {
+    alignItems: "flex-start",
+    paddingRight: Spacing.xs,
+  },
+  statCardSplitMain: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    minWidth: 0,
   },
   statIcon: {
     width: 36,

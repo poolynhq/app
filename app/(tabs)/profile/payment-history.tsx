@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -13,12 +13,18 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import {
+  fetchCrewPoolynDriverLedgerRows,
+  fetchCrewPoolynRiderLedgerRows,
   fetchDriverTransactions,
   fetchRiderTransactions,
+  explorerFeePercentLabel,
   filterByPaymentStatus,
-  formatAudFromCents,
+  formatMoneyFromCents,
+  groupDriverTransactionsForDisplay,
   paymentStatusLabel,
+  sortDriverHistoryEntries,
   sortTransactions,
+  type DriverHistoryEntry,
   type DriverTransaction,
   type RiderTransaction,
   type TransactionSortKey,
@@ -31,6 +37,7 @@ import {
   FontSize,
   FontWeight,
 } from "@/constants/theme";
+import { useAuth } from "@/contexts/AuthContext";
 
 type Mode = "rider" | "driver";
 
@@ -52,7 +59,7 @@ const STATUS_FILTERS: { key: TransactionStatusFilter; label: string }[] = [
 function formatWhen(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleString("en-AU", {
+    return new Date(iso).toLocaleString(undefined, {
       weekday: "short",
       day: "numeric",
       month: "short",
@@ -66,24 +73,48 @@ function formatWhen(iso: string | null | undefined): string {
 }
 
 function tripKindLabel(ctx: string | null | undefined): string {
-  if (ctx === "crew") return "Group (crew)";
+  if (ctx === "crew") return "Crew Poolyn (balance)";
   if (ctx === "adhoc") return "Listed trip";
   return "Commute";
 }
 
+function feeRateKey(item: RiderTransaction | DriverTransaction): "crew_settlement" | "mingle" {
+  if (item.tx_source === "crew_pool" || item.poolyn_context === "crew") {
+    return "crew_settlement";
+  }
+  return "mingle";
+}
+
 export default function PaymentHistoryScreen() {
+  const { profile } = useAuth();
   const [mode, setMode] = useState<Mode>("rider");
   const [sort, setSort] = useState<TransactionSortKey>("date_desc");
   const [statusFilter, setStatusFilter] = useState<TransactionStatusFilter>("all");
+  /** `all` or counterparty user id */
+  const [counterpartyFilter, setCounterpartyFilter] = useState<string>("all");
   const [riderRows, setRiderRows] = useState<RiderTransaction[]>([]);
   const [driverRows, setDriverRows] = useState<DriverTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [crewRiderBreakdownOpen, setCrewRiderBreakdownOpen] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
+
+  const driverGrouped = useMemo(
+    () => groupDriverTransactionsForDisplay(driverRows),
+    [driverRows]
+  );
 
   const load = useCallback(async () => {
-    const [r, d] = await Promise.all([fetchRiderTransactions(), fetchDriverTransactions()]);
-    setRiderRows(r);
-    setDriverRows(d);
+    const [r, d, cr, cd] = await Promise.all([
+      fetchRiderTransactions(),
+      fetchDriverTransactions(),
+      fetchCrewPoolynRiderLedgerRows(),
+      fetchCrewPoolynDriverLedgerRows(),
+    ]);
+    setRiderRows([...r, ...cr]);
+    setDriverRows([...d, ...cd]);
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -100,16 +131,47 @@ export default function PaymentHistoryScreen() {
     void load();
   }, [load]);
 
-  const displayed = useMemo(() => {
-    const raw = mode === "rider" ? riderRows : driverRows;
-    const filtered = filterByPaymentStatus(raw, statusFilter);
-    return sortTransactions(filtered, sort);
-  }, [mode, riderRows, driverRows, sort, statusFilter]);
+  useEffect(() => {
+    setCounterpartyFilter("all");
+  }, [mode]);
+
+  const personFilterOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of riderRows) {
+      const id = r.counterparty_user_id;
+      if (id) map.set(id, r.counterparty_name);
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [riderRows]);
+
+  type HistoryRow = RiderTransaction | DriverHistoryEntry;
+
+  const displayed = useMemo((): HistoryRow[] => {
+    if (mode === "rider") {
+      const raw = riderRows;
+      const byStatus = filterByPaymentStatus(raw, statusFilter);
+      const byPerson =
+        counterpartyFilter === "all"
+          ? byStatus
+          : byStatus.filter((r) => r.counterparty_user_id === counterpartyFilter);
+      return sortTransactions(byPerson, sort);
+    }
+    const byStatus = driverGrouped.filter((e) => {
+      if (e.entryKind === "single")
+        return filterByPaymentStatus([e.tx], statusFilter).length > 0;
+      return filterByPaymentStatus(e.riders, statusFilter).length > 0;
+    });
+    return sortDriverHistoryEntries(byStatus, sort);
+  }, [mode, riderRows, driverGrouped, sort, statusFilter, counterpartyFilter]);
 
   function renderRider({ item }: { item: RiderTransaction }) {
     const total = item.cash_to_charge_cents ?? 0;
     const share = item.expected_contribution_cents ?? 0;
     const fee = item.network_fee_cents ?? 0;
+    const pk = item.pickup_stop_fee_cents;
+    const pv = item.pool_variable_cents;
+    const hasSplit = pk != null && pv != null;
+    const rateKey = feeRateKey(item);
     return (
       <View style={styles.card}>
         <View style={styles.cardTop}>
@@ -121,25 +183,76 @@ export default function PaymentHistoryScreen() {
         <Text style={styles.whoLine}>
           You paid · Driver {item.counterparty_name}
         </Text>
+        {item.crew_name ? (
+          <Text style={styles.crewSub}>{item.crew_name}</Text>
+        ) : null}
         <Text style={styles.context}>
-          {tripKindLabel(item.poolyn_context)} · Total {formatAudFromCents(total)}
+          {tripKindLabel(item.poolyn_context)} · Total charged {formatMoneyFromCents(total, profile)}
         </Text>
         <View style={styles.breakdown}>
-          <Text style={styles.breakLine}>Trip share {formatAudFromCents(share)}</Text>
-          {fee > 0 ? (
-            <Text style={styles.breakLine}>Fees {formatAudFromCents(fee)}</Text>
+          <Text style={styles.breakMuted}>Trip share (before network fee)</Text>
+          {hasSplit ? (
+            <>
+              <Text style={styles.breakLine}>Pickup / stop fee {formatMoneyFromCents(pk, profile)}</Text>
+              <Text style={styles.breakLine}>Pool (shared corridor) {formatMoneyFromCents(pv, profile)}</Text>
+            </>
           ) : (
-            <Text style={styles.breakMuted}>No separate fee (org-covered or none)</Text>
+            <Text style={styles.breakLine}>Trip share {formatMoneyFromCents(share, profile)}</Text>
           )}
+          <Text style={styles.breakTotal}>Subtotal trip share {formatMoneyFromCents(share, profile)}</Text>
+          {fee > 0 ? (
+            <Text style={styles.breakLine}>
+              Explorer / network fee ({explorerFeePercentLabel(rateKey)}) {formatMoneyFromCents(fee, profile)}
+            </Text>
+          ) : null}
+          <Text style={styles.breakTotal}>Total {formatMoneyFromCents(total, profile)}</Text>
+          {item.crew_no_day_confirmation ? (
+            <Text style={styles.disputeNote}>
+              Flag: no pooling-day confirmation before the run (charged per crew rules).
+            </Text>
+          ) : null}
         </View>
+      </View>
+    );
+  }
+
+  function renderDriverShareBody(item: DriverTransaction) {
+    const total = item.cash_to_charge_cents ?? 0;
+    const share = item.expected_contribution_cents ?? 0;
+    const fee = item.network_fee_cents ?? 0;
+    const pk = item.pickup_stop_fee_cents;
+    const pv = item.pool_variable_cents;
+    const det = item.detour_only_cents ?? 0;
+    const hasSplit = pk != null && pv != null;
+    const rateKey = feeRateKey(item);
+    return (
+      <View style={styles.breakdown}>
+        <Text style={styles.breakMuted}>Trip share credited to you (before network fee)</Text>
+        {hasSplit ? (
+          <>
+            <Text style={styles.breakLine}>Pickup / stop (shared) {formatMoneyFromCents(pk, profile)}</Text>
+            <Text style={styles.breakLine}>Pool (shared corridor) {formatMoneyFromCents(pv, profile)}</Text>
+            {det > 0 ? (
+              <Text style={styles.breakLine}>Off-corridor pickup (yours) {formatMoneyFromCents(det, profile)}</Text>
+            ) : null}
+          </>
+        ) : (
+          <Text style={styles.breakLine}>Trip share (to you) {formatMoneyFromCents(share, profile)}</Text>
+        )}
+        <Text style={styles.breakTotal}>Subtotal to you {formatMoneyFromCents(share, profile)}</Text>
+        {fee > 0 ? (
+          <Text style={styles.breakLine}>
+            Explorer / network fee ({explorerFeePercentLabel(rateKey)}) {formatMoneyFromCents(fee, profile)} (not
+            paid to you)
+          </Text>
+        ) : null}
+        <Text style={styles.breakTotal}>Total from rider {formatMoneyFromCents(total, profile)}</Text>
       </View>
     );
   }
 
   function renderDriver({ item }: { item: DriverTransaction }) {
     const total = item.cash_to_charge_cents ?? 0;
-    const share = item.expected_contribution_cents ?? 0;
-    const fee = item.network_fee_cents ?? 0;
     return (
       <View style={styles.card}>
         <View style={styles.cardTop}>
@@ -149,16 +262,77 @@ export default function PaymentHistoryScreen() {
           </View>
         </View>
         <Text style={styles.whoLine}>Received from {item.counterparty_name}</Text>
+        {item.crew_name ? (
+          <Text style={styles.crewSub}>{item.crew_name}</Text>
+        ) : null}
         <Text style={styles.context}>
-          {tripKindLabel(item.poolyn_context)} · Rider charged {formatAudFromCents(total)}
+          {tripKindLabel(item.poolyn_context)} · Rider paid {formatMoneyFromCents(total, profile)} (incl. fees)
         </Text>
-        <View style={styles.breakdown}>
-          <Text style={styles.breakLine}>Trip share (to you) {formatAudFromCents(share)}</Text>
-          {fee > 0 ? (
-            <Text style={styles.breakLine}>Platform fee on leg {formatAudFromCents(fee)}</Text>
-          ) : (
-            <Text style={styles.breakMuted}>No platform fee on this leg</Text>
-          )}
+        {renderDriverShareBody(item)}
+      </View>
+    );
+  }
+
+  function renderCrewTripGroup(
+    group: Extract<DriverHistoryEntry, { entryKind: "crew_trip" }>
+  ) {
+    const totalCredited = group.riders.reduce(
+      (s, r) => s + (r.expected_contribution_cents ?? 0),
+      0
+    );
+    return (
+      <View style={styles.card}>
+        <View style={styles.cardTop}>
+          <Text style={styles.date}>{formatWhen(group.trip_depart_at)}</Text>
+          <View style={styles.statusPill}>
+            <Text style={styles.statusText}>Paid</Text>
+          </View>
+        </View>
+        <Text style={styles.whoLine}>Crew Poolyn</Text>
+        {group.crew_name ? <Text style={styles.crewSub}>{group.crew_name}</Text> : null}
+        <Text style={styles.context}>
+          Total credited to you {formatMoneyFromCents(totalCredited, profile)} · {group.riders.length} rider
+          {group.riders.length === 1 ? "" : "s"}
+        </Text>
+        <View style={styles.crewRiderList}>
+          {group.riders.map((rider, ix) => {
+            const share = rider.expected_contribution_cents ?? 0;
+            const ek = `${group.groupKey}:${rider.id}`;
+            const open = !!crewRiderBreakdownOpen[ek];
+            return (
+              <View
+                key={rider.id}
+                style={ix > 0 ? styles.crewRiderBlockSeparator : undefined}
+              >
+                <View style={styles.crewRiderRow}>
+                  <View style={styles.crewRiderNameCol}>
+                    <Text style={styles.crewRiderName} numberOfLines={2}>
+                      {rider.counterparty_name}
+                    </Text>
+                    <Text style={styles.crewRiderAmount}>
+                      Subtotal to you {formatMoneyFromCents(share, profile)}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setCrewRiderBreakdownOpen((p) => ({ ...p, [ek]: !p[ek] }))
+                    }
+                    style={styles.crewInfoBtn}
+                    accessibilityLabel={open ? "Hide fee breakdown" : "Show fee breakdown"}
+                  >
+                    <Ionicons
+                      name={open ? "information-circle" : "information-circle-outline"}
+                      size={22}
+                      color={Colors.primary}
+                    />
+                  </TouchableOpacity>
+                </View>
+                {open ? (
+                  <View style={styles.crewRiderExpand}>{renderDriverShareBody(rider)}</View>
+                ) : null}
+              </View>
+            );
+          })}
         </View>
       </View>
     );
@@ -168,8 +342,8 @@ export default function PaymentHistoryScreen() {
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
       <View style={styles.intro}>
         <Text style={styles.introText}>
-          Dollar amounts for trips (card or covered). Use Paid as rider to see what you paid and to whom. Use
-          Received as driver to see each passenger payment on your trips.
+          Symbols follow your device region (not your network). Listed trips bill the card; Crew Poolyn uses balance.
+          Crew trips show one card per run; expand a rider for the fee lines.
         </Text>
       </View>
 
@@ -192,34 +366,104 @@ export default function PaymentHistoryScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.filterBlock}>
-        <Text style={styles.filterLabel}>Status</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          {STATUS_FILTERS.map((f) => (
-            <TouchableOpacity
-              key={f.key}
-              style={[styles.chip, statusFilter === f.key && styles.chipOn]}
-              onPress={() => setStatusFilter(f.key)}
-            >
-              <Text style={[styles.chipText, statusFilter === f.key && styles.chipTextOn]}>{f.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+      <View style={styles.filterSection}>
+        <TouchableOpacity
+          style={styles.filterSummary}
+          onPress={() => setFiltersExpanded((v) => !v)}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={filtersExpanded ? "Hide filters" : "Show filters"}
+        >
+          <View style={styles.filterSummaryTextCol}>
+            <Text style={styles.filterSummaryTitle}>Filters</Text>
+            <Text style={styles.filterSummarySub} numberOfLines={2}>
+              {STATUS_FILTERS.find((f) => f.key === statusFilter)?.label ?? "All"} ·{" "}
+              {SORT_OPTIONS.find((s) => s.key === sort)?.label ?? "Newest trip"}
+            </Text>
+          </View>
+          <Ionicons
+            name={filtersExpanded ? "chevron-up" : "chevron-down"}
+            size={22}
+            color={Colors.textSecondary}
+          />
+        </TouchableOpacity>
 
-      <View style={styles.filterBlock}>
-        <Text style={styles.filterLabel}>Sort</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          {SORT_OPTIONS.map((s) => (
-            <TouchableOpacity
-              key={s.key}
-              style={[styles.chip, sort === s.key && styles.chipOn]}
-              onPress={() => setSort(s.key)}
-            >
-              <Text style={[styles.chipText, sort === s.key && styles.chipTextOn]}>{s.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+        {filtersExpanded ? (
+          <View style={styles.filterExpanded}>
+            <View style={styles.filterBlock}>
+              <Text style={styles.filterLabel}>Status</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.chipRow}
+              >
+                {STATUS_FILTERS.map((f) => (
+                  <TouchableOpacity
+                    key={f.key}
+                    style={[styles.chip, statusFilter === f.key && styles.chipOn]}
+                    onPress={() => setStatusFilter(f.key)}
+                  >
+                    <Text style={[styles.chipText, statusFilter === f.key && styles.chipTextOn]}>
+                      {f.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+
+            <View style={styles.filterBlock}>
+              <Text style={styles.filterLabel}>Sort</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.chipRow}
+              >
+                {SORT_OPTIONS.map((s) => (
+                  <TouchableOpacity
+                    key={s.key}
+                    style={[styles.chip, sort === s.key && styles.chipOn]}
+                    onPress={() => setSort(s.key)}
+                  >
+                    <Text style={[styles.chipText, sort === s.key && styles.chipTextOn]}>{s.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+
+            {mode === "rider" && personFilterOptions.length > 0 ? (
+              <View style={styles.filterBlock}>
+                <Text style={styles.filterLabel}>Driver</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.chipRow}
+                >
+                  <TouchableOpacity
+                    style={[styles.chip, counterpartyFilter === "all" && styles.chipOn]}
+                    onPress={() => setCounterpartyFilter("all")}
+                  >
+                    <Text
+                      style={[styles.chipText, counterpartyFilter === "all" && styles.chipTextOn]}
+                    >
+                      All
+                    </Text>
+                  </TouchableOpacity>
+                  {personFilterOptions.map(([id, name]) => (
+                    <TouchableOpacity
+                      key={id}
+                      style={[styles.chip, counterpartyFilter === id && styles.chipOn]}
+                      onPress={() => setCounterpartyFilter(id)}
+                    >
+                      <Text style={[styles.chipText, counterpartyFilter === id && styles.chipTextOn]}>
+                        {name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
       </View>
 
       {loading ? (
@@ -227,9 +471,14 @@ export default function PaymentHistoryScreen() {
           <ActivityIndicator color={Colors.primary} />
         </View>
       ) : (
-        <FlatList
+        <FlatList<HistoryRow>
           data={displayed}
-          keyExtractor={(item) => `${item.kind}-${item.id}`}
+          keyExtractor={(item) => {
+            if (mode === "rider") return `r-${(item as RiderTransaction).id}`;
+            const d = item as DriverHistoryEntry;
+            if (d.entryKind === "single") return `d-${d.tx.id}`;
+            return `cg-${d.groupKey}`;
+          }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />
           }
@@ -241,13 +490,15 @@ export default function PaymentHistoryScreen() {
               <Text style={styles.emptySub}>
                 {mode === "rider"
                   ? "When you pay for a trip as a passenger, it will list with the driver’s name and date."
-                  : "When passengers pay on trips you drive, each payment appears here with their name."}
+                  : "When passengers pay on trips you drive, each payment appears here. Crew trips group all riders in one card."}
               </Text>
             </View>
           }
           renderItem={({ item }) => {
-            if (item.kind === "rider") return renderRider({ item });
-            return renderDriver({ item });
+            if (mode === "rider") return renderRider({ item: item as RiderTransaction });
+            const d = item as DriverHistoryEntry;
+            if (d.entryKind === "single") return renderDriver({ item: d.tx });
+            return renderCrewTripGroup(d);
           }}
         />
       )}
@@ -263,6 +514,39 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.sm,
   },
   introText: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 20 },
+  filterSection: {
+    marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+  },
+  filterSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    gap: Spacing.sm,
+  },
+  filterSummaryTextCol: { flex: 1, minWidth: 0 },
+  filterSummaryTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+  },
+  filterSummarySub: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  filterExpanded: { marginTop: Spacing.sm },
+  crewSub: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.xs,
+  },
   modeRow: {
     flexDirection: "row",
     paddingHorizontal: Spacing.xl,
@@ -284,7 +568,7 @@ const styles = StyleSheet.create({
   },
   modeBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary },
   modeBtnTextOn: { color: Colors.primaryDark },
-  filterBlock: { marginBottom: Spacing.sm, paddingHorizontal: Spacing.xl },
+  filterBlock: { marginBottom: Spacing.sm },
   filterLabel: {
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,
@@ -332,5 +616,35 @@ const styles = StyleSheet.create({
   context: { fontSize: FontSize.xs, color: Colors.textSecondary, marginBottom: Spacing.sm },
   breakdown: { gap: 4 },
   breakLine: { fontSize: FontSize.sm, color: Colors.text },
+  breakTotal: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginTop: 2,
+  },
   breakMuted: { fontSize: FontSize.xs, color: Colors.textTertiary },
+  disputeNote: {
+    fontSize: FontSize.xs,
+    color: Colors.warning,
+    marginTop: Spacing.xs,
+    lineHeight: 18,
+  },
+  crewRiderList: { marginTop: Spacing.sm },
+  crewRiderBlockSeparator: {
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  crewRiderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+  },
+  crewRiderNameCol: { flex: 1, minWidth: 0 },
+  crewRiderName: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.text },
+  crewRiderAmount: { fontSize: FontSize.sm, color: Colors.text, marginTop: 4 },
+  crewInfoBtn: { padding: 4, marginTop: -4 },
+  crewRiderExpand: { marginTop: Spacing.sm, paddingLeft: Spacing.xs },
 });

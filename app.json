@@ -69,7 +69,8 @@
           "photosPermission": "Poolyn accesses your photos so you can upload a vehicle image.",
           "cameraPermission": "Poolyn uses the camera so you can take a photo of your vehicle for verification."
         }
-      ]
+      ],
+      "expo-localization"
     ]
   }
 }

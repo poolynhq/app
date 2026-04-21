@@ -1,42 +1,16 @@
 import type { CrewMemberMapPin } from "@/lib/crewMessaging";
+import {
+  distanceMeters,
+  projectionT,
+  distancePointToSegmentMeters,
+} from "@/lib/geoSegmentDistance";
+
+export { distanceMeters, projectionT, distancePointToSegmentMeters } from "@/lib/geoSegmentDistance";
 
 const T_EPS = 1e-7;
 
-export function distanceMeters(
-  a: { lat: number; lng: number },
-  b: { lat: number; lng: number }
-): number {
-  const R = 6371000;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const lat1 = (a.lat * Math.PI) / 180;
-  const lat2 = (b.lat * Math.PI) / 180;
-  const x =
-    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
-}
-
-/** 0–1 position of P projected onto segment A→B (clamped). */
-export function projectionT(
-  a: { lat: number; lng: number },
-  b: { lat: number; lng: number },
-  p: { lat: number; lng: number }
-): number {
-  const ax = a.lng;
-  const ay = a.lat;
-  const bx = b.lng;
-  const by = b.lat;
-  const px = p.lng;
-  const py = p.lat;
-  const abx = bx - ax;
-  const aby = by - ay;
-  const apx = px - ax;
-  const apy = py - ay;
-  const ab2 = abx * abx + aby * aby;
-  if (ab2 < 1e-18) return 0;
-  const t = (apx * abx + apy * aby) / ab2;
-  return Math.max(0, Math.min(1, t));
-}
+/** Wider than float noise so riders near the driver on the corridor axis are not dropped from visit order. */
+const T_DRIVER_BAND = 1e-4;
 
 /**
  * Order pickups along the commute axis (home→work or work→home), breaking ties by nearness to GPS origin.
@@ -79,21 +53,13 @@ export function orderPickupsForDriverPoolRoute(
     pin,
     t: projectionT(segmentStart, segmentEnd, { lat: pin.lat, lng: pin.lng }),
   }));
-  const behind = scored.filter((s) => s.t < tDriver - T_EPS).sort((a, b) => a.t - b.t);
-  const ahead = scored.filter((s) => s.t > tDriver + T_EPS).sort((a, b) => a.t - b.t);
-  return [...behind.map((s) => s.pin), ...ahead.map((s) => s.pin)];
-}
-
-/** Shortest distance from P to segment A→B (geodesic via plane approximation on small segments). */
-export function distancePointToSegmentMeters(
-  p: { lat: number; lng: number },
-  a: { lat: number; lng: number },
-  b: { lat: number; lng: number }
-): number {
-  const t = projectionT(a, b, p);
-  const ix = a.lng + t * (b.lng - a.lng);
-  const iy = a.lat + t * (b.lat - a.lat);
-  return distanceMeters(p, { lat: iy, lng: ix });
+  const behind = scored.filter((s) => s.t < tDriver - T_DRIVER_BAND).sort((a, b) => a.t - b.t);
+  /** Same corridor position as the driver (was dropped entirely before). */
+  const coincident = scored
+    .filter((s) => Math.abs(s.t - tDriver) <= T_DRIVER_BAND)
+    .sort((a, b) => a.pin.userId.localeCompare(b.pin.userId));
+  const ahead = scored.filter((s) => s.t > tDriver + T_DRIVER_BAND).sort((a, b) => a.t - b.t);
+  return [...behind.map((s) => s.pin), ...coincident.map((s) => s.pin), ...ahead.map((s) => s.pin)];
 }
 
 /** Nearest-neighbor from origin (legacy fallback when commute segment unknown). */

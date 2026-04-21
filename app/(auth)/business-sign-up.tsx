@@ -17,7 +17,8 @@ import * as ImagePicker from "expo-image-picker";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase, extractDomain } from "@/lib/supabase";
 import { showAlert } from "@/lib/platformAlert";
-import { logoObjectNameAndContentType } from "@/lib/storageImageMeta";
+import { uploadOrganisationLogoObject } from "@/lib/orgLogo";
+import { logoObjectNameAndContentType, storageUploadBody } from "@/lib/storageImageMeta";
 import {
   Colors,
   Spacing,
@@ -29,36 +30,30 @@ import {
 
 const PLANS = [
   {
-    key: "free",
-    name: "Scout Basic",
-    price: "$29/mo",
-    features: ["Up to 10 active users", "Basic matching", "No analytics"],
-  },
-  {
     key: "starter",
-    name: "Momentum Growth",
+    name: "MergeLane",
     price: "$49/mo",
     features: [
-      "20 active users included",
-      "$2 per additional active user",
-      "Analytics + coordination",
+      "20 active members on your corridor included",
+      "$2 per extra member",
+      "Matching + admin coordination",
     ],
   },
   {
     key: "business",
-    name: "Pulse Business",
+    name: "Convoy Run",
     price: "$99/mo",
     features: [
-      "100 active users included",
-      "$1.50 per additional active user",
-      "Priority matching + admin controls",
+      "100 active members included",
+      "$1.50 per extra member",
+      "Priority matching + full admin console",
     ],
   },
   {
     key: "enterprise",
     name: "Orbit Enterprise",
     price: "Contact us",
-    features: ["Custom SLA", "Fallback ride guarantees", "Custom integrations"],
+    features: ["Custom SLA", "Guaranteed fallback rides", "Integrations for your fleet"],
   },
 ] as const;
 
@@ -171,11 +166,9 @@ export default function BusinessSignUp() {
         buf
       );
       const path = `${orgId}/${objectName}`;
-      const body = new Uint8Array(buf);
-      const { error: uploadError } = await supabase.storage.from("org-logos").upload(path, body, {
+      const fileBody = storageUploadBody(buf, contentType);
+      const { error: uploadError } = await uploadOrganisationLogoObject(path, fileBody, {
         contentType,
-        cacheControl: "3600",
-        upsert: true,
       });
       if (uploadError) {
         return { path: null, error: uploadError.message };

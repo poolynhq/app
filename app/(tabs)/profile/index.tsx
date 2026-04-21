@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase, extractDomain } from "@/lib/supabase";
 import { resolveAvatarDisplayUrl } from "@/lib/avatarStorage";
+import { getOrganisationLogoPublicUrl } from "@/lib/orgLogo";
+import { WorkplaceNetworkDetailsModal } from "@/components/home/WorkplaceNetworkDetailsModal";
 import { Gender, Organisation } from "@/types/database";
 import { canViewerActAsDriver } from "@/lib/commuteMatching";
 import {
@@ -30,6 +32,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { ORG_PLAN_LABELS } from "@/lib/orgPlanLabels";
 /* FUTURE USE: Poolyn Credits profile card
 import { PoolynCreditsCard } from "@/components/profile/PoolynCreditsCard";
 */
@@ -72,6 +75,10 @@ export default function Profile() {
   const [nameError, setNameError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [org, setOrg] = useState<Organisation | null>(null);
+  const [orgMemberCount, setOrgMemberCount] = useState(0);
+  const [workplaceNetworkModal, setWorkplaceNetworkModal] = useState<"enterprise" | "community" | null>(
+    null
+  );
   const [avatarUploading, setAvatarUploading] = useState(false);
   /** True when an organisations row exists for this email domain but user has org_id null (Explorer). */
   const [domainHasWorkplaceOrg, setDomainHasWorkplaceOrg] = useState(false);
@@ -96,14 +103,28 @@ export default function Profile() {
     async function loadOrg() {
       if (!profile?.org_id) {
         setOrg(null);
+        setOrgMemberCount(0);
         return;
       }
-      const { data } = await supabase
-        .from("organisations").select("*").eq("id", profile.org_id).single();
-      setOrg(data ?? null);
+      const [orgRes, memberRes] = await Promise.all([
+        supabase.from("organisations").select("*").eq("id", profile.org_id).single(),
+        supabase
+          .from("users")
+          .select("id", { count: "exact", head: true })
+          .eq("org_id", profile.org_id),
+      ]);
+      setOrg(orgRes.data ?? null);
+      setOrgMemberCount(memberRes.count ?? 0);
     }
     loadOrg();
   }, [profile?.org_id]);
+
+  const orgPlanLabel = useMemo(() => {
+    if (!org) return "";
+    return ORG_PLAN_LABELS[org.plan ?? "free"] ?? String(org.plan ?? "");
+  }, [org]);
+
+  const orgLogoUri = getOrganisationLogoPublicUrl(org);
 
   useEffect(() => {
     async function checkDomainOrg() {
@@ -325,11 +346,6 @@ export default function Profile() {
                 label: "Workplace network",
                 route: "/(tabs)/profile/workplace-network",
               },
-              {
-                icon: "git-network-outline" as const,
-                label: "Route groups",
-                route: "/(tabs)/profile/route-groups",
-              },
             ]
           : []),
         { icon: "people-outline" as const, label: "Emergency contacts", route: "/(tabs)/profile/emergency-contacts" },
@@ -521,36 +537,63 @@ export default function Profile() {
         </View>
 
         {/* Organisation */}
-        <View style={styles.infoCard}>
-          <Ionicons name="business-outline" size={20} color={Colors.primary} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.infoLabel}>Organisation</Text>
-            {!profile?.org_id ? (
-              <>
-                <Text style={styles.infoValue}>{orgDomain || "—"}</Text>
-                {domainHasWorkplaceOrg ? (
-                  <Text style={styles.orgSubValue}>
-                    A workplace network exists for this email domain, but you are not a member. Ask your
-                    admin to invite you or add you from their team dashboard if you want to join.
-                  </Text>
-                ) : (
-                  <Text style={styles.orgSubValue}>
-                    Independent (Explorer). You are not part of a workplace network on Poolyn.
-                  </Text>
-                )}
-              </>
+        {profile?.org_id && org ? (
+          <TouchableOpacity
+            style={styles.infoCard}
+            activeOpacity={0.75}
+            onPress={() =>
+              setWorkplaceNetworkModal(org.org_type === "enterprise" ? "enterprise" : "community")
+            }
+            accessibilityRole="button"
+            accessibilityLabel="Open company details"
+          >
+            {orgLogoUri ? (
+              <Image source={{ uri: orgLogoUri }} style={styles.orgThumbImage} />
             ) : (
-              <>
-                <Text style={styles.infoValue}>{org?.name?.trim() || orgDomain}</Text>
-                <Text style={styles.orgSubValue}>
-                  {org?.org_type === "enterprise"
-                    ? "Verified organization member"
-                    : "Community network member"}
-                </Text>
-              </>
+              <View
+                style={[
+                  styles.orgThumbImage,
+                  styles.orgThumbPlaceholder,
+                  org.org_type === "enterprise" ? styles.orgThumbPlaceholderEnt : styles.orgThumbPlaceholderCom,
+                ]}
+              >
+                <Ionicons
+                  name={org.org_type === "enterprise" ? "business-outline" : "people-outline"}
+                  size={22}
+                  color={org.org_type === "enterprise" ? Colors.primary : Colors.info}
+                />
+              </View>
             )}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.infoLabel}>Organisation</Text>
+              <Text style={styles.infoValue}>{org.name?.trim() || orgDomain}</Text>
+              <Text style={styles.orgSubValue}>
+                {org.org_type === "enterprise"
+                  ? "Verified organization member"
+                  : "Community network member"}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.infoCard}>
+            <Ionicons name="business-outline" size={20} color={Colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.infoLabel}>Organisation</Text>
+              <Text style={styles.infoValue}>{orgDomain || "—"}</Text>
+              {domainHasWorkplaceOrg ? (
+                <Text style={styles.orgSubValue}>
+                  A workplace network exists for this email domain, but you are not a member. Ask your
+                  admin to invite you or add you from their team dashboard if you want to join.
+                </Text>
+              ) : (
+                <Text style={styles.orgSubValue}>
+                  Independent (Explorer). You are not part of a workplace network on Poolyn.
+                </Text>
+              )}
+            </View>
           </View>
-        </View>
+        )}
 
         {/* Menu sections */}
         {menuSections.map((section, si) => (
@@ -587,6 +630,16 @@ export default function Profile() {
         <Text style={styles.version}>Poolyn v0.1.0</Text>
 
       </ScrollView>
+
+      <WorkplaceNetworkDetailsModal
+        visible={workplaceNetworkModal !== null}
+        onClose={() => setWorkplaceNetworkModal(null)}
+        variant={workplaceNetworkModal === "community" ? "community" : "enterprise"}
+        org={org}
+        orgMemberCount={orgMemberCount}
+        planLabel={orgPlanLabel}
+        logoPublicUrl={orgLogoUri}
+      />
     </SafeAreaView>
   );
 }
@@ -681,6 +734,26 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   statDivider: { width: 1, backgroundColor: Colors.border },
   infoCard: { flexDirection: "row", alignItems: "center", backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.base, borderWidth: 1, borderColor: Colors.border, gap: Spacing.md, marginBottom: Spacing.xl, ...Shadow.sm },
+  orgThumbImage: {
+    width: 48,
+    height: 48,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  orgThumbPlaceholder: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  orgThumbPlaceholderEnt: {
+    backgroundColor: Colors.primaryLight,
+    borderColor: Colors.primary,
+  },
+  orgThumbPlaceholderCom: {
+    backgroundColor: "#EFF6FF",
+    borderColor: Colors.info,
+  },
   infoLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, textTransform: "uppercase", letterSpacing: 0.5 },
   infoValue: { fontSize: FontSize.base, fontWeight: FontWeight.medium, color: Colors.text },
   orgSubValue: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },

@@ -235,6 +235,11 @@ export function CrewTripStartSummaryModal({
       showAlert("Please wait", "Trip day is still loading.");
       return;
     }
+    // Resume reopens Maps for someone already driving; do not block on distance from the corridor start.
+    if (resumeTrip) {
+      await runOpenMaps();
+      return;
+    }
     if (!locationOk && gps) {
       showAlert(
         "Location check",

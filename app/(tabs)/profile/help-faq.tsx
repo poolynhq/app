@@ -22,15 +22,33 @@ const FAQ_SECTIONS: FaqSection[] = [
     items: [
       {
         q: "What is Poolyn?",
-        a: "Poolyn is a smart commute-sharing platform that connects people who travel similar routes at similar times. It's built for teams and organisations to reduce commuting costs, parking demand, and carbon emissions, while making the daily commute more social.",
+        a: "Poolyn is a commute-sharing app for people on similar routes at similar times. It helps teams and organisations cut cost and parking load while keeping trips social and predictable.",
       },
       {
         q: "How do I find ride matches?",
-        a: "Once your profile, home location, work location, and schedule are set up, Poolyn automatically identifies potential matches within your organisation's network. Head to the Discover tab to browse your matches and send or accept ride requests.",
+        a: "Set your profile, home and work locations, and schedule. For your regular route, use Home: Routine Poolyn (Crew or Mingle Poolyn), the corridor map, and Who's on my route. For dated one-off trips, use My Rides to list or book seats. Navigate shows your active commute context on the map.",
       },
       {
         q: "Do I need to be part of an organisation?",
-        a: "You can join as an independent member and discover any commuter along your corridor. However, joining through your organisation gives you access to a verified network of colleagues, improving the quality of your matches and overall trust.",
+        a: "No. You can commute as an independent and match along your corridor. Joining with a workplace gives a verified colleague network and often avoids extra per-trip cash fees, but both paths work.",
+      },
+    ],
+  },
+  {
+    title: "Payments & payouts",
+    icon: "card-outline",
+    items: [
+      {
+        q: "Does Poolyn hold a wallet of my money?",
+        a: "No. Poolyn is not a stored-value wallet. Each trip has a calculated amount (your fair share of driver cost recovery, plus any service fee that applies to your account type). Payments run through Stripe: your card is charged for that total and funds are transferred to the driver according to the rules for that trip. We facilitate routing and compliance; we do not pool your money for general spending.",
+      },
+      {
+        q: "What am I paying for?",
+        a: "Your trip share covers the driver's cost recovery for that trip (distance, fair split when several riders share the car). If you are on an independent profile without an active workplace network on Poolyn, a small percentage service fee may apply on top of that share (Mingle and Crew use different rates). Workplace-backed profiles often have that fee waived. You see the breakdown before you confirm.",
+      },
+      {
+        q: "How do listed trips differ from Crew Poolyn for payment?",
+        a: "Listed (ad-hoc) trips in My Rides charge your saved card for that booking. Crew Poolyn uses trip settlement balances so each rider's share is tracked for the crew run; that is trip accounting between confirmed participants, not a prepaid balance you load and spend like a wallet.",
       },
     ],
   },
@@ -40,7 +58,7 @@ const FAQ_SECTIONS: FaqSection[] = [
     items: [
       {
         q: "How does the matching algorithm work?",
-        a: "Poolyn matches you based on route similarity, departure time overlap, and your flexibility window. Drivers set how much extra time they allow for pickups; optional gender rules apply when you drive. Colleagues from your organisation are prioritised first.",
+        a: "Poolyn matches on route similarity, time overlap, and your flexibility window. Drivers set how much extra time they allow for pickups; optional gender rules apply when you drive. Colleagues from your organisation are prioritised when that applies.",
       },
       {
         q: "Can I be both a driver and a passenger?",
@@ -52,7 +70,7 @@ const FAQ_SECTIONS: FaqSection[] = [
       },
       {
         q: "How far in advance should I book a ride?",
-        a: "Poolyn works best when you have a regular schedule set up. For recurring commutes, matches are suggested in advance. For ad-hoc trips, you can create a ride request and Poolyn will attempt to find a match within your flexibility window.",
+        a: "Poolyn works best with a regular schedule. For recurring commutes, matches line up with your routine. For ad-hoc trips, post or book in My Rides and Poolyn works within the windows you set.",
       },
     ],
   },
@@ -84,7 +102,7 @@ const FAQ_SECTIONS: FaqSection[] = [
       },
       {
         q: "Who can I be matched with?",
-        a: "By default, matching stays within your organisation. On Discover you can choose to widen visibility when your org allows it; cross-network options are always explicit.",
+        a: "By default, matching stays within your organisation when you use network scope. On Home you can widen visibility (for example to any commuter along your corridor) when your org allows it; those choices are always explicit.",
       },
       {
         q: "How do I report a safety concern?",
@@ -110,7 +128,7 @@ const FAQ_SECTIONS: FaqSection[] = [
       },
       {
         q: "How do I delete my account?",
-        a: "To request account deletion, please contact your organisation admin or reach out to Poolyn support at support@poolyn.com. All personal data will be removed in accordance with our Privacy Policy.",
+        a: "Contact your organisation admin if you joined through a workplace, or email Poolyn support at poolynhq@gmail.com. Personal data is handled in line with our Privacy Policy.",
       },
     ],
   },
@@ -132,7 +150,8 @@ export default function HelpFaqScreen() {
           <Text style={styles.heroTitle}>How can we help?</Text>
           <Text style={styles.heroSubtitle}>
             Find answers to common questions about Poolyn below. Can't find what you need? Contact us at{" "}
-            <Text style={styles.link}>support@poolyn.com</Text>
+            <Text style={styles.link}>poolynhq@gmail.com</Text>
+            {" "}(same inbox as Contact us on Home).
           </Text>
         </View>
 
@@ -179,7 +198,10 @@ export default function HelpFaqScreen() {
           <Ionicons name="mail-outline" size={22} color={Colors.primary} />
           <View style={{ flex: 1 }}>
             <Text style={styles.contactTitle}>Still have questions?</Text>
-            <Text style={styles.contactBody}>Email us at <Text style={styles.link}>support@poolyn.com</Text> and we'll get back to you within one business day.</Text>
+            <Text style={styles.contactBody}>
+              Email us at <Text style={styles.link}>poolynhq@gmail.com</Text> and we will get back to you within one
+              business day.
+            </Text>
           </View>
         </View>
       </ScrollView>

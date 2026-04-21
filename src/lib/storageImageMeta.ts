@@ -1,3 +1,21 @@
+import { Platform } from "react-native";
+
+/**
+ * Supabase Storage on web often rejects raw ArrayBuffer/Uint8Array with HTTP 400 (vague "schema" errors).
+ * Prefer Blob with an explicit MIME type. Native: Blob when available, else Uint8Array.
+ */
+export function storageUploadBody(buffer: ArrayBuffer, contentType: string): Blob | Uint8Array {
+  const ct = contentType.split(";")[0].trim() || "application/octet-stream";
+  if (Platform.OS === "web" || typeof Blob !== "undefined") {
+    try {
+      return new Blob([buffer], { type: ct });
+    } catch {
+      /* fall through */
+    }
+  }
+  return new Uint8Array(buffer);
+}
+
 /**
  * Picker URIs on web are often `blob:http://...` with no file extension.
  * Guessing type from `uri.split(".").pop()` breaks Storage (bad path + invalid Content-Type).

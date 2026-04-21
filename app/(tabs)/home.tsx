@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -30,6 +30,7 @@ import {
   FontWeight,
   Shadow,
 } from "@/constants/theme";
+import { ORG_PLAN_LABELS } from "@/lib/orgPlanLabels";
 import { createCommuteRideRequest, cancelMyPendingRideRequest } from "@/lib/rideRequests";
 import { hasAdhocPostingVehicle } from "@/lib/adhocVehicleGate";
 import {
@@ -44,12 +45,14 @@ import { RoutinePoolynCrewMingleBlock } from "@/components/home/RoutinePoolynCre
 import { HomeNetworkHub } from "@/components/home/HomeNetworkHub";
 import { CommuteRouteChoicePanel } from "@/components/home/CommuteRouteChoicePanel";
 import { RoutePeopleSearchModal } from "@/components/home/RoutePeopleSearchModal";
+import { WorkplaceNetworkDetailsModal } from "@/components/home/WorkplaceNetworkDetailsModal";
 /* FUTURE USE: hero Poolyn Credits chip (commute_credits_balance)
 import { formatPoolynCreditsBalance } from "@/lib/poolynCreditsUi";
 */
 import { canViewerActAsPassenger } from "@/lib/commuteMatching";
 import { useUnreadNotificationCount } from "@/hooks/useUnreadNotificationCount";
 import { resolveAvatarDisplayUrl } from "@/lib/avatarStorage";
+import { getOrganisationLogoPublicUrl } from "@/lib/orgLogo";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -64,13 +67,6 @@ function formatHomeDateLine(d = new Date()): string {
   const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   return `${days[d.getDay()]}, ${d.getDate()}-${mon[d.getMonth()]}`;
 }
-
-const PLAN_LABELS: Record<string, string> = {
-  free: "Scout Basic",
-  starter: "Momentum Growth",
-  business: "Pulse Business",
-  enterprise: "Orbit Enterprise",
-};
 
 function ProfileCompletion({
   profile,
@@ -243,6 +239,7 @@ function PillarSection({
 type PostPickupTiming = "now" | 15 | 30 | 45 | 60;
 
 export default function Dashboard() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const { scrollTo: scrollToParam } = useLocalSearchParams<{ scrollTo?: string | string[] }>();
   const scrollToParamNorm = Array.isArray(scrollToParam) ? scrollToParam[0] : scrollToParam;
@@ -257,6 +254,7 @@ export default function Dashboard() {
   const [miniTourVisible, setMiniTourVisible] = useState(false);
   const [commuteRouteReady, setCommuteRouteReady] = useState(false);
   const [routePeopleModalOpen, setRoutePeopleModalOpen] = useState(false);
+  const [workplaceNetworkModal, setWorkplaceNetworkModal] = useState<"enterprise" | "community" | null>(null);
 
   const { unreadCount, refreshUnreadCount } = useUnreadNotificationCount(profile?.id ?? null);
 
@@ -321,6 +319,11 @@ export default function Dashboard() {
   const isEnterpriseOrg = org?.org_type === "enterprise";
   const isCommunityOrg = hasOrg && !isEnterpriseOrg;
 
+  const orgPlanLabel = useMemo(() => {
+    if (!org) return "";
+    return ORG_PLAN_LABELS[org.plan ?? "free"] ?? String(org.plan ?? "");
+  }, [org]);
+
   const heroGradientColors = useMemo((): [string, string, string] => {
     if (isEnterpriseOrg) return ["#DCFCE7", "#ECFDF5", "#FFFFFF"];
     if (isCommunityOrg) return ["#DBEAFE", "#F0F9FF", "#FFFFFF"];
@@ -345,50 +348,13 @@ export default function Dashboard() {
 
   const orgAllowsOpenLane = org?.allow_cross_org === true;
 
-  let orgLogoPublicUrl: string | null = null;
-  if (
-    org?.settings &&
-    typeof org.settings === "object" &&
-    !Array.isArray(org.settings)
-  ) {
-    const lp = String((org.settings as { logo_path?: string }).logo_path ?? "").trim();
-    if (lp) {
-      orgLogoPublicUrl =
-        supabase.storage.from("org-logos").getPublicUrl(lp).data.publicUrl ?? null;
-    }
-  }
+  const orgLogoPublicUrl = getOrganisationLogoPublicUrl(org);
 
   function showExplorerInfo() {
     showAlert(
       "Independent commuter",
       "No workplace network yet. You still match along your corridor with independents and any commuter.\n\nIf your company joins Poolyn later, they can add you or send an invite."
     );
-  }
-
-  function showWorkplaceInfo() {
-    if (!org) return;
-    const plan = PLAN_LABELS[org.plan ?? "free"] ?? org.plan;
-    const lines = [
-      org.name,
-      org.domain ? `Domain: ${org.domain}` : null,
-      `Plan: ${plan}`,
-      orgMemberCount > 0 ? `About ${orgMemberCount} members in this network` : null,
-      "",
-      "Workplace network: Discover starts with your org. Widen scope anytime to pull in a bigger pool.",
-    ].filter(Boolean);
-    showAlert("Your workplace", lines.join("\n"));
-  }
-
-  function showCommunityNetworkInfo() {
-    if (!org) return;
-    const lines = [
-      org.name,
-      org.domain ? `Domain: ${org.domain}` : null,
-      orgMemberCount > 0 ? `${orgMemberCount} colleagues on Poolyn` : null,
-      "",
-      "Community network: same work email domain. Discover starts with your network; widen to any commuter when you want.",
-    ].filter(Boolean);
-    showAlert("Your network", lines.join("\n"));
   }
 
   async function setVisibilityMode(mode: "network" | "nearby") {
@@ -464,11 +430,14 @@ export default function Dashboard() {
   }, [profile?.onboarding_completed]);
 
   return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
+    <View style={styles.safe}>
       <ScrollView
         ref={homeScrollRef}
         style={styles.container}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: Spacing["5xl"] + insets.bottom },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Hero: gradient band by explorer / workplace type */}
@@ -478,6 +447,7 @@ export default function Dashboard() {
           end={{ x: 1, y: 1 }}
           style={[
             styles.heroHeader,
+            { paddingTop: insets.top + Spacing.xs },
             !hasOrg && styles.heroExplorer,
             isEnterpriseOrg && styles.heroEnterprise,
             isCommunityOrg && styles.heroCommunity,
@@ -603,7 +573,10 @@ export default function Dashboard() {
               ) : (
                 <Pressable
                   style={({ pressed }) => [styles.heroLogoPressable, pressed && styles.heroLogoPressablePressed]}
-                  onPress={isEnterpriseOrg ? showWorkplaceInfo : showCommunityNetworkInfo}
+                  onPress={() => {
+                    if (!org) return;
+                    setWorkplaceNetworkModal(isEnterpriseOrg ? "enterprise" : "community");
+                  }}
                   accessibilityRole="button"
                   accessibilityLabel={isEnterpriseOrg ? "Workplace details" : "Network details"}
                 >
@@ -706,19 +679,22 @@ export default function Dashboard() {
                 accessibilityState={{ selected: poolynProgram === "routine" }}
                 accessibilityLabel="Regular commute Poolyn"
               >
-                <Ionicons
-                  name="repeat"
-                  size={20}
-                  color={poolynProgram === "routine" ? "#FFFFFF" : ROUTINE_ACCENT}
-                />
-                <Text
-                  style={[
-                    styles.poolynProgramSegText,
-                    poolynProgram === "routine" && styles.poolynProgramSegTextOn,
-                  ]}
-                >
-                  Regular commute
-                </Text>
+                <View style={styles.poolynProgramSegInner}>
+                  <Ionicons
+                    name="swap-horizontal"
+                    size={18}
+                    color={poolynProgram === "routine" ? "#FFFFFF" : ROUTINE_ACCENT}
+                  />
+                  <Text
+                    style={[
+                      styles.poolynProgramSegText,
+                      poolynProgram === "routine" && styles.poolynProgramSegTextOn,
+                    ]}
+                    numberOfLines={2}
+                  >
+                    Regular commute
+                  </Text>
+                </View>
               </Pressable>
               <Pressable
                 style={[
@@ -730,19 +706,22 @@ export default function Dashboard() {
                 accessibilityState={{ selected: poolynProgram === "adhoc" }}
                 accessibilityLabel="Ad-hoc Poolyn"
               >
-                <Ionicons
-                  name="calendar-outline"
-                  size={20}
-                  color={poolynProgram === "adhoc" ? "#FFFFFF" : ADHOC_ACCENT}
-                />
-                <Text
-                  style={[
-                    styles.poolynProgramSegText,
-                    poolynProgram === "adhoc" && styles.poolynProgramSegTextOn,
-                  ]}
-                >
-                  Ad-hoc trips
-                </Text>
+                <View style={styles.poolynProgramSegInner}>
+                  <Ionicons
+                    name="calendar-outline"
+                    size={18}
+                    color={poolynProgram === "adhoc" ? "#FFFFFF" : ADHOC_ACCENT}
+                  />
+                  <Text
+                    style={[
+                      styles.poolynProgramSegText,
+                      poolynProgram === "adhoc" && styles.poolynProgramSegTextOn,
+                    ]}
+                    numberOfLines={2}
+                  >
+                    Ad-hoc trips
+                  </Text>
+                </View>
               </Pressable>
             </View>
           </View>
@@ -756,9 +735,11 @@ export default function Dashboard() {
           }}
         >
           {profile != null && profile.id ? (
-            <View style={styles.commuteRouteOuterCard}>
-              <Text style={styles.commuteRouteOuterEyebrow}>ROUTINE POOLYN</Text>
-              <Text style={styles.commuteRouteOuterTitle}>Your regular commute</Text>
+            <View style={styles.routineUnifiedShell}>
+              <View style={styles.routineUnifiedHeader}>
+                <Text style={styles.routineUnifiedEyebrow}>ROUTINE POOLYN</Text>
+                <Text style={styles.routineUnifiedTitle}>Your regular commute</Text>
+              </View>
               <CommuteRouteChoicePanel
                 omitOuterCard
                 userId={profile.id}
@@ -769,35 +750,30 @@ export default function Dashboard() {
                 onRouteReadyChange={setCommuteRouteReady}
                 onEditCommutePins={() => router.push("/(tabs)/profile/commute-locations")}
               />
+              <View style={styles.routineUnifiedDivider} />
+              <View style={styles.routineUnifiedCrewBlock}>
+                <Text style={styles.routineUnifiedEyebrowCrew}>ROUTINE COMMUTE</Text>
+                <Text style={styles.routineUnifiedSubtitle}>Crewmates or the wider pool</Text>
+                <RoutinePoolynCrewMingleBlock
+                  profile={profile}
+                  orgId={profile.org_id}
+                  setVisibilityMode={setVisibilityMode}
+                  commuteRouteReady={commuteRouteReady}
+                  minglePassengerPickup={
+                    passengerPickupEnabled && showPostRequest
+                      ? {
+                          hasPendingRequest: !!pickupState.pending,
+                          onOpenPostRequest: () => setPostRequestOpen(true),
+                        }
+                      : undefined
+                  }
+                  onCrewCreated={() => {
+                    void refreshProfile();
+                  }}
+                />
+              </View>
             </View>
           ) : null}
-
-        <PillarSection
-          variant="routine"
-          eyebrow="ROUTINE COMMUTE"
-          title="Crewmates or the wider pool"
-          subtitle={null}
-        >
-          {profile?.id ? (
-            <RoutinePoolynCrewMingleBlock
-              profile={profile}
-              orgId={profile.org_id}
-              setVisibilityMode={setVisibilityMode}
-              commuteRouteReady={commuteRouteReady}
-              minglePassengerPickup={
-                passengerPickupEnabled && showPostRequest
-                  ? {
-                      hasPendingRequest: !!pickupState.pending,
-                      onOpenPostRequest: () => setPostRequestOpen(true),
-                    }
-                  : undefined
-              }
-              onCrewCreated={() => {
-                void refreshProfile();
-              }}
-            />
-          ) : null}
-        </PillarSection>
         </View>
         ) : (
         <PillarSection
@@ -1030,7 +1006,17 @@ export default function Dashboard() {
         orgAllowsOpenLane={orgAllowsOpenLane}
         viewerHasOrg={Boolean(profile?.org_id)}
       />
-    </SafeAreaView>
+
+      <WorkplaceNetworkDetailsModal
+        visible={workplaceNetworkModal !== null}
+        onClose={() => setWorkplaceNetworkModal(null)}
+        variant={workplaceNetworkModal === "community" ? "community" : "enterprise"}
+        org={org}
+        orgMemberCount={orgMemberCount}
+        planLabel={orgPlanLabel}
+        logoPublicUrl={orgLogoPublicUrl}
+      />
+    </View>
   );
 }
 
@@ -1142,12 +1128,12 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   container: { flex: 1 },
   content: {
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingTop: 0,
     paddingBottom: Spacing["5xl"],
   },
   pickupBanner: {
-    marginHorizontal: Spacing.xl,
+    marginHorizontal: 0,
     marginBottom: Spacing.lg,
     padding: Spacing.md,
     borderRadius: BorderRadius.lg,
@@ -1228,12 +1214,13 @@ const styles = StyleSheet.create({
   },
   poolynProgramToggleWrap: {
     marginBottom: Spacing.lg,
-    padding: Spacing.md,
-    borderRadius: BorderRadius.xl,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    ...Shadow.md,
+    ...Shadow.sm,
   },
   poolynProgramEyebrow: {
     fontSize: 10,
@@ -1250,23 +1237,30 @@ const styles = StyleSheet.create({
   },
   poolynProgramSegments: {
     flexDirection: "row",
-    borderRadius: BorderRadius.lg,
-    padding: 4,
-    gap: 6,
+    borderRadius: BorderRadius.md,
+    padding: 3,
+    gap: 4,
     backgroundColor: Colors.borderLight,
   },
   poolynProgramSeg: {
     flex: 1,
-    flexDirection: "row",
+    minWidth: 0,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    paddingVertical: 14,
-    paddingHorizontal: Spacing.sm,
-    borderRadius: BorderRadius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderRadius: BorderRadius.sm,
     borderWidth: 1,
     borderColor: "transparent",
     backgroundColor: "transparent",
+  },
+  poolynProgramSegInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    maxWidth: "100%",
+    paddingHorizontal: 4,
   },
   poolynProgramSegOnRoutine: {
     backgroundColor: ROUTINE_ACCENT,
@@ -1288,35 +1282,63 @@ const styles = StyleSheet.create({
   poolynProgramSegTextOn: {
     color: "#FFFFFF",
   },
-  commuteRouteOuterCard: {
-    borderRadius: BorderRadius.xl,
-    backgroundColor: Colors.surface,
+  routineUnifiedShell: {
+    borderRadius: BorderRadius.lg,
+    backgroundColor: "#F0FDFA",
     borderWidth: 1,
     borderColor: "#99F6E4",
-    padding: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
     marginBottom: Spacing.lg,
-    ...Shadow.md,
+    overflow: "hidden",
+    ...Shadow.sm,
   },
-  commuteRouteOuterEyebrow: {
+  routineUnifiedHeader: {
+    marginBottom: Spacing.sm,
+  },
+  routineUnifiedEyebrow: {
     fontSize: 10,
     fontWeight: FontWeight.bold,
-    letterSpacing: 1.5,
+    letterSpacing: 1.4,
     color: ROUTINE_ACCENT,
-    marginBottom: 4,
+    marginBottom: 2,
   },
-  commuteRouteOuterTitle: {
-    fontSize: FontSize.xl,
+  routineUnifiedTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    letterSpacing: -0.3,
+  },
+  routineUnifiedDivider: {
+    height: StyleSheet.hairlineWidth * 2,
+    backgroundColor: "#5EEAD4",
+    opacity: 0.55,
+    marginVertical: Spacing.md,
+    marginHorizontal: -Spacing.md,
+  },
+  routineUnifiedCrewBlock: {
+    paddingTop: 0,
+  },
+  routineUnifiedEyebrowCrew: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.4,
+    color: ROUTINE_ACCENT,
+    marginBottom: 2,
+  },
+  routineUnifiedSubtitle: {
+    fontSize: FontSize.lg,
     fontWeight: FontWeight.bold,
     color: Colors.text,
     letterSpacing: -0.35,
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   pillarShell: {
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     borderWidth: 1,
     marginBottom: Spacing["2xl"],
     overflow: "hidden",
-    ...Shadow.md,
+    ...Shadow.sm,
   },
   pillarShellRoutine: {
     backgroundColor: "#F0FDFA",
@@ -1328,8 +1350,8 @@ const styles = StyleSheet.create({
   },
   pillarContent: {
     flex: 1,
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
   },
   pillarEyebrow: {
     fontSize: 10,
@@ -1400,10 +1422,10 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
   heroHeader: {
-    marginHorizontal: -Spacing.xl,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    marginBottom: Spacing.lg,
+    marginHorizontal: -Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
+    marginBottom: Spacing.md,
     borderBottomLeftRadius: BorderRadius.xl,
     borderBottomRightRadius: BorderRadius.xl,
     borderWidth: 1,
@@ -1427,17 +1449,17 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   heroAvatarImg: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: Colors.surface,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.95)",
   },
   heroAvatarPlaceholder: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: "rgba(255,255,255,0.88)",
     borderWidth: 1.5,
     borderColor: "rgba(0,0,0,0.06)",

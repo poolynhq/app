@@ -267,6 +267,10 @@ export interface Database {
           notification_preferences: Json;
           stripe_connect_account_id: string | null;
           stripe_connect_onboarding_complete: boolean;
+          billing_currency_user_code: string | null;
+          billing_currency_device_code: string | null;
+          billing_currency_differs_from_device: boolean;
+          billing_currency_differs_from_platform: boolean;
         };
         Insert: {
           id: string;
@@ -306,6 +310,10 @@ export interface Database {
           notification_preferences?: Json;
           stripe_connect_account_id?: string | null;
           stripe_connect_onboarding_complete?: boolean;
+          billing_currency_user_code?: string | null;
+          billing_currency_device_code?: string | null;
+          billing_currency_differs_from_device?: boolean;
+          billing_currency_differs_from_platform?: boolean;
         };
         Update: {
           org_id?: string | null;
@@ -338,6 +346,10 @@ export interface Database {
           notification_preferences?: Json;
           stripe_connect_account_id?: string | null;
           stripe_connect_onboarding_complete?: boolean;
+          billing_currency_user_code?: string | null;
+          billing_currency_device_code?: string | null;
+          billing_currency_differs_from_device?: boolean;
+          billing_currency_differs_from_platform?: boolean;
         };
       };
 
@@ -1493,6 +1505,18 @@ export interface Database {
         Args: { p_org_id: string };
         Returns: Json;
       };
+      poolyn_org_admin_crew_summary: {
+        Args: { p_org_id: string };
+        Returns: {
+          crew_id: string;
+          crew_name: string;
+          member_count: number;
+        }[];
+      };
+      poolyn_org_auto_route_corridors: {
+        Args: { p_org_id: string };
+        Returns: Json;
+      };
       get_map_layers_for_discover: {
         Args: { p_user_id: string; p_scope?: string };
         Returns: Json;
@@ -1739,7 +1763,7 @@ export interface Database {
         Returns: Json;
       };
       poolyn_crew_trip_finish_and_settle_credits: {
-        Args: { p_trip_instance_id: string; p_contribution_credits_per_rider: number };
+        Args: { p_trip_instance_id: string; p_contribution_credits_by_rider: Json };
         Returns: Json;
       };
       poolyn_crew_roll_driver: {
@@ -1881,6 +1905,15 @@ export interface Database {
       poolyn_get_my_ride_as_driver: {
         Args: { p_ride_id: string };
         Returns: Json;
+      };
+      poolyn_insert_own_notification: {
+        Args: {
+          p_type: string;
+          p_title: string;
+          p_body: string;
+          p_data?: Json;
+        };
+        Returns: null;
       };
     };
 

@@ -32,7 +32,9 @@ import {
   finishAndSettleCrewTripCredits,
   isCrewOwner,
   parseRiderPickupReadyMap,
+  parsePoolRiderCommitment,
   setCrewDesignatedDriver,
+  setCrewPoolDayCommitment,
   sendCrewUserMessage,
   viewerShouldAckPickupReady,
   type CrewListRow,
@@ -52,6 +54,7 @@ import {
   FontWeight,
 } from "@/constants/theme";
 import { firstNameOnly } from "@/lib/personName";
+import { formatMoneyFromCents } from "@/lib/moneyFormat";
 
 export default function CrewTripChatScreen() {
   const { tripInstanceId: tripParam } = useLocalSearchParams<{ tripInstanceId: string | string[] }>();
@@ -76,6 +79,12 @@ export default function CrewTripChatScreen() {
   const [spinModalOpen, setSpinModalOpen] = useState(false);
   const [spinMembers, setSpinMembers] = useState<CrewWheelMember[]>([]);
   const [spinPrepBusy, setSpinPrepBusy] = useState(false);
+  const [commitBusy, setCommitBusy] = useState(false);
+  const [fareQuote, setFareQuote] = useState<{
+    centsMin: number;
+    centsMax: number;
+    n: number;
+  } | null>(null);
   const listRef = useRef<FlatList<CrewMessageRow>>(null);
 
   const visibleMessages = useMemo(
@@ -299,13 +308,15 @@ export default function CrewTripChatScreen() {
   ]);
 
   const designatedId = tripRow?.designated_driver_user_id ?? null;
+  /** Prefer assigned driver; if unset on legacy rows, use who started the run so banners and settle match reality. */
+  const effectiveDesignatedId = designatedId ?? tripRow?.trip_started_by_user_id ?? null;
 
   const designatedDriverFirstName = useMemo(() => {
-    if (!designatedId) return null;
-    const r = roster.find((m) => m.userId === designatedId);
+    if (!effectiveDesignatedId) return null;
+    const r = roster.find((m) => m.userId === effectiveDesignatedId);
     return firstNameOnly(r?.fullName);
-  }, [designatedId, roster]);
-  const iAmDriver = !!(profile?.id && designatedId && profile.id === designatedId);
+  }, [effectiveDesignatedId, roster]);
+  const iAmDriver = !!(profile?.id && effectiveDesignatedId && profile.id === effectiveDesignatedId);
 
   // The person who pressed "Start Poolyn" is the de-facto driver even when no designated driver
   // was set via dice/chat. They are allowed to finish and settle; the system will auto-claim the
@@ -316,17 +327,58 @@ export default function CrewTripChatScreen() {
     profile.id === tripRow.trip_started_by_user_id
   );
 
-  // Effective driver for UI purposes: designated driver takes precedence; fall back to trip starter.
-  const effectiveDriverId = designatedId ?? (iAmTripStarter ? (profile?.id ?? null) : null);
+  // Effective driver for settle UI: designated driver, or trip starter on legacy rows (must be non-null for finish).
+  const effectiveDriverId = designatedId ?? tripRow?.trip_started_by_user_id ?? null;
 
-  const payingRiderCount = useMemo(() => {
-    // Use effectiveDriverId so the count is correct even when no designated driver is set yet.
+  const payingRiderUserIds = useMemo(() => {
     const driverId = tripRow?.designated_driver_user_id
       ?? (tripRow?.trip_started_by_user_id ?? null);
-    if (!driverId || !tripRow) return 0;
+    if (!driverId || !tripRow) return [] as string[];
     const ex = new Set(tripRow.excluded_pickup_user_ids ?? []);
-    return roster.filter((m) => m.userId !== driverId && !ex.has(m.userId)).length;
+    return roster.filter((m) => m.userId !== driverId && !ex.has(m.userId)).map((m) => m.userId);
   }, [roster, tripRow]);
+
+  const payingRiderCount = payingRiderUserIds.length;
+
+  const poolCommit = useMemo(
+    () => parsePoolRiderCommitment(tripRow?.pool_rider_commitment),
+    [tripRow?.pool_rider_commitment]
+  );
+
+  const needsPoolDayAnswer = useMemo(() => {
+    if (!profile?.id || !tripRow || tripRow.trip_started_at) return false;
+    const d = designatedId;
+    if (!d) return false;
+    if (profile.id === d) return false;
+    const ex = new Set(tripRow.excluded_pickup_user_ids ?? []);
+    if (ex.has(profile.id)) return false;
+    return poolCommit[profile.id] == null;
+  }, [profile?.id, tripRow, designatedId, poolCommit]);
+
+  useEffect(() => {
+    if (!tripRow?.crew_id || !profile?.id) return;
+    let cancelled = false;
+    void (async () => {
+      const prev = await fetchCrewTripContributionForSettlement({
+        crewId: tripRow.crew_id,
+        viewerUserId: profile.id,
+        payingRiderUserIds,
+      });
+      if (cancelled) return;
+      if (prev.ok && prev.poolRiders >= 1) {
+        setFareQuote({
+          centsMin: prev.contributionCentsMin,
+          centsMax: prev.contributionCentsMax,
+          n: prev.poolRiders,
+        });
+      } else {
+        setFareQuote(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tripRow?.crew_id, tripRow?.excluded_pickup_user_ids, payingRiderUserIds, profile?.id]);
 
   const canFinishAndSettle =
     !!tripInstanceId &&
@@ -335,8 +387,20 @@ export default function CrewTripChatScreen() {
     !!effectiveDriverId &&
     (iAmDriver || imOwner || iAmTripStarter);
 
+  async function submitPoolCommit(joining: boolean) {
+    if (!tripInstanceId || commitBusy) return;
+    setCommitBusy(true);
+    try {
+      const res = await setCrewPoolDayCommitment(tripInstanceId, joining);
+      if (!res.ok) showAlert("Could not update", res.reason);
+      else void reload();
+    } finally {
+      setCommitBusy(false);
+    }
+  }
+
   /**
-   * Called when the driver taps "Finish trip and settle credits".
+   * Called when the driver taps "Finish trip" (Poolyn balance settlement).
    *
    * Flow:
    * 1. Rider readiness guard (soft warning): if some riders have not tapped "I am ready for
@@ -420,7 +484,7 @@ export default function CrewTripChatScreen() {
       const prev = await fetchCrewTripContributionForSettlement({
         crewId: tripRow.crew_id,
         viewerUserId: profile.id,
-        payingRiderCount,
+        payingRiderUserIds,
       });
       if (!prev.ok) {
         showAlert(
@@ -433,15 +497,24 @@ export default function CrewTripChatScreen() {
         );
         return;
       }
-      const each = prev.contributionCredits;
       const sub =
         payingRiderCount < 1
-          ? "No paying riders today (everyone excluded or solo). The trip will still close with no credit movement."
-          : `About ${each.toLocaleString()} internal credits from each of ${payingRiderCount} rider(s) to today's driver. Crew explorer admin fee is up to 4% in credits for riders not on a workplace network (same idea as the cash line on the crew card).`;
+          ? "No paying riders today (everyone excluded or solo). The trip will still close with no balance movement."
+          : prev.contributionCentsMin === prev.contributionCentsMax
+            ? `About ${formatMoneyFromCents(prev.contributionCentsMin, profile)} per paying rider (${payingRiderCount} rider${
+                payingRiderCount === 1 ? "" : "s"
+              }), taken from each rider's Poolyn balance and credited to today's driver. Riders not on a workplace network may pay up to about 4% more as an explorer fee (same idea as the dollar line on the crew card).`
+            : `Per-rider totals range from about ${formatMoneyFromCents(
+                prev.contributionCentsMin,
+                profile
+              )} to ${formatMoneyFromCents(
+                prev.contributionCentsMax,
+                profile
+              )} (${payingRiderCount} riders), based on each pickup's distance off the main commute. Amounts are taken from each rider's Poolyn balance and credited to today's driver. Riders not on a workplace network may pay up to about 4% more as an explorer fee on their own share.`;
       showAlert("Finish crew trip?", sub, [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Finish and settle",
+          text: "Finish trip",
           style: "default",
           onPress: () =>
             void (async () => {
@@ -449,15 +522,15 @@ export default function CrewTripChatScreen() {
               try {
                 const res = await finishAndSettleCrewTripCredits({
                   tripInstanceId,
-                  contributionCreditsPerRider: each,
+                  contributionCreditsByRider: prev.contributionCentsByRider,
                 });
                 if (!res.ok) {
                   if (res.reason === "insufficient_credits") {
                     showAlert(
-                      "Not enough credits",
+                      "Not enough balance",
                       res.balance != null && res.needed != null
-                        ? `A rider needs ${res.needed.toLocaleString()} credits but only has ${res.balance.toLocaleString()}.`
-                        : "A rider does not have enough credits for this share."
+                        ? `A rider needs about ${formatMoneyFromCents(res.needed, profile)} in their Poolyn balance but only has about ${formatMoneyFromCents(res.balance, profile)}.`
+                        : "A rider does not have enough Poolyn balance for this share."
                     );
                   } else {
                     showAlert("Could not settle", res.reason.replace(/_/g, " "));
@@ -466,7 +539,10 @@ export default function CrewTripChatScreen() {
                 }
                 await refreshProfile();
                 void reload();
-                showAlert("Trip finished", "Credits have been moved to the driver for this day.");
+                showAlert(
+                  "Trip finished",
+                  "Rider shares for this day were settled from Poolyn balances to today's driver."
+                );
               } finally {
                 setSettling(false);
               }
@@ -504,7 +580,7 @@ export default function CrewTripChatScreen() {
           <Ionicons name="star" size={18} color="#B45309" />
           <Text style={styles.driverBannerText}>You&apos;re today&apos;s driver. Lead timing in this chat.</Text>
         </View>
-      ) : designatedId ? (
+      ) : effectiveDesignatedId ? (
         <View style={styles.driverNamedBanner}>
           <Ionicons name="ribbon-outline" size={20} color={Colors.primaryDark} />
           <Text style={styles.driverNamedBannerText}>
@@ -519,6 +595,51 @@ export default function CrewTripChatScreen() {
           </Text>
         </View>
       )}
+
+      {fareQuote && fareQuote.n >= 1 ? (
+        <View style={styles.fareBanner}>
+          <Ionicons name="cash-outline" size={18} color={Colors.primaryDark} />
+          <Text style={styles.fareBannerText}>
+            {fareQuote.centsMin === fareQuote.centsMax
+              ? `Est. rider share this day: about ${formatMoneyFromCents(fareQuote.centsMin, profile)} each (${fareQuote.n} rider${fareQuote.n === 1 ? "" : "s"}). Same basis as the home crew card.`
+              : `Est. rider share this day: about ${formatMoneyFromCents(fareQuote.centsMin, profile)} to ${formatMoneyFromCents(fareQuote.centsMax, profile)} (${fareQuote.n} riders), depending on off-corridor pickup distance.`}{" "}
+            Settlement uses each rider&apos;s Poolyn balance (top up with Stripe in the app).
+          </Text>
+        </View>
+      ) : null}
+
+      {needsPoolDayAnswer && tripInstanceId ? (
+        <View style={styles.poolDayBanner}>
+          <Text style={styles.poolDayTitle}>Pooling today?</Text>
+          <Text style={styles.poolDaySub}>
+            Confirm at least 30 minutes before you usually leave so the driver can plan. Not riding? Tap Not
+            today (no pickup, no charge). If you do not answer, you may still be charged for the share and it
+            will be flagged for disputes.
+          </Text>
+          <View style={styles.poolDayRow}>
+            <TouchableOpacity
+              style={[styles.poolDayBtnJoin, commitBusy && styles.claimBtnDisabled]}
+              disabled={commitBusy}
+              onPress={() => void submitPoolCommit(true)}
+              activeOpacity={0.85}
+            >
+              {commitBusy ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.poolDayBtnJoinText}>I am pooling</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.poolDayBtnOut, commitBusy && styles.claimBtnDisabled]}
+              disabled={commitBusy}
+              onPress={() => void submitPoolCommit(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.poolDayBtnOutText}>Not today</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
 
       {showRiderPickupAck && tripInstanceId ? (
         <View style={styles.riderAckBanner}>
@@ -608,7 +729,7 @@ export default function CrewTripChatScreen() {
       {tripRow?.trip_finished_at ? (
         <View style={styles.tripDoneBanner}>
           <Ionicons name="checkmark-circle" size={18} color={Colors.textSecondary} />
-          <Text style={styles.tripDoneText}>This day’s crew trip is finished.</Text>
+          <Text style={styles.tripDoneText}>This crew day is finished.</Text>
         </View>
       ) : null}
 
@@ -624,7 +745,7 @@ export default function CrewTripChatScreen() {
           ) : (
             <>
               <Ionicons name="flag-outline" size={20} color={Colors.textOnPrimary} />
-              <Text style={styles.finishBtnText}>Finish trip and settle credits</Text>
+              <Text style={styles.finishBtnText}>Finish trip</Text>
             </>
           )}
         </TouchableOpacity>
@@ -647,7 +768,7 @@ export default function CrewTripChatScreen() {
             );
           }
           const mine = m.sender_id === profile?.id;
-          const isDriverMessage = !!(designatedId && m.sender_id === designatedId);
+          const isDriverMessage = !!(effectiveDesignatedId && m.sender_id === effectiveDesignatedId);
           return (
             <View style={[styles.msgRow, mine && styles.msgRowMine]}>
               <View
@@ -779,6 +900,66 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   driverNamedEmphasis: { fontWeight: FontWeight.bold, color: Colors.primaryDark },
+  fareBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  fareBannerText: {
+    flex: 1,
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+  },
+  poolDayBanner: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: "#EFF6FF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+  },
+  poolDayTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    marginBottom: 4,
+  },
+  poolDaySub: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    marginBottom: Spacing.sm,
+  },
+  poolDayRow: { flexDirection: "row", gap: Spacing.sm },
+  poolDayBtnJoin: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary,
+  },
+  poolDayBtnJoinText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.textOnPrimary },
+  poolDayBtnOut: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  poolDayBtnOutText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.text },
   riderAckBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
