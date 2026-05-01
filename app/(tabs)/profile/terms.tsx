@@ -481,11 +481,9 @@ export default function TermsScreen() {
         <Section title="17. Contact and Regulatory Information">
           <Para>Poolyn Pty Ltd is registered in Victoria, Australia.</Para>
           <DefList items={[
-            ['General enquiries', 'hello@poolyn.com'],
-            ['Legal and compliance', 'legal@poolyn.com'],
-            ['Privacy requests', 'privacy@poolyn.com'],
+            ['General enquiries and support', 'hello@poolyn.com'],
+            ['Legal, compliance and privacy', 'legal@poolyn.com'],
             ['Security incidents', 'security@poolyn.com'],
-            ['Platform support', 'support@poolyn.com'],
             ['Website', 'www.poolyn.com'],
           ]} />
         </Section>

@@ -1,12 +1,17 @@
 import React from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { Link } from "expo-router";
+import { ScrollView, StyleSheet, Text, View, Pressable } from "react-native";
+import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { Colors, Spacing, BorderRadius, FontSize, FontWeight } from "@/constants/theme";
 
 export default function TermsPage() {
+  const router = useRouter();
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
-      <Link href="/" style={styles.backLink}>Back to Poolyn</Link>
+      <Pressable style={styles.backBtn} onPress={() => router.push("/")}>
+        <Ionicons name="arrow-back" size={16} color={Colors.primary} />
+        <Text style={styles.backText}>Back to Poolyn</Text>
+      </Pressable>
 
       <Text style={styles.title}>Terms and Conditions</Text>
       <Text style={styles.meta}>Version 1.0, Effective 1 May 2026</Text>
@@ -458,11 +463,9 @@ export default function TermsPage() {
       <Section title="17. Contact and Regulatory Information">
         <Para>Poolyn Pty Ltd is registered in Victoria, Australia.</Para>
         <DefList items={[
-          ['General enquiries', 'hello@poolyn.com'],
-          ['Legal and compliance', 'legal@poolyn.com'],
-          ['Privacy requests', 'privacy@poolyn.com'],
+          ['General enquiries and support', 'hello@poolyn.com'],
+          ['Legal, compliance and privacy', 'legal@poolyn.com'],
           ['Security incidents', 'security@poolyn.com'],
-          ['Platform support', 'support@poolyn.com'],
           ['Website', 'www.poolyn.com'],
         ]} />
       </Section>
@@ -584,10 +587,16 @@ const styles = StyleSheet.create({
     width: "100%",
   },
 
-  backLink: {
+  backBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+  },
+  backText: {
+    fontSize: FontSize.sm,
     color: Colors.primary,
     fontWeight: FontWeight.semibold,
-    fontSize: FontSize.sm,
   },
   title: {
     fontSize: 34,

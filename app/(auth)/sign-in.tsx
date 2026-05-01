@@ -100,6 +100,15 @@ export default function SignIn() {
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
       >
+        <TouchableOpacity
+          style={styles.backToLanding}
+          onPress={() => router.push("/")}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="arrow-back" size={16} color={Colors.primary} />
+          <Text style={styles.backToLandingText}>Back to Poolyn</Text>
+        </TouchableOpacity>
+
         <AuthBrandingHero
           kicker="Welcome back"
           subline="Sign in with your work email. Verified colleagues, shared routes, less solo driving."
@@ -239,7 +248,19 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing["2xl"],
+    paddingTop: Spacing.lg,
+  },
+  backToLanding: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    alignSelf: "flex-start",
+    marginBottom: Spacing.lg,
+  },
+  backToLandingText: {
+    fontSize: FontSize.sm,
+    color: Colors.primary,
+    fontWeight: FontWeight.semibold,
   },
   form: {
     flex: 1,
