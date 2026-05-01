@@ -1,14 +1,12 @@
 import React from "react";
 import { ScrollView, StyleSheet, Text, View, Pressable } from "react-native";
-import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors, Spacing, BorderRadius, FontSize, FontWeight } from "@/constants/theme";
 
 export default function TermsPage() {
-  const router = useRouter();
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
-      <Pressable style={styles.backBtn} onPress={() => router.push("/")}>
+      <Pressable style={styles.backBtn} onPress={() => { window.location.href = "/"; }}>
         <Ionicons name="arrow-back" size={16} color={Colors.primary} />
         <Text style={styles.backText}>Back to Poolyn</Text>
       </Pressable>

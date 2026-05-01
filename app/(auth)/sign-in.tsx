@@ -102,7 +102,13 @@ export default function SignIn() {
       >
         <TouchableOpacity
           style={styles.backToLanding}
-          onPress={() => router.push("/")}
+          onPress={() => {
+            if (typeof window !== "undefined") {
+              window.location.href = "/";
+            } else {
+              router.push("/");
+            }
+          }}
           activeOpacity={0.7}
         >
           <Ionicons name="arrow-back" size={16} color={Colors.primary} />
