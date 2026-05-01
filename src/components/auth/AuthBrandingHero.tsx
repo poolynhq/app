@@ -9,8 +9,7 @@ import {
   Shadow,
 } from "@/constants/theme";
 
-const poolynLogo = require("../../../assets/poolyn_logo.png");
-const poolynCircle = require("../../../assets/poolyn-Icon-white-circle.png");
+const poolynFullLogo = require("../../../assets/poolyn-black-full-logo.png");
 
 type Props = {
   /** Short line under the wordmark, e.g. "Welcome back" */
@@ -20,7 +19,7 @@ type Props = {
 };
 
 /**
- * Shared auth header: horizontal wordmark + circular mark on a soft mint wash.
+ * Shared auth header: full wordmark on a soft mint wash.
  */
 export function AuthBrandingHero({ kicker, subline }: Props) {
   return (
@@ -30,12 +29,12 @@ export function AuthBrandingHero({ kicker, subline }: Props) {
       end={{ x: 1, y: 1 }}
       style={styles.gradient}
     >
-      <View style={styles.markRow}>
-        <View style={styles.circleShadow}>
-          <Image source={poolynCircle} style={styles.circleImg} resizeMode="contain" />
-        </View>
-        <Image source={poolynLogo} style={styles.loyo} resizeMode="contain" accessibilityLabel="Poolyn" />
-      </View>
+      <Image
+        source={poolynFullLogo}
+        style={styles.logo}
+        resizeMode="contain"
+        accessibilityLabel="Poolyn"
+      />
       <Text style={styles.kicker}>{kicker}</Text>
       {subline ? <Text style={styles.subline}>{subline}</Text> : null}
     </LinearGradient>
@@ -55,32 +54,10 @@ const styles = StyleSheet.create({
       default: Shadow.sm,
     }),
   },
-  markRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.md,
-    marginBottom: Spacing.md,
-  },
-  circleShadow: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.06)",
-    ...Shadow.sm,
-  },
-  circleImg: {
-    width: 56,
+  logo: {
     height: 56,
-  },
-  loyo: {
-    height: 44,
-    flex: 1,
-    maxWidth: 220,
-    minWidth: 140,
+    width: 200,
+    marginBottom: Spacing.md,
   },
   kicker: {
     fontSize: FontSize.lg,

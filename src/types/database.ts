@@ -423,6 +423,22 @@ export interface Database {
           intent: string | null;
           source: string | null;
           created_at: string;
+          // Commuter survey
+          commute_pain_keys: string[] | null;
+          commute_pain_other: string | null;
+          commute_cost: string | null;
+          commute_days: string | null;
+          commute_trust_keys: string[] | null;
+          commute_trust_other: string | null;
+          commute_role: string | null;
+          commute_role_other: string | null;
+          work_location: string | null;
+          // Organisation survey
+          org_challenge: string | null;
+          org_size: string | null;
+          org_subsidy: string | null;
+          company_name: string | null;
+          job_title: string | null;
         };
         Insert: {
           id?: string;
@@ -432,6 +448,22 @@ export interface Database {
           intent?: string | null;
           source?: string | null;
           created_at?: string;
+          // Commuter survey
+          commute_pain_keys?: string[] | null;
+          commute_pain_other?: string | null;
+          commute_cost?: string | null;
+          commute_days?: string | null;
+          commute_trust_keys?: string[] | null;
+          commute_trust_other?: string | null;
+          commute_role?: string | null;
+          commute_role_other?: string | null;
+          work_location?: string | null;
+          // Organisation survey
+          org_challenge?: string | null;
+          org_size?: string | null;
+          org_subsidy?: string | null;
+          company_name?: string | null;
+          job_title?: string | null;
         };
         Update: {
           email?: string;
@@ -439,6 +471,22 @@ export interface Database {
           metro_area?: string | null;
           intent?: string | null;
           source?: string | null;
+          // Commuter survey
+          commute_pain_keys?: string[] | null;
+          commute_pain_other?: string | null;
+          commute_cost?: string | null;
+          commute_days?: string | null;
+          commute_trust_keys?: string[] | null;
+          commute_trust_other?: string | null;
+          commute_role?: string | null;
+          commute_role_other?: string | null;
+          work_location?: string | null;
+          // Organisation survey
+          org_challenge?: string | null;
+          org_size?: string | null;
+          org_subsidy?: string | null;
+          company_name?: string | null;
+          job_title?: string | null;
         };
       };
 

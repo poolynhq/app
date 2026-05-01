@@ -518,6 +518,26 @@ export function WaitlistModal({ visible, onClose, defaultIntent }: Props) {
       metroArea,
       intent,
       source: `landing_modal_${phase}`,
+      // Commuter survey answers
+      ...(phase === "commuter" ? {
+        commutePainKeys:  Array.from(commPains),
+        commutePainOther: commPainOther.trim() || undefined,
+        commuteCost:      commCost ?? undefined,
+        commuteDays:      commDays ?? undefined,
+        commuteTrustKeys: Array.from(commTrust),
+        commuteTrustOther: commTrustOther.trim() || undefined,
+        commuteRole:      commRole ?? undefined,
+        commuteRoleOther: commRoleOther.trim() || undefined,
+        workLocation:     workLocation.trim() || undefined,
+      } : {}),
+      // Organisation survey answers
+      ...(phase === "org" ? {
+        orgChallenge: orgChallenge ?? undefined,
+        orgSize:      orgSize ?? undefined,
+        orgSubsidy:   orgSubsidy ?? undefined,
+        companyName:  companyName.trim() || undefined,
+        jobTitle:     jobTitle.trim() || undefined,
+      } : {}),
     });
     setLoading(false);
     if (insertError) {
