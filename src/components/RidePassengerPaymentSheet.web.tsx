@@ -13,12 +13,16 @@ type Props = {
 export function RidePassengerPaymentSheet(_props: Props) {
   return (
     <View style={styles.box}>
-      <Text style={styles.hint}>Open the Poolyn app on your phone to pay for this ride.</Text>
+      <Text style={styles.title}>{"You're contributing to shared travel costs"}</Text>
+      <Text style={styles.sub}>
+        Card payments for this trip run in the Poolyn mobile app. Open the app on your phone to continue.
+      </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  box: { gap: 12 },
-  hint: { color: Colors.textSecondary, fontSize: 14 },
+  box: { gap: 10 },
+  title: { fontSize: 16, fontWeight: "600", color: Colors.text },
+  sub: { color: Colors.textSecondary, fontSize: 14, lineHeight: 20 },
 });

@@ -1,3 +1,4 @@
+import { Linking } from "react-native";
 import { supabase } from "@/lib/supabase";
 
 export type CreateRidePaymentIntentResult =
@@ -18,8 +19,12 @@ export type PricingQuoteResult =
       gross_trip_amount_cents: number;
       platform_fee_cents: number;
       total_payable_cents: number;
-      net_payout_estimate_cents: number;
       platform_fee_label: string;
+      distance_share_cents: number;
+      detour_share_cents: number;
+      pickup_share_cents: number;
+      tolls_share_cents: number;
+      parking_share_cents: number;
     }
   | { ok: false; error: string };
 
@@ -71,14 +76,28 @@ export async function fetchRidePassengerPricingQuote(
   if (!row || row.ok !== true) {
     return { ok: false, error: String(row?.error ?? "pricing_quote_failed") };
   }
+  const num = (k: string) => (typeof row[k] === "number" ? (row[k] as number) : 0);
   return {
     ok: true,
     gross_trip_amount_cents: row.gross_trip_amount_cents as number,
     platform_fee_cents: row.platform_fee_cents as number,
     total_payable_cents: row.total_payable_cents as number,
-    net_payout_estimate_cents: row.net_payout_estimate_cents as number,
     platform_fee_label: String(row.platform_fee_label ?? "platform fee"),
+    distance_share_cents: num("distance_share_cents"),
+    detour_share_cents: num("detour_share_cents"),
+    pickup_share_cents: num("pickup_share_cents"),
+    tolls_share_cents: num("tolls_share_cents"),
+    parking_share_cents: num("parking_share_cents"),
   };
+}
+
+/** Sum of your share of rider trip costs (driver portion) paid this week (UTC week, server). */
+export async function fetchDriverWeekTravelCostRecoveryCents(): Promise<number> {
+  const { data, error } = await supabase.rpc("poolyn_driver_this_week_travel_cost_cents");
+  if (error || !data || typeof data !== "object") return 0;
+  const row = data as Record<string, unknown>;
+  if (row.ok !== true) return 0;
+  return typeof row.cents === "number" ? row.cents : 0;
 }
 
 /** Driver/host Stripe Connect onboarding URL (opens in browser). */
@@ -97,6 +116,17 @@ export async function createStripeConnectOnboardingUrl(): Promise<
   }
   return { ok: true, url: row.url };
 }
+
+/** Opens Stripe Connect hosted onboarding in the browser (or returns an error). */
+export async function openDriverBankConnectSetup(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await createStripeConnectOnboardingUrl();
+  if (!r.ok) return r;
+  await Linking.openURL(r.url);
+  return { ok: true };
+}
+
+/** @deprecated Use openDriverBankConnectSetup */
+export const openTripPayoutSetup = openDriverBankConnectSetup;
 
 /** Call after payment succeeded (or zero-amount path). */
 export async function finalizeRidePassengerConfirmation(

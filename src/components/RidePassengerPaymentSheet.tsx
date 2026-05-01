@@ -15,6 +15,18 @@ type Props = {
   onError?: (message: string) => void;
 };
 
+function humanizeTripPaymentError(message: string, hint?: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("driver_payouts_not_ready") || m.includes("payouts_not_ready")) {
+    return (
+      hint ??
+      "The driver has not finished bank setup for hosted trips yet. They can connect their bank under Profile."
+    );
+  }
+  if (hint) return `${message} ${hint}`;
+  return message;
+}
+
 /**
  * iOS/Android: PaymentSheet flow. (Web uses RidePassengerPaymentSheet.web.tsx.)
  */
@@ -33,38 +45,31 @@ export function RidePassengerPaymentSheet(props: Props) {
 function RidePassengerPaymentSheetInner({ ridePassengerId, onPaid, onError }: Props) {
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const [loading, setLoading] = useState(false);
-  const [breakdown, setBreakdown] = useState<string | null>(null);
+  const [quote, setQuote] = useState<Awaited<ReturnType<typeof fetchRidePassengerPricingQuote>> | null>(null);
 
   const loadQuote = useCallback(async () => {
     const q = await fetchRidePassengerPricingQuote(ridePassengerId);
     if (!q.ok) {
-      setBreakdown(null);
-      onError?.(q.error);
+      setQuote(null);
+      onError?.(humanizeTripPaymentError(q.error));
       return;
     }
-    const lines = [
-      `Trip share: ${formatMoney(q.gross_trip_amount_cents)}`,
-      q.platform_fee_cents > 0
-        ? `${labelForFee(q.platform_fee_label)}: ${formatMoney(q.platform_fee_cents)}`
-        : "Platform fee: none",
-      `Total: ${formatMoney(q.total_payable_cents)}`,
-      `Estimated to driver: ${formatMoney(q.net_payout_estimate_cents)}`,
-    ];
-    setBreakdown(lines.join("\n"));
+    setQuote(q);
   }, [ridePassengerId, onError]);
 
   const pay = useCallback(async () => {
     setLoading(true);
     try {
-      const quote = await fetchRidePassengerPricingQuote(ridePassengerId);
-      if (!quote.ok) {
-        onError?.(quote.error);
+      const q = await fetchRidePassengerPricingQuote(ridePassengerId);
+      if (!q.ok) {
+        onError?.(humanizeTripPaymentError(q.error));
         return;
       }
+      setQuote(q);
 
       const pi = await createRidePaymentIntentForPassenger(ridePassengerId);
       if (!pi.ok) {
-        onError?.(pi.error);
+        onError?.(humanizeTripPaymentError(pi.error, pi.hint));
         return;
       }
 
@@ -112,10 +117,39 @@ function RidePassengerPaymentSheetInner({ ridePassengerId, onPaid, onError }: Pr
 
   return (
     <View style={styles.box}>
+      <Text style={styles.title}>{"You're contributing to shared travel costs"}</Text>
+      <Text style={styles.subtitle}>Includes distance, detours, and any additional trip costs</Text>
+
       <Pressable style={styles.secondaryBtn} onPress={loadQuote} disabled={loading}>
-        <Text style={styles.secondaryTxt}>Load booking summary</Text>
+        <Text style={styles.secondaryTxt}>Show cost breakdown</Text>
       </Pressable>
-      {breakdown ? <Text style={styles.breakdown}>{breakdown}</Text> : null}
+
+      {quote && quote.ok ? (
+        <View style={styles.breakdownBox}>
+          <BreakdownLine label="Your distance share" cents={quote.distance_share_cents} />
+          {quote.detour_share_cents > 0 ? (
+            <BreakdownLine label="Detour cost" cents={quote.detour_share_cents} />
+          ) : null}
+          {quote.pickup_share_cents > 0 ? (
+            <BreakdownLine label="Pickup cost" cents={quote.pickup_share_cents} />
+          ) : null}
+          {quote.tolls_share_cents > 0 ? <BreakdownLine label="Tolls" cents={quote.tolls_share_cents} /> : null}
+          {quote.parking_share_cents > 0 ? (
+            <BreakdownLine label="Parking" cents={quote.parking_share_cents} />
+          ) : null}
+          {quote.platform_fee_cents > 0 ? (
+            <BreakdownLine label={labelForFee(quote.platform_fee_label)} cents={quote.platform_fee_cents} />
+          ) : null}
+          <View style={styles.divider} />
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Your share of this trip</Text>
+            <Text style={styles.totalValue}>{formatMoney(quote.total_payable_cents)}</Text>
+          </View>
+          <Text style={styles.finePrint}>Some costs are provided by the driver</Text>
+          <Text style={styles.disclaimer}>Costs are based on route and trip details</Text>
+        </View>
+      ) : null}
+
       <Pressable style={styles.primaryBtn} onPress={pay} disabled={loading}>
         {loading ? (
           <ActivityIndicator color="#fff" />
@@ -123,6 +157,15 @@ function RidePassengerPaymentSheetInner({ ridePassengerId, onPaid, onError }: Pr
           <Text style={styles.primaryTxt}>Pay with card</Text>
         )}
       </Pressable>
+    </View>
+  );
+}
+
+function BreakdownLine({ label, cents }: { label: string; cents: number }) {
+  return (
+    <View style={styles.lineRow}>
+      <Text style={styles.lineLabel}>{label}</Text>
+      <Text style={styles.lineValue}>{formatMoney(cents)}</Text>
     </View>
   );
 }
@@ -135,18 +178,27 @@ function formatMoney(cents: number): string {
 function labelForFee(raw: string): string {
   if (raw === "coordination fee") return "Coordination fee";
   if (raw === "network fee") return "Network fee";
-  return "Platform fee";
+  return "Service fee";
 }
 
 const styles = StyleSheet.create({
   box: { gap: 12 },
   hint: { color: Colors.textSecondary, fontSize: 14 },
-  breakdown: {
-    fontSize: 14,
-    color: Colors.text,
-    lineHeight: 20,
-    fontFamily: "System",
+  title: { fontSize: 17, fontWeight: "600", color: Colors.text },
+  subtitle: { fontSize: 13, color: Colors.textSecondary, lineHeight: 18 },
+  breakdownBox: {
+    gap: 8,
+    paddingVertical: 4,
   },
+  lineRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  lineLabel: { fontSize: 14, color: Colors.textSecondary, flex: 1 },
+  lineValue: { fontSize: 14, fontWeight: "500", color: Colors.text },
+  divider: { height: 1, backgroundColor: Colors.border, marginVertical: 4 },
+  totalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 4 },
+  totalLabel: { fontSize: 15, fontWeight: "600", color: Colors.text, flex: 1 },
+  totalValue: { fontSize: 16, fontWeight: "700", color: Colors.primaryDark },
+  finePrint: { fontSize: 12, color: Colors.textTertiary, marginTop: 4 },
+  disclaimer: { fontSize: 12, color: Colors.textTertiary, fontStyle: "italic" },
   primaryBtn: {
     backgroundColor: Colors.primary,
     paddingVertical: 14,

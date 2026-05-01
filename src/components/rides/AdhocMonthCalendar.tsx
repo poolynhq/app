@@ -9,8 +9,8 @@ import {
   FontWeight,
 } from "@/constants/theme";
 
-/** Last selectable day is today + maxDaysAhead (inclusive). */
-const MAX_DAYS_AHEAD = 30;
+/** Default: last selectable day is today + 30 days (inclusive). */
+const DEFAULT_MAX_DAYS_AHEAD = 30;
 
 function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -28,11 +28,13 @@ type Props = {
   /** Controlled: calendar day at local midnight */
   value: Date;
   onChange: (next: Date) => void;
+  /** Last selectable day is today + this many days (inclusive). Defaults to 30. */
+  maxDaysAhead?: number;
 };
 
-export function AdhocMonthCalendar({ value, onChange }: Props) {
+export function AdhocMonthCalendar({ value, onChange, maxDaysAhead = DEFAULT_MAX_DAYS_AHEAD }: Props) {
   const minDate = startOfDay(new Date());
-  const maxDate = startOfDay(addDays(new Date(), MAX_DAYS_AHEAD));
+  const maxDate = startOfDay(addDays(minDate, maxDaysAhead));
 
   const [view, setView] = useState(() => {
     const v = startOfDay(value);

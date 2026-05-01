@@ -68,6 +68,26 @@ export async function poolynSearchAdhocListings(params: {
   return data as AdhocSearchListingRow[];
 }
 
+export async function poolynCreateAdhocRecurringSeries(params: {
+  recurrencePattern: "weekly" | "fortnightly" | "monthly";
+  anchorDate: string;
+  repeatUntilDate: string;
+  isRoundTrip: boolean;
+}): Promise<{ ok: true; seriesId: string } | { ok: false; reason: string }> {
+  const { data, error } = await supabase.rpc("poolyn_create_adhoc_recurring_series", {
+    p_recurrence_pattern: params.recurrencePattern,
+    p_anchor_date: params.anchorDate,
+    p_repeat_until_date: params.repeatUntilDate,
+    p_is_round_trip: params.isRoundTrip,
+  });
+  if (error) return { ok: false, reason: error.message };
+  const o = data as Record<string, unknown> | null;
+  if (o && o.ok === true && typeof o.series_id === "string") {
+    return { ok: true, seriesId: o.series_id };
+  }
+  return { ok: false, reason: rpcReason(data) ?? "series_failed" };
+}
+
 export async function poolynCreateAdhocListing(params: {
   departAt: Date;
   originLat: number;
@@ -81,6 +101,12 @@ export async function poolynCreateAdhocListing(params: {
   tripTitle?: string | null;
   departFlexDays: number;
   listingNotes?: string | null;
+  /** Whole-trip toll total in cents (optional). Shared across riders when seats fill. */
+  tollCents?: number;
+  /** Whole-trip parking total in cents (optional). Shared across riders. */
+  parkingCents?: number;
+  /** When batch-posting a recurring plan, links rows for batch editing and future messaging. */
+  adhocRecurringSeriesId?: string | null;
 }): Promise<{ ok: true; rideId: string } | { ok: false; reason: string }> {
   const { data, error } = await supabase.rpc("poolyn_create_adhoc_listing", {
     p_depart_at: params.departAt.toISOString(),
@@ -95,6 +121,9 @@ export async function poolynCreateAdhocListing(params: {
     p_trip_title: params.tripTitle?.trim() || null,
     p_depart_flex_days: params.departFlexDays,
     p_notes: params.listingNotes?.trim() || null,
+    p_toll_cents: params.tollCents ?? null,
+    p_parking_cents: params.parkingCents ?? null,
+    p_adhoc_recurring_series_id: params.adhocRecurringSeriesId ?? null,
   });
   if (error) return { ok: false, reason: error.message };
   const o = data as Record<string, unknown> | null;

@@ -1,5 +1,7 @@
 /**
  * Stripe webhook: ride payment lifecycle + financial ledger (idempotent by stripe_event_id).
+ * Subscribe in Dashboard to at least: payment_intent.succeeded, payment_intent.payment_failed,
+ * charge.refunded, charge.dispute.created, payout.paid, payout.failed, account.updated (Connect onboarding).
  */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import Stripe from "https://esm.sh/stripe@14.21.0?target=deno";
@@ -166,6 +168,35 @@ Deno.serve(async (req) => {
       });
       await ledgerRecord(event.type, ridePassengerId, piId, dsp.amount, dsp.currency, {
         dispute_id: dsp.id,
+      });
+    } else if (event.type === "account.updated") {
+      const acct = event.data.object as Stripe.Account;
+      const ready = acct.charges_enabled === true && acct.payouts_enabled === true;
+      let userId = typeof acct.metadata?.poolyn_user_id === "string" ? acct.metadata.poolyn_user_id.trim() : "";
+      if (!userId) {
+        const { data: urow } = await serviceClient
+          .from("users")
+          .select("id")
+          .eq("stripe_connect_account_id", acct.id)
+          .maybeSingle();
+        userId = (urow?.id as string | undefined) ?? "";
+      }
+      if (userId) {
+        const { error: acctErr } = await serviceClient.rpc("poolyn_set_user_stripe_connect_account", {
+          p_user_id: userId,
+          p_stripe_connect_account_id: acct.id,
+          p_onboarding_complete: ready,
+        });
+        if (acctErr) {
+          console.error("poolyn_set_user_stripe_connect_account (account.updated)", acctErr.message);
+        }
+      }
+      await ledgerRecord(event.type, null, null, 0, (acct.default_currency ?? "usd").toLowerCase(), {
+        stripe_account_id: acct.id,
+        charges_enabled: acct.charges_enabled,
+        payouts_enabled: acct.payouts_enabled,
+        details_submitted: acct.details_submitted,
+        poolyn_user_id: userId || null,
       });
     } else if (event.type === "payout.paid" || event.type === "payout.failed") {
       const po = event.data.object as Stripe.Payout;

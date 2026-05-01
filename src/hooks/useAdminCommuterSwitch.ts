@@ -10,9 +10,6 @@ export function useAdminCommuterSwitch() {
   return useCallback(() => {
     if (!profile?.onboarding_completed) {
       startCommuterSetupFromAdmin();
-      // Use group root (not .../index) so web matches the same route as NavigationGuard / join-org.
-      router.push("/(onboarding)/");
-      return;
     }
     router.push("/(tabs)/home");
   }, [profile?.onboarding_completed, router, startCommuterSetupFromAdmin]);

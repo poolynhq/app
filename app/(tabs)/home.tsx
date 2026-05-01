@@ -53,6 +53,8 @@ import { canViewerActAsPassenger } from "@/lib/commuteMatching";
 import { useUnreadNotificationCount } from "@/hooks/useUnreadNotificationCount";
 import { resolveAvatarDisplayUrl } from "@/lib/avatarStorage";
 import { getOrganisationLogoPublicUrl } from "@/lib/orgLogo";
+import { shouldPromptForWorkplacePin } from "@/lib/workplaceRoutingGate";
+import { useOrgAffiliations } from "@/hooks/useOrgAffiliations";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -98,7 +100,7 @@ function ProfileCompletion({
   return (
     <View style={pStyles.card}>
       <View style={pStyles.header}>
-        <Text style={pStyles.title}>Complete your profile</Text>
+        <Text style={pStyles.title}>Build your profile</Text>
         <Text style={pStyles.pct}>{pct}%</Text>
       </View>
       <View style={pStyles.bar}>
@@ -254,21 +256,30 @@ export default function Dashboard() {
   const [miniTourVisible, setMiniTourVisible] = useState(false);
   const [commuteRouteReady, setCommuteRouteReady] = useState(false);
   const [routePeopleModalOpen, setRoutePeopleModalOpen] = useState(false);
-  const [workplaceNetworkModal, setWorkplaceNetworkModal] = useState<"enterprise" | "community" | null>(null);
+  const [networkDetailOrg, setNetworkDetailOrg] = useState<Organisation | null>(null);
 
   const { unreadCount, refreshUnreadCount } = useUnreadNotificationCount(profile?.id ?? null);
+
+  const { affiliations, reloadAffiliations } = useOrgAffiliations(profile?.id);
 
   useFocusEffect(
     useCallback(() => {
       void refreshProfile();
       void refreshUnreadCount();
-    }, [refreshProfile, refreshUnreadCount])
+      void reloadAffiliations();
+    }, [refreshProfile, refreshUnreadCount, reloadAffiliations])
   );
 
-  const [org, setOrg] = useState<Organisation | null>(null);
-  const [orgMemberCount, setOrgMemberCount] = useState(0);
-
   const firstName = profile?.full_name?.split(" ")[0] ?? "there";
+  const commutePinsReady = useMemo(
+    () =>
+      Boolean(
+        profile &&
+          parseGeoPoint(profile.home_location as unknown) &&
+          parseGeoPoint(profile.work_location as unknown)
+      ),
+    [profile]
+  );
   const heroAvatarUri = resolveAvatarDisplayUrl(profile?.avatar_url);
   const showPostRequest = activeMode === "passenger";
   const passengerPickupEnabled = !!profile?.id && canViewerActAsPassenger(profile);
@@ -293,29 +304,19 @@ export default function Dashboard() {
     }
   }
 
-  useEffect(() => {
-    async function loadOrgContext() {
-      if (!profile?.org_id) {
-        setOrg(null);
-        setOrgMemberCount(0);
-        return;
-      }
-
-      const [orgRes, memberRes] = await Promise.all([
-        supabase.from("organisations").select("*").eq("id", profile.org_id).single(),
-        supabase
-          .from("users")
-          .select("id", { count: "exact", head: true })
-          .eq("org_id", profile.org_id),
-      ]);
-      setOrg(orgRes.data ?? null);
-      setOrgMemberCount(memberRes.count ?? 0);
+  const primaryAffiliation = useMemo(() => {
+    if (!affiliations.length) return null;
+    if (profile?.org_id) {
+      const match = affiliations.find((a) => a.organisationId === profile.org_id);
+      if (match) return match;
     }
+    return affiliations[0] ?? null;
+  }, [affiliations, profile?.org_id]);
 
-    loadOrgContext();
-  }, [profile?.org_id]);
+  const org = primaryAffiliation?.org ?? null;
+  const orgMemberCount = primaryAffiliation?.memberCount ?? 0;
 
-  const hasOrg = !!profile?.org_id && !!org;
+  const hasOrg = affiliations.length > 0;
   const isEnterpriseOrg = org?.org_type === "enterprise";
   const isCommunityOrg = hasOrg && !isEnterpriseOrg;
 
@@ -347,8 +348,6 @@ export default function Dashboard() {
   }, [scrollToParamNorm, router]);
 
   const orgAllowsOpenLane = org?.allow_cross_org === true;
-
-  const orgLogoPublicUrl = getOrganisationLogoPublicUrl(org);
 
   function showExplorerInfo() {
     showAlert(
@@ -419,7 +418,7 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    if (!profile?.onboarding_completed) return;
+    if (!commutePinsReady) return;
     let cancelled = false;
     void AsyncStorage.getItem(POOLYN_MINI_TOUR_DONE_KEY).then((v) => {
       if (!cancelled && !v) setMiniTourVisible(true);
@@ -427,7 +426,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [profile?.onboarding_completed]);
+  }, [commutePinsReady]);
 
   return (
     <View style={styles.safe}>
@@ -571,33 +570,75 @@ export default function Dashboard() {
                   </View>
                 </Pressable>
               ) : (
-                <Pressable
-                  style={({ pressed }) => [styles.heroLogoPressable, pressed && styles.heroLogoPressablePressed]}
-                  onPress={() => {
-                    if (!org) return;
-                    setWorkplaceNetworkModal(isEnterpriseOrg ? "enterprise" : "community");
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel={isEnterpriseOrg ? "Workplace details" : "Network details"}
-                >
-                  <View style={styles.heroOrgLogoWrap}>
-                    {orgLogoPublicUrl ? (
-                      <Image source={{ uri: orgLogoPublicUrl }} style={styles.heroOrgLogo} />
-                    ) : isEnterpriseOrg ? (
-                      <View style={styles.heroOrgLogoPlaceholder}>
-                        <Ionicons name="business" size={22} color={Colors.primaryDark} />
-                      </View>
-                    ) : (
-                      <View style={[styles.heroOrgLogoPlaceholder, styles.heroOrgLogoPlaceholderCommunity]}>
-                        <Ionicons name="people-outline" size={22} color={Colors.info} />
-                      </View>
-                    )}
-                  </View>
-                </Pressable>
+                <View style={styles.heroOrgLogosRow}>
+                  {affiliations.map((a) => {
+                    const n = affiliations.length;
+                    const wrapStyle =
+                      n === 1
+                        ? styles.heroOrgLogoWrap
+                        : n === 2
+                          ? styles.heroOrgLogoWrapDuo
+                          : styles.heroOrgLogoWrapTrio;
+                    const aEnterprise = a.org.org_type === "enterprise";
+                    return (
+                      <Pressable
+                        key={a.organisationId}
+                        style={({ pressed }) => [
+                          styles.heroLogoPressable,
+                          pressed && styles.heroLogoPressablePressed,
+                        ]}
+                        onPress={() => setNetworkDetailOrg(a.org)}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          aEnterprise ? "Workplace details for " + (a.org.name ?? "") : "Network details"
+                        }
+                      >
+                        <View style={wrapStyle}>
+                          {a.logoPublicUrl ? (
+                            <Image source={{ uri: a.logoPublicUrl }} style={styles.heroOrgLogo} />
+                          ) : aEnterprise ? (
+                            <View style={styles.heroOrgLogoPlaceholder}>
+                              <Ionicons name="business" size={22} color={Colors.primaryDark} />
+                            </View>
+                          ) : (
+                            <View
+                              style={[
+                                styles.heroOrgLogoPlaceholder,
+                                styles.heroOrgLogoPlaceholderCommunity,
+                              ]}
+                            >
+                              <Ionicons name="people-outline" size={22} color={Colors.info} />
+                            </View>
+                          )}
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
               )}
             </View>
           </View>
         </LinearGradient>
+
+        {profile && shouldPromptForWorkplacePin(profile) ? (
+          <View style={styles.workplaceBanner}>
+            <Ionicons name="business-outline" size={22} color={Colors.primaryDark} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.workplaceBannerTitle}>Add your workplace</Text>
+              <Text style={styles.workplaceBannerBody}>
+                With home, sets your main route and alternates.                 Not shown for verified company members when your workplace is already on file.
+              </Text>
+              <TouchableOpacity
+                onPress={() => router.push("/(tabs)/profile/commute-locations?focus=work")}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Add workplace for routing"
+              >
+                <Text style={styles.workplaceBannerLink}>Set workplace</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
 
         {passengerPickupEnabled && pickupState.pending ? (
           <View style={styles.pickupBanner}>
@@ -648,7 +689,7 @@ export default function Dashboard() {
           </View>
         ) : null}
 
-        {profile?.onboarding_completed && profile.home_location && profile.work_location ? (
+        {commutePinsReady ? (
           <TouchableOpacity
             style={styles.searchRouteHeroBtn}
             activeOpacity={0.88}
@@ -660,7 +701,19 @@ export default function Dashboard() {
             <Text style={styles.searchRouteHeroBtnText}>Who’s on my route?</Text>
             <Ionicons name="chevron-forward" size={20} color={Colors.textOnPrimary} />
           </TouchableOpacity>
-        ) : null}
+        ) : (
+          <TouchableOpacity
+            style={styles.searchRouteHeroBtnMuted}
+            activeOpacity={0.88}
+            onPress={() => router.push("/(tabs)/profile/commute-locations")}
+            accessibilityRole="button"
+            accessibilityLabel="Set home and work to find people on your route"
+          >
+            <Ionicons name="location-outline" size={22} color={Colors.textSecondary} />
+            <Text style={styles.searchRouteHeroBtnMutedText}>Set home and work to find people on your route</Text>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textTertiary} />
+          </TouchableOpacity>
+        )}
 
         {profile ? (
           <View style={styles.poolynProgramToggleWrap}>
@@ -735,44 +788,70 @@ export default function Dashboard() {
           }}
         >
           {profile != null && profile.id ? (
-            <View style={styles.routineUnifiedShell}>
-              <View style={styles.routineUnifiedHeader}>
-                <Text style={styles.routineUnifiedEyebrow}>ROUTINE POOLYN</Text>
-                <Text style={styles.routineUnifiedTitle}>Your regular commute</Text>
-              </View>
-              <CommuteRouteChoicePanel
-                omitOuterCard
-                userId={profile.id}
-                profile={{
-                  home_location: profile.home_location,
-                  work_location: profile.work_location,
-                }}
-                onRouteReadyChange={setCommuteRouteReady}
-                onEditCommutePins={() => router.push("/(tabs)/profile/commute-locations")}
-              />
-              <View style={styles.routineUnifiedDivider} />
-              <View style={styles.routineUnifiedCrewBlock}>
-                <Text style={styles.routineUnifiedEyebrowCrew}>ROUTINE COMMUTE</Text>
-                <Text style={styles.routineUnifiedSubtitle}>Crewmates or the wider pool</Text>
-                <RoutinePoolynCrewMingleBlock
-                  profile={profile}
-                  orgId={profile.org_id}
-                  setVisibilityMode={setVisibilityMode}
-                  commuteRouteReady={commuteRouteReady}
-                  minglePassengerPickup={
-                    passengerPickupEnabled && showPostRequest
-                      ? {
-                          hasPendingRequest: !!pickupState.pending,
-                          onOpenPostRequest: () => setPostRequestOpen(true),
-                        }
-                      : undefined
-                  }
-                  onCrewCreated={() => {
-                    void refreshProfile();
+            commutePinsReady ? (
+              <View style={styles.routineUnifiedShell}>
+                <View style={styles.routineUnifiedHeader}>
+                  <Text style={styles.routineUnifiedEyebrow}>ROUTINE POOLYN</Text>
+                  <Text style={styles.routineUnifiedTitle}>Your regular commute</Text>
+                </View>
+                <CommuteRouteChoicePanel
+                  omitOuterCard
+                  userId={profile.id}
+                  profile={{
+                    home_location: profile.home_location,
+                    work_location: profile.work_location,
                   }}
+                  onRouteReadyChange={setCommuteRouteReady}
+                  onEditCommutePins={() => router.push("/(tabs)/profile/commute-locations")}
                 />
+                <View style={styles.routineUnifiedDivider} />
+                <View style={styles.routineUnifiedCrewBlock}>
+                  <Text style={styles.routineUnifiedEyebrowCrew}>ROUTINE COMMUTE</Text>
+                  <Text style={styles.routineUnifiedSubtitle}>Crewmates or the wider pool</Text>
+                  <RoutinePoolynCrewMingleBlock
+                    profile={profile}
+                    orgId={profile.org_id}
+                    setVisibilityMode={setVisibilityMode}
+                    commuteRouteReady={commuteRouteReady}
+                    minglePassengerPickup={
+                      passengerPickupEnabled && showPostRequest
+                        ? {
+                            hasPendingRequest: !!pickupState.pending,
+                            onOpenPostRequest: () => setPostRequestOpen(true),
+                          }
+                        : undefined
+                    }
+                    onCrewCreated={() => {
+                      void refreshProfile();
+                    }}
+                  />
+                </View>
               </View>
-            </View>
+            ) : (
+              <View style={styles.exploreRoutineCard}>
+                <Text style={styles.exploreRoutineEyebrow}>EXPLORE</Text>
+                <Text style={styles.exploreRoutineTitle}>Your regular commute</Text>
+                <Text style={styles.exploreRoutineBody}>
+                  Save home and work when you want corridor matches. You can still join dated trips below.
+                </Text>
+                <TouchableOpacity
+                  style={styles.exploreRoutinePrimary}
+                  onPress={() => router.push("/(tabs)/profile/commute-locations?focus=work")}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="location-outline" size={20} color={Colors.textOnPrimary} />
+                  <Text style={styles.exploreRoutinePrimaryText}>Set your commute</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.exploreRoutineSecondary}
+                  onPress={() => router.push("/(tabs)/profile/driver-setup")}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="car-outline" size={20} color={Colors.primary} />
+                  <Text style={styles.exploreRoutineSecondaryText}>Start driving</Text>
+                </TouchableOpacity>
+              </View>
+            )
           ) : null}
         </View>
         ) : (
@@ -789,10 +868,10 @@ export default function Dashboard() {
                 if (!profile?.id) return;
                 const ok = await hasAdhocPostingVehicle(profile.id);
                 if (!ok) {
-                  showAlert(
-                    "Add a vehicle first",
-                    "Add an active vehicle with at least two total seats under Profile before posting a trip."
-                  );
+                  showAlert("Driver profile needed", "Add a vehicle with at least two seats to host a dated trip.", [
+                    { text: "Not now", style: "cancel" },
+                    { text: "Start driving", onPress: () => router.push("/(tabs)/profile/driver-setup") },
+                  ]);
                   return;
                 }
                 router.push("/(tabs)/rides/post-dated-trip");
@@ -1004,17 +1083,25 @@ export default function Dashboard() {
         visible={routePeopleModalOpen}
         onClose={() => setRoutePeopleModalOpen(false)}
         orgAllowsOpenLane={orgAllowsOpenLane}
-        viewerHasOrg={Boolean(profile?.org_id)}
+        viewerHasOrg={affiliations.length > 0}
       />
 
       <WorkplaceNetworkDetailsModal
-        visible={workplaceNetworkModal !== null}
-        onClose={() => setWorkplaceNetworkModal(null)}
-        variant={workplaceNetworkModal === "community" ? "community" : "enterprise"}
-        org={org}
-        orgMemberCount={orgMemberCount}
-        planLabel={orgPlanLabel}
-        logoPublicUrl={orgLogoPublicUrl}
+        visible={networkDetailOrg !== null}
+        onClose={() => setNetworkDetailOrg(null)}
+        variant={networkDetailOrg?.org_type === "enterprise" ? "enterprise" : "community"}
+        org={networkDetailOrg}
+        orgMemberCount={
+          networkDetailOrg
+            ? affiliations.find((a) => a.organisationId === networkDetailOrg.id)?.memberCount ?? orgMemberCount
+            : orgMemberCount
+        }
+        planLabel={
+          networkDetailOrg
+            ? ORG_PLAN_LABELS[networkDetailOrg.plan ?? "free"] ?? String(networkDetailOrg.plan ?? "")
+            : orgPlanLabel
+        }
+        logoPublicUrl={networkDetailOrg ? getOrganisationLogoPublicUrl(networkDetailOrg) : null}
       />
     </View>
   );
@@ -1132,6 +1219,35 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: Spacing["5xl"],
   },
+  workplaceBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.md,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+    padding: Spacing.md,
+    backgroundColor: Colors.primaryLight,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  workplaceBannerTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginBottom: 4,
+  },
+  workplaceBannerBody: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    marginBottom: Spacing.sm,
+  },
+  workplaceBannerLink: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primary,
+  },
   pickupBanner: {
     marginHorizontal: 0,
     marginBottom: Spacing.lg,
@@ -1211,6 +1327,86 @@ const styles = StyleSheet.create({
     color: Colors.textOnPrimary,
     textAlign: "center",
     flexShrink: 1,
+  },
+  searchRouteHeroBtnMuted: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    marginBottom: Spacing.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  searchRouteHeroBtnMutedText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    flex: 1,
+    flexShrink: 1,
+  },
+  exploreRoutineCard: {
+    marginBottom: Spacing.lg,
+    padding: Spacing.lg,
+    borderRadius: BorderRadius.xl,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  exploreRoutineEyebrow: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
+    color: Colors.textTertiary,
+    marginBottom: Spacing.xs,
+  },
+  exploreRoutineTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.text,
+    marginBottom: Spacing.sm,
+  },
+  exploreRoutineBody: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+    marginBottom: Spacing.md,
+  },
+  exploreRoutinePrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    marginBottom: Spacing.sm,
+  },
+  exploreRoutinePrimaryText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textOnPrimary,
+  },
+  exploreRoutineSecondary: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  exploreRoutineSecondaryText: {
+    fontSize: FontSize.base,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primary,
   },
   poolynProgramToggleWrap: {
     marginBottom: Spacing.lg,
@@ -1622,10 +1818,36 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  heroOrgLogosRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 6,
+    flexShrink: 0,
+    maxWidth: 168,
+  },
   heroOrgLogoWrap: {
     width: 48,
     height: 48,
     borderRadius: BorderRadius.md,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+    backgroundColor: Colors.surface,
+  },
+  heroOrgLogoWrapDuo: {
+    width: 38,
+    height: 38,
+    borderRadius: BorderRadius.md,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+    backgroundColor: Colors.surface,
+  },
+  heroOrgLogoWrapTrio: {
+    width: 30,
+    height: 30,
+    borderRadius: BorderRadius.sm,
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.08)",

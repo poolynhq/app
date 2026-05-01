@@ -42,12 +42,13 @@ const webSatShadow =
     ? ({ boxShadow: `0 6px 20px ${leafRgba(0.2)}` } as object)
     : {};
 
-/** Quadrants: dice TL, chat TR, music BL, game BR (matches left column). */
+/** Quadrants: people TL, chat TR, music BL, game BR (matches community cards). */
 const SATELLITES: {
   angle: number;
   icon: keyof typeof Ionicons.glyphMap;
+  color?: string;
 }[] = [
-  { angle: (-3 * Math.PI) / 4, icon: "dice-outline" },
+  { angle: (-3 * Math.PI) / 4, icon: "people-outline" },
   { angle: -Math.PI / 4, icon: "chatbubbles-outline" },
   { angle: (3 * Math.PI) / 4, icon: "musical-notes-outline" },
   { angle: Math.PI / 4, icon: "game-controller-outline" },
@@ -133,8 +134,8 @@ function PulseRing({
 }
 
 /**
- * Recognizable car (Ionicons) on a wide horizontal pill, not a tall bus block.
- * Three person glyphs overlap the roof line so it reads as a full carpool.
+ * Carpool car with riders visible above the roofline and a dashed route below.
+ * The route dots pulse with the car bob to suggest movement.
  */
 function CarpoolCarIllustration({
   headWiggleStyle,
@@ -146,12 +147,22 @@ function CarpoolCarIllustration({
       <View style={carPool.pill}>
         <View style={carPool.stack}>
           <Animated.View style={[carPool.riders, headWiggleStyle]}>
-            <Ionicons name="person" size={13} color="rgba(255,255,255,0.94)" />
-            <Ionicons name="person" size={13} color="rgba(255,255,255,0.94)" />
-            <Ionicons name="person" size={13} color="rgba(255,255,255,0.94)" />
+            <Ionicons name="person" size={12} color={Landing.orange} />
+            <Ionicons name="person" size={14} color="rgba(255,255,255,0.98)" />
+            <Ionicons name="person" size={12} color="rgba(255,255,255,0.75)" />
           </Animated.View>
           <Ionicons name="car-sport" size={56} color={Landing.white} />
         </View>
+      </View>
+      {/* Route dots beneath the car */}
+      <View style={carPool.routeRow}>
+        {[0, 1, 2, 3, 4].map((i) => (
+          <View
+            key={i}
+            style={[carPool.routeDot, { opacity: 0.3 + i * 0.14 }]}
+          />
+        ))}
+        <Ionicons name="location" size={12} color={Landing.orange} />
       </View>
     </View>
   );
@@ -162,52 +173,34 @@ function SatelliteNode({
   top,
   icon,
   phase,
-  spin,
+  accent,
 }: {
   left: number;
   top: number;
   icon: keyof typeof Ionicons.glyphMap;
   phase: number;
-  spin: boolean;
+  accent?: boolean;
 }) {
   const bob = useSharedValue(0);
-  const rotation = useSharedValue(0);
   useEffect(() => {
     bob.value = withDelay(
       phase,
       withRepeat(
         withSequence(
-          withTiming(1, {
-            duration: 1100,
-            easing: Easing.inOut(Easing.sin),
-          }),
-          withTiming(0, {
-            duration: 1100,
-            easing: Easing.inOut(Easing.sin),
-          })
+          withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.sin) }),
+          withTiming(0, { duration: 1200, easing: Easing.inOut(Easing.sin) })
         ),
         -1,
         false
       )
     );
-    if (spin) {
-      rotation.value = withRepeat(
-        withTiming(360, { duration: 12000, easing: Easing.linear }),
-        -1,
-        false
-      );
-    }
-  }, [bob, phase, rotation, spin]);
+  }, [bob, phase]);
 
   const wrapStyle = useAnimatedStyle(() => ({
     transform: [
-      { translateY: interpolate(bob.value, [0, 1], [0, -5]) },
-      { scale: interpolate(bob.value, [0, 1], [1, 1.05]) },
+      { translateY: interpolate(bob.value, [0, 1], [0, -6]) },
+      { scale: interpolate(bob.value, [0, 1], [1, 1.06]) },
     ],
-  }));
-
-  const iconStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${rotation.value}deg` }],
   }));
 
   return (
@@ -218,15 +211,13 @@ function SatelliteNode({
         wrapStyle,
       ]}
     >
-      <View style={styles.satGlow} />
-      <View style={styles.satCircle}>
-        {spin ? (
-          <Animated.View style={iconStyle}>
-            <Ionicons name={icon} size={22} color={Landing.forest} />
-          </Animated.View>
-        ) : (
-          <Ionicons name={icon} size={22} color={Landing.forest} />
-        )}
+      <View style={[styles.satGlow, accent && styles.satGlowAccent]} />
+      <View style={[styles.satCircle, accent && styles.satCircleAccent]}>
+        <Ionicons
+          name={icon}
+          size={22}
+          color={accent ? Landing.orange : Landing.forest}
+        />
       </View>
     </Animated.View>
   );
@@ -339,14 +330,14 @@ export function CommunityHubAnimation({
                 left={sx}
                 top={sy}
                 icon={s.icon}
-                phase={i * 220}
-                spin={s.icon === "dice-outline"}
+                phase={i * 260}
+                accent={s.icon === "musical-notes-outline"}
               />
             );
           })}
 
           <Animated.View
-            style={[styles.carCluster, { left: cx - 76, top: cy - 42 }, carStyle]}
+            style={[styles.carCluster, { left: cx - 80, top: cy - 50 }, carStyle]}
           >
             <CarpoolCarIllustration headWiggleStyle={headStyle} />
           </Animated.View>
@@ -386,7 +377,10 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     borderRadius: NODE / 2,
     backgroundColor: leafRgba(0.12),
-    transform: [{ scale: 1.15 }],
+    transform: [{ scale: 1.18 }],
+  },
+  satGlowAccent: {
+    backgroundColor: "rgba(255, 140, 50, 0.12)",
   },
   satCircle: {
     width: NODE - 6,
@@ -399,10 +393,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     ...webSatShadow,
   },
+  satCircleAccent: {
+    backgroundColor: "rgba(255, 250, 240, 1)",
+    borderColor: "rgba(255, 140, 50, 0.35)",
+  },
   carCluster: {
     position: "absolute",
-    width: 152,
-    height: 88,
+    width: 160,
+    height: 110,
     zIndex: 5,
     alignItems: "center",
     justifyContent: "center",
@@ -416,9 +414,9 @@ const carPool = StyleSheet.create({
     overflow: "visible",
   },
   pill: {
-    width: 152,
-    height: 80,
-    borderRadius: 40,
+    width: 156,
+    height: 82,
+    borderRadius: 41,
     backgroundColor: Landing.forest,
     alignItems: "center",
     justifyContent: "center",
@@ -431,9 +429,22 @@ const carPool = StyleSheet.create({
   },
   riders: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+    alignItems: "flex-end",
+    gap: 5,
     marginBottom: -14,
     zIndex: 2,
+  },
+  routeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 7,
+    paddingHorizontal: 4,
+  },
+  routeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: Landing.leaf,
   },
 });

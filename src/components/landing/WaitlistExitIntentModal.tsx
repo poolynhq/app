@@ -183,14 +183,14 @@ export function WaitlistExitIntentModal({
             </Animated.View>
           </View>
 
-          <Text style={styles.title}>Reserve your spot for smarter commuting</Text>
+          <Text style={styles.title}>Your route is filling up. Don&apos;t miss your spot.</Text>
           <Text style={styles.body}>
-            Be the <Text style={styles.bodyEm}>first</Text> on your route. Join the waitlist with
+            Be the <Text style={styles.bodyEm}>first</Text> on your route. Reserve your spot with
             your work email so we can match you when your corridor goes live.
           </Text>
-          <Text style={styles.body}>Takes under a minute. You can leave anytime.</Text>
+          <Text style={styles.body}>Takes under a minute. No spam, ever.</Text>
           <Pressable style={styles.primaryBtn} onPress={join}>
-            <Text style={styles.primaryBtnText}>Join the waitlist</Text>
+            <Text style={styles.primaryBtnText}>Claim my spot</Text>
             <Ionicons name="arrow-forward" size={18} color={Landing.white} />
           </Pressable>
           <Pressable onPress={close} style={styles.secondaryBtn}>

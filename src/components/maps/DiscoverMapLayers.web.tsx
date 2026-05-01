@@ -23,6 +23,15 @@ import {
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
+type DiscoverDemandLayerMode = "heatmap" | "circles";
+
+type DiscoverMapWebMessage = {
+  type?: string;
+  user_id?: string;
+  full_name?: string;
+  org_name?: string;
+};
+
 type MapLayerBundle = {
   demandGeoJson: GeoJSON.FeatureCollection;
   supplyGeoJson: GeoJSON.FeatureCollection;
@@ -31,14 +40,20 @@ type MapLayerBundle = {
   viewerMyRoutesGeoJson: GeoJSON.FeatureCollection;
   fallbackCenter: [number, number];
   layerEmphasis: MapLayerEmphasis;
+  demandLayerMode: DiscoverDemandLayerMode;
 };
 
 function applyLayerEmphasis(map: any, e: MapLayerEmphasis) {
-  if (!map.getLayer("demand-heat")) return;
   const heatO = e === "demand" ? 0.92 : e === "supply" ? 0.38 : 0.72;
   const supplyDotO = e === "supply" ? 0.94 : e === "demand" ? 0.52 : 0.88;
   const clusterO = e === "supply" ? 0.9 : e === "demand" ? 0.58 : 0.82;
-  map.setPaintProperty("demand-heat", "heatmap-opacity", heatO);
+  if (map.getLayer("demand-heat")) {
+    map.setPaintProperty("demand-heat", "heatmap-opacity", heatO);
+  }
+  if (map.getLayer("demand-circles")) {
+    const cO = e === "demand" ? 0.92 : e === "supply" ? 0.42 : 0.72;
+    map.setPaintProperty("demand-circles", "circle-opacity", cO);
+  }
   map.setPaintProperty("supply-circles", "circle-opacity", supplyDotO);
   map.setPaintProperty("supply-clusters", "circle-opacity", clusterO);
 }
@@ -56,8 +71,10 @@ interface DiscoverMapLayersProps {
   fallbackCenter?: [number, number];
   remoteLoading?: boolean;
   onViewerRouteAlternateTap?: (routeKey: string) => void;
+  onMapWebViewMessage?: (msg: DiscoverMapWebMessage) => void;
   /** Shorter empty-state copy so the map stays readable (e.g. Home Mingle). */
   compactMapChrome?: boolean;
+  demandLayerMode?: DiscoverDemandLayerMode;
 }
 
 const ML_CSS_ID = "maplibre-css-discover";
@@ -153,12 +170,16 @@ export function DiscoverMapLayers({
   fallbackCenter = DEFAULT_CENTER,
   remoteLoading = false,
   onViewerRouteAlternateTap,
+  onMapWebViewMessage,
   compactMapChrome = false,
+  demandLayerMode = "heatmap",
 }: DiscoverMapLayersProps) {
   const containerRef = useRef<any>(null);
   const mapRef = useRef<any>(null);
   const routeTapRef = useRef(onViewerRouteAlternateTap);
   routeTapRef.current = onViewerRouteAlternateTap;
+  const demandTapRef = useRef(onMapWebViewMessage);
+  demandTapRef.current = onMapWebViewMessage;
   const latestRef = useRef<MapLayerBundle>({
     demandGeoJson,
     supplyGeoJson,
@@ -167,6 +188,7 @@ export function DiscoverMapLayers({
     viewerMyRoutesGeoJson,
     fallbackCenter,
     layerEmphasis,
+    demandLayerMode,
   });
   latestRef.current = {
     demandGeoJson,
@@ -176,6 +198,7 @@ export function DiscoverMapLayers({
     viewerMyRoutesGeoJson,
     fallbackCenter,
     layerEmphasis,
+    demandLayerMode,
   };
 
   const [loading, setLoading] = useState(true);
@@ -221,26 +244,41 @@ export function DiscoverMapLayers({
 
         const p = latestRef.current;
 
-        // ── Demand heatmap (pickup origins) ─────────────────────────────────
+        // ── Demand: heatmap (discover) or circles (route people pins) ───────
         map.addSource("demand", { type: "geojson", data: p.demandGeoJson });
-        map.addLayer({
-          id: "demand-heat",
-          type: "heatmap",
-          source: "demand",
-          paint: {
-            "heatmap-intensity": 1,
-            "heatmap-radius": DISCOVER_MAP_HEATMAP_RADIUS_PX,
-            "heatmap-opacity": 0.72,
-            "heatmap-color": [
-              "interpolate", ["linear"], ["heatmap-density"],
-              0, "rgba(255,247,237,0)",
-              0.15, "rgba(254,215,170,0.45)",
-              0.4, "rgba(251,146,60,0.75)",
-              0.7, "rgba(234,88,12,0.88)",
-              1, "rgba(185,28,28,0.95)",
-            ],
-          },
-        });
+        if (p.demandLayerMode === "circles") {
+          map.addLayer({
+            id: "demand-circles",
+            type: "circle",
+            source: "demand",
+            paint: {
+              "circle-radius": 9,
+              "circle-color": "#F97316",
+              "circle-opacity": 0.92,
+              "circle-stroke-width": 2,
+              "circle-stroke-color": "#ffffff",
+            },
+          });
+        } else {
+          map.addLayer({
+            id: "demand-heat",
+            type: "heatmap",
+            source: "demand",
+            paint: {
+              "heatmap-intensity": 1,
+              "heatmap-radius": DISCOVER_MAP_HEATMAP_RADIUS_PX,
+              "heatmap-opacity": 0.72,
+              "heatmap-color": [
+                "interpolate", ["linear"], ["heatmap-density"],
+                0, "rgba(255,247,237,0)",
+                0.15, "rgba(254,215,170,0.45)",
+                0.4, "rgba(251,146,60,0.75)",
+                0.7, "rgba(234,88,12,0.88)",
+                1, "rgba(185,28,28,0.95)",
+              ],
+            },
+          });
+        }
 
         // ── Supply clusters (driver origins) ────────────────────────────────
         map.addSource("supply", {
@@ -471,6 +509,7 @@ export function DiscoverMapLayers({
     viewerMyRoutesGeoJson,
     fallbackCenter,
     layerEmphasis,
+    demandLayerMode,
   ]);
 
   useEffect(() => {
@@ -492,6 +531,45 @@ export function DiscoverMapLayers({
       }
     };
   }, [mapReady]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map?.on) return;
+    const layerId = "demand-circles";
+    if (!map.getLayer(layerId)) return;
+
+    const handler = (e: { features?: GeoJSON.Feature[] }) => {
+      const f = e.features?.[0];
+      const p = f?.properties as Record<string, unknown> | undefined;
+      const uid = p?.user_id;
+      if (uid == null || String(uid).length === 0) return;
+      demandTapRef.current?.({
+        type: "demand_circle_tap",
+        user_id: String(uid),
+        full_name: String(p?.full_name ?? ""),
+        org_name: String(p?.org_name ?? ""),
+      });
+    };
+    const onEnter = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+    const onLeave = () => {
+      map.getCanvas().style.cursor = "";
+    };
+    map.on("click", layerId, handler);
+    map.on("mouseenter", layerId, onEnter);
+    map.on("mouseleave", layerId, onLeave);
+    return () => {
+      try {
+        map.off("click", layerId, handler);
+        map.off("mouseenter", layerId, onEnter);
+        map.off("mouseleave", layerId, onLeave);
+      } catch {
+        /* noop */
+      }
+    };
+  }, [mapReady, demandLayerMode]);
 
   if (error) {
     return (

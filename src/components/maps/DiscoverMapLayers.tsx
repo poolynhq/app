@@ -28,6 +28,17 @@ import {
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
+export type DiscoverDemandLayerMode = "heatmap" | "circles";
+
+/** Parsed `postMessage` payloads from the in-map HTML (WebView). */
+export type DiscoverMapWebMessage = {
+  type?: string;
+  route_key?: string;
+  user_id?: string;
+  full_name?: string;
+  org_name?: string;
+};
+
 interface DiscoverMapLayersProps {
   demandGeoJson: GeoJSON.FeatureCollection;
   supplyGeoJson: GeoJSON.FeatureCollection;
@@ -47,10 +58,14 @@ interface DiscoverMapLayersProps {
   remoteLoading?: boolean;
   /** Tap an alternate route line (not primary) to promote it to the thick “main” style. */
   onViewerRouteAlternateTap?: (routeKey: string) => void;
+  /** Extra map events from the embedded map (e.g. demand circle taps in route-people mode). */
+  onMapWebViewMessage?: (msg: DiscoverMapWebMessage) => void;
   /**
    * Home Mingle: drop the title row and footer legend so the map stays visible; shorten in-map hints.
    */
   compactMapChrome?: boolean;
+  /** Default heatmap; use circles for exact point markers (e.g. route people list). */
+  demandLayerMode?: DiscoverDemandLayerMode;
 }
 
 const ML_JS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js";
@@ -66,7 +81,8 @@ function buildMapHtml(
   viewerRoutes: GeoJSON.FeatureCollection,
   fallbackCenter: [number, number],
   emphasis: MapLayerEmphasis,
-  compactHints: boolean
+  compactHints: boolean,
+  demandLayerMode: DiscoverDemandLayerMode
 ): string {
   const demandJson = JSON.stringify(demand);
   const supplyJson = JSON.stringify(supply);
@@ -77,6 +93,7 @@ function buildMapHtml(
   const emphJson = JSON.stringify(emphasis);
   const styleJson = JSON.stringify(DISCOVER_MAP_STYLE_URL);
   const suppressEmptyOverlay = JSON.stringify(compactHints);
+  const demandModeJson = JSON.stringify(demandLayerMode);
 
   return `<!DOCTYPE html>
 <html>
@@ -107,12 +124,19 @@ var VIEWER_PINS = ${viewerPinsJson};
 var VIEWER_ROUTES = ${viewerRoutesJson};
 var FALLBACK = ${fb};
 var EMPHASIS = ${emphJson};
+var DEMAND_MODE = ${demandModeJson};
 
 function applyLayerEmphasis(map, e) {
   var heatO = e === 'demand' ? 0.92 : e === 'supply' ? 0.38 : 0.72;
   var supplyDotO = e === 'supply' ? 0.94 : e === 'demand' ? 0.52 : 0.88;
   var clusterO = e === 'supply' ? 0.9 : e === 'demand' ? 0.58 : 0.82;
-  map.setPaintProperty('demand-heat', 'heatmap-opacity', heatO);
+  if (map.getLayer('demand-heat')) {
+    map.setPaintProperty('demand-heat', 'heatmap-opacity', heatO);
+  }
+  if (map.getLayer('demand-circles')) {
+    var cO = e === 'demand' ? 0.92 : e === 'supply' ? 0.42 : 0.72;
+    map.setPaintProperty('demand-circles', 'circle-opacity', cO);
+  }
   map.setPaintProperty('supply-circles', 'circle-opacity', supplyDotO);
   map.setPaintProperty('supply-clusters', 'circle-opacity', clusterO);
 }
@@ -146,22 +170,55 @@ var map = new maplibregl.Map({
 
 map.on('load', function () {
   map.addSource('demand', { type: 'geojson', data: DEMAND });
-  map.addLayer({
-    id: 'demand-heat', type: 'heatmap', source: 'demand',
-    paint: {
-      'heatmap-intensity': 1,
-      'heatmap-radius': ${DISCOVER_MAP_HEATMAP_RADIUS_PX},
-      'heatmap-opacity': 0.72,
-      'heatmap-color': [
-        'interpolate', ['linear'], ['heatmap-density'],
-        0,   'rgba(255,247,237,0)',
-        0.15,'rgba(254,215,170,0.45)',
-        0.4, 'rgba(251,146,60,0.75)',
-        0.7, 'rgba(234,88,12,0.88)',
-        1,   'rgba(185,28,28,0.95)'
-      ]
-    }
-  });
+  if (DEMAND_MODE === 'circles') {
+    map.addLayer({
+      id: 'demand-circles', type: 'circle', source: 'demand',
+      paint: {
+        'circle-radius': 9,
+        'circle-color': '#F97316',
+        'circle-opacity': 0.92,
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff'
+      }
+    });
+  } else {
+    map.addLayer({
+      id: 'demand-heat', type: 'heatmap', source: 'demand',
+      paint: {
+        'heatmap-intensity': 1,
+        'heatmap-radius': ${DISCOVER_MAP_HEATMAP_RADIUS_PX},
+        'heatmap-opacity': 0.72,
+        'heatmap-color': [
+          'interpolate', ['linear'], ['heatmap-density'],
+          0,   'rgba(255,247,237,0)',
+          0.15,'rgba(254,215,170,0.45)',
+          0.4, 'rgba(251,146,60,0.75)',
+          0.7, 'rgba(234,88,12,0.88)',
+          1,   'rgba(185,28,28,0.95)'
+        ]
+      }
+    });
+  }
+
+  if (DEMAND_MODE === 'circles') {
+    map.on('click', 'demand-circles', function (e) {
+      var f = e.features && e.features[0];
+      if (!f || !f.properties) return;
+      var uid = f.properties.user_id;
+      if (!uid) return;
+      var payload = JSON.stringify({
+        type: 'demand_circle_tap',
+        user_id: String(uid),
+        full_name: String(f.properties.full_name != null ? f.properties.full_name : ''),
+        org_name: String(f.properties.org_name != null ? f.properties.org_name : '')
+      });
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(payload);
+      }
+    });
+    map.on('mouseenter', 'demand-circles', function () { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'demand-circles', function () { map.getCanvas().style.cursor = ''; });
+  }
 
   map.addSource('supply', {
     type: 'geojson', data: SUPPLY,
@@ -325,7 +382,9 @@ export function DiscoverMapLayers({
   fallbackCenter = DEFAULT_CENTER,
   remoteLoading = false,
   onViewerRouteAlternateTap,
+  onMapWebViewMessage,
   compactMapChrome = false,
+  demandLayerMode = "heatmap",
 }: DiscoverMapLayersProps) {
   const html = useMemo(
     () =>
@@ -337,7 +396,8 @@ export function DiscoverMapLayers({
         viewerMyRoutesGeoJson,
         fallbackCenter,
         layerEmphasis,
-        compactMapChrome
+        compactMapChrome,
+        demandLayerMode
       ),
     [
       demandGeoJson,
@@ -348,6 +408,7 @@ export function DiscoverMapLayers({
       fallbackCenter,
       layerEmphasis,
       compactMapChrome,
+      demandLayerMode,
     ]
   );
 
@@ -361,7 +422,7 @@ export function DiscoverMapLayers({
   }, [viewerPinsGeoJson, viewerMyRoutesGeoJson]);
 
   // Do not include layerEmphasis: remounting the WebView on Driving/Riding toggle wipes layers and flickers.
-  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]},${viewerGeometryKey}`;
+  const centerKey = `${fallbackCenter[0]},${fallbackCenter[1]},${viewerGeometryKey},${demandLayerMode},d${demandGeoJson.features.length}`;
 
   const showMapHeader = !compactMapChrome;
 
@@ -401,11 +462,15 @@ export function DiscoverMapLayers({
           setSupportMultipleWindows={false}
           startInLoadingState
           onMessage={(e) => {
-            if (!onViewerRouteAlternateTap) return;
             try {
-              const msg = JSON.parse(e.nativeEvent.data) as { type?: string; route_key?: string };
-              if (msg.type === "viewer_route_tap" && msg.route_key && msg.route_key !== "primary") {
-                onViewerRouteAlternateTap(msg.route_key);
+              const msg = JSON.parse(e.nativeEvent.data) as DiscoverMapWebMessage;
+              if (msg.type === "demand_circle_tap") {
+                onMapWebViewMessage?.(msg);
+                return;
+              }
+              if (msg.type === "viewer_route_tap" && onViewerRouteAlternateTap) {
+                const rk = typeof msg.route_key === "string" ? msg.route_key : "";
+                if (rk && rk !== "primary") onViewerRouteAlternateTap(rk);
               }
             } catch {
               /* ignore */

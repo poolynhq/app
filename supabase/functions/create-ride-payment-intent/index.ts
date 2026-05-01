@@ -135,7 +135,7 @@ Deno.serve(async (req) => {
 
   const { data: driverRow } = await serviceClient
     .from("users")
-    .select("stripe_connect_account_id")
+    .select("stripe_connect_account_id, stripe_connect_onboarding_complete")
     .eq("id", driverId)
     .maybeSingle();
 
@@ -146,14 +146,26 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   const connectId = driverRow?.stripe_connect_account_id as string | null | undefined;
+  const onboardingComplete = driverRow?.stripe_connect_onboarding_complete === true;
   const allowPlatform = allowPlatformOnlyPaymentIntent();
 
   if (!connectId && !allowPlatform) {
     return json(
       {
-        error: "driver_stripe_onboarding_required",
+        error: "driver_payouts_not_ready",
         cash_to_charge_cents: cash,
-        hint: "The driver must complete Stripe Connect onboarding before card payments.",
+        hint: "The host still needs to connect their bank in Poolyn before riders can pay by card.",
+      },
+      409
+    );
+  }
+
+  if (connectId && !onboardingComplete && !allowPlatform) {
+    return json(
+      {
+        error: "driver_payouts_not_ready",
+        cash_to_charge_cents: cash,
+        hint: "The host must finish Stripe Connect onboarding before rider card payments can go through.",
       },
       409
     );

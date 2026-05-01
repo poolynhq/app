@@ -262,7 +262,7 @@ export default function AdminSettings() {
               <Text style={styles.menuLabel}>Switch to commuter view</Text>
               <Text style={styles.menuSubLabel}>
                 {!profile?.onboarding_completed
-                  ? "You will complete commuter onboarding first (vehicle, route, schedule), or finish later in Profile."
+                  ? "You can use the app right away. Add commute details in Profile when you want corridor matching."
                   : "Same account. Use the member app and pools."}
               </Text>
             </View>

@@ -7,11 +7,14 @@ import React, {
   useMemo,
 } from "react";
 import { Session, AuthError } from "@supabase/supabase-js";
+import { router } from "expo-router";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types/database";
 import { getRolePalette } from "@/constants/theme";
 import { effectiveCommuteMode, rolePaletteForProfile } from "@/lib/commuteRoleIntent";
 import { usePushNotificationsAndRideAlerts } from "@/hooks/usePushNotificationsAndRideAlerts";
+import { showAlert } from "@/lib/platformAlert";
+import { openDriverBankConnectSetup } from "@/lib/ridePassengerPayment";
 
 interface AuthState {
   session: Session | null;
@@ -280,18 +283,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const toggleMode = useCallback(
     async (mode: "driver" | "passenger") => {
-      if (!state.profile?.id) return;
-      // Optimistic update
+      const p = state.profile;
+      if (!p?.id) return;
+
+      if (mode === "passenger") {
+        setState((prev) => ({
+          ...prev,
+          profile: prev.profile ? { ...prev.profile, active_mode: "passenger" } : null,
+        }));
+        await supabase.from("users").update({ active_mode: "passenger" }).eq("id", p.id);
+        return;
+      }
+
+      if (p.role === "passenger") {
+        showAlert(
+          "Riders only",
+          "Your account is set to ride only. Change your commute role under Profile if you want to drive."
+        );
+        return;
+      }
+
+      const { data: vehicleRow } = await supabase
+        .from("vehicles")
+        .select("id")
+        .eq("user_id", p.id)
+        .eq("active", true)
+        .limit(1)
+        .maybeSingle();
+
+      if (!vehicleRow?.id) {
+        showAlert("Add a vehicle", "Save an active vehicle before using Driving mode.", [
+          {
+            text: "Continue",
+            onPress: () =>
+              router.push(p.onboarding_completed ? "/(tabs)/profile/driver-setup" : "/(onboarding)/vehicle"),
+          },
+        ]);
+        return;
+      }
+
+      if (!p.stripe_connect_onboarding_complete) {
+        showAlert(
+          "Driver verification",
+          "Finish Stripe identity and bank connection so hosted trips can accept card payments.",
+          [
+            { text: "Not now", style: "cancel" },
+            { text: "Continue", onPress: () => void openDriverBankConnectSetup() },
+          ]
+        );
+        return;
+      }
+
       setState((prev) => ({
         ...prev,
-        profile: prev.profile ? { ...prev.profile, active_mode: mode } : null,
+        profile: prev.profile ? { ...prev.profile, active_mode: "driver" } : null,
       }));
-      await supabase
-        .from("users")
-        .update({ active_mode: mode })
-        .eq("id", state.profile.id);
+      await supabase.from("users").update({ active_mode: "driver" }).eq("id", p.id);
     },
-    [state.profile?.id]
+    [state.profile]
   );
 
   return (

@@ -200,12 +200,9 @@ export default function AdminOverview() {
       const [orgRes, membersListRes, dashRes, crewSummaryRes, autoCorridorsRes] = await Promise.all([
         supabase.from("organisations").select("*").eq("id", profile.org_id).single(),
         supabase
-          .from("users")
-          .select(
-            "id, full_name, email, role, org_role, active, onboarding_completed, org_member_verified, created_at"
-          )
-          .eq("org_id", profile.org_id)
-          .order("full_name"),
+          .from("user_org_memberships")
+          .select("id")
+          .eq("organisation_id", profile.org_id),
         supabase.rpc("poolyn_org_admin_dashboard_stats", { p_org_id: profile.org_id }),
         supabase.rpc("poolyn_org_admin_crew_summary", { p_org_id: profile.org_id }),
         supabase.rpc("poolyn_org_auto_route_corridors", { p_org_id: profile.org_id }),

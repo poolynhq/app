@@ -48,6 +48,17 @@ export function summarizeActivityNotification(input: {
       return { title: "Crew trip started", body: "Your crew run started. Open Home when you are ready for pickup." };
     case "ride_contribution_updated":
       return { title: "Trip price updated", body: "Your share was recalculated (often when another rider joins)." };
+    case "corridor_intro_request":
+      return {
+        title: "Route intro request",
+        body: "Someone on your corridor wants to connect. Accept to open messages, or decline.",
+      };
+    case "corridor_intro_accepted":
+      return { title: "Intro accepted", body: "You can open the message thread from Activity or Profile." };
+    case "corridor_intro_declined":
+      return { title: "Intro declined", body: "Your route intro was not accepted this time." };
+    case "corridor_dm_message":
+      return { title: "New corridor message", body: b ? truncate(b, 160) : "Open the thread to read it." };
     default:
       return {
         title: truncate(title || "Update", 52),
@@ -77,6 +88,13 @@ export function shortActivityCta(input: {
       return "Tap: My Rides";
     case "crew_trip_driver_started":
       return "Tap: Home";
+    case "corridor_intro_request":
+      return "Use Accept or Decline";
+    case "corridor_intro_accepted":
+    case "corridor_dm_message":
+      return "Tap: open messages";
+    case "corridor_intro_declined":
+      return "Tap to dismiss";
     default:
       return "Tap to open";
   }

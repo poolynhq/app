@@ -17,6 +17,10 @@ export default function ProfileLayout() {
       }}
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="driver-setup"
+        options={{ title: "Driver profile", headerBackTitle: "Profile" }}
+      />
       <Stack.Screen name="vehicles" options={{ title: "My Vehicles" }} />
       <Stack.Screen name="schedule" options={{ title: "Schedule" }} />
       <Stack.Screen
@@ -30,6 +34,10 @@ export default function ProfileLayout() {
       <Stack.Screen name="notifications" options={{ title: "Notifications" }} />
       <Stack.Screen name="activity" options={{ title: "Activity" }} />
       <Stack.Screen
+        name="corridor-thread/[peerId]"
+        options={{ title: "Messages", headerBackTitle: "Profile" }}
+      />
+      <Stack.Screen
         name="poolyn-credits"
         options={{ title: "Poolyn Credits", headerBackTitle: "Profile" }}
       />
@@ -37,7 +45,7 @@ export default function ProfileLayout() {
         name="payment-history"
         options={{ title: "Transaction history", headerBackTitle: "Profile" }}
       />
-      <Stack.Screen name="workplace-network" options={{ title: "Workplace network" }} />
+      <Stack.Screen name="workplace-network" options={{ title: "Workplace networks" }} />
       <Stack.Screen name="crews" options={{ title: "Poolyn Crews" }} />
       <Stack.Screen name="crew-settings/[crewId]" options={{ title: "Crew settings" }} />
       <Stack.Screen name="crew-chat/[tripInstanceId]" options={{ title: "Crew chat" }} />

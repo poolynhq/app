@@ -1,5 +1,6 @@
 /**
- * Authenticated driver/host: create Stripe Connect Express account (if needed) and return Account Link URL.
+ * Authenticated user: create Stripe Connect Express account (if needed) and return Account Link URL.
+ * Call when the user is about to receive trip funds (host / driver for a paid leg), not at app signup.
  */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import Stripe from "https://esm.sh/stripe@14.21.0?target=deno";

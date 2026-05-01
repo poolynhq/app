@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import {
   View,
   Text,
@@ -9,10 +9,12 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { showAlert } from "@/lib/platformAlert";
+import { useOrgAffiliations } from "@/hooks/useOrgAffiliations";
 import {
   Colors,
   Spacing,
@@ -22,45 +24,31 @@ import {
   Shadow,
 } from "@/constants/theme";
 
-type Step = "intro" | "confirm" | "admin_block";
+type FlowStep = "list" | "intro" | "confirm" | "admin_block";
+
+type LeaveTarget = {
+  organisationId: string;
+  name: string;
+  isAdmin: boolean;
+};
 
 export default function WorkplaceNetworkScreen() {
   const router = useRouter();
   const { profile, refreshProfile } = useAuth();
-  const [step, setStep] = useState<Step>("intro");
+  const { affiliations, reloadAffiliations } = useOrgAffiliations(profile?.id);
+  const [step, setStep] = useState<FlowStep>("list");
+  const [target, setTarget] = useState<LeaveTarget | null>(null);
   const [leaving, setLeaving] = useState(false);
 
-  const isOrgAdmin = profile?.org_role === "admin";
-  const hasOrg = Boolean(profile?.org_id);
+  useFocusEffect(
+    useCallback(() => {
+      void reloadAffiliations();
+    }, [reloadAffiliations])
+  );
 
-  if (!hasOrg) {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.headerBack}
-            onPress={() => router.back()}
-            hitSlop={12}
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-          >
-            <Ionicons name="chevron-back" size={24} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.title}>Workplace network</Text>
-          <View style={{ width: 36 }} />
-        </View>
-        <View style={styles.center}>
-          <Text style={styles.body}>
-            You are not in a workplace network on Poolyn. There is nothing to leave.
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  async function runLeave() {
+  async function runLeave(orgId: string) {
     setLeaving(true);
-    const { error } = await supabase.rpc("poolyn_leave_organisation");
+    const { error } = await supabase.rpc("poolyn_leave_organisation", { p_org_id: orgId });
     setLeaving(false);
     if (error) {
       const msg = error.message ?? "";
@@ -75,19 +63,61 @@ export default function WorkplaceNetworkScreen() {
         );
         return;
       }
-      showAlert("Could not leave network", msg || "Please try again.");
+      showAlert("Could not leave organisation", msg || "Please try again.");
       return;
     }
     await refreshProfile();
+    await reloadAffiliations();
+    setTarget(null);
+    setStep("list");
     showAlert(
-      "You left the network",
-      "You are now an independent Explorer. Your points and Flex balances are unchanged."
+      "Left organisation",
+      "You have been removed from that workplace network on Poolyn."
     );
-    router.back();
   }
 
-  function goLeaveFlow() {
-    setStep("confirm");
+  function beginLeave(a: (typeof affiliations)[number]) {
+    setTarget({
+      organisationId: a.organisationId,
+      name: a.org.name ?? "this organisation",
+      isAdmin: a.membershipRole === "admin",
+    });
+    setStep(a.membershipRole === "admin" ? "admin_block" : "intro");
+  }
+
+  function resetFlow() {
+    setTarget(null);
+    setStep("list");
+  }
+
+  const headerBack = () => {
+    if (step === "list") router.back();
+    else resetFlow();
+  };
+
+  if (affiliations.length === 0) {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.headerBack}
+            onPress={() => router.back()}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <Ionicons name="chevron-back" size={24} color={Colors.text} />
+          </TouchableOpacity>
+          <Text style={styles.title}>Workplace networks</Text>
+          <View style={{ width: 36 }} />
+        </View>
+        <View style={styles.center}>
+          <Text style={styles.body}>
+            You are not in a workplace network on Poolyn. There is nothing to leave.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
   }
 
   return (
@@ -95,17 +125,14 @@ export default function WorkplaceNetworkScreen() {
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.headerBack}
-          onPress={() => {
-            if (step === "intro") router.back();
-            else setStep("intro");
-          }}
+          onPress={headerBack}
           hitSlop={12}
           accessibilityRole="button"
           accessibilityLabel="Back"
         >
           <Ionicons name="chevron-back" size={24} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.title}>Workplace network</Text>
+        <Text style={styles.title}>Workplace networks</Text>
         <View style={{ width: 36 }} />
       </View>
 
@@ -114,75 +141,89 @@ export default function WorkplaceNetworkScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {step === "intro" && (
+        {step === "list" && (
           <>
+            <Text style={styles.leadSmall}>Your organisations</Text>
+            <Text style={[styles.body, { marginBottom: Spacing.lg }]}>
+              You can belong to up to three workplace networks. Manage each one below.
+            </Text>
+            {affiliations.map((a) => (
+              <View key={a.organisationId} style={styles.orgCard}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.orgTitle}>{a.org.name ?? "Organisation"}</Text>
+                  <Text style={styles.orgMeta}>
+                    {a.org.org_type === "enterprise" ? "Workplace network" : "Community network"}
+                    {a.membershipRole === "admin" ? " · Admin" : ""}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.leaveLink}
+                  onPress={() => beginLeave(a)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={"Leave " + (a.org.name ?? "organisation")}
+                >
+                  <Text style={styles.leaveLinkText}>Leave</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </>
+        )}
+
+        {step === "intro" && target && !target.isAdmin && (
+          <>
+            <Text style={styles.lead}>Leave {target.name}?</Text>
             <View style={styles.warnCard}>
               <Ionicons name="warning-outline" size={22} color={Colors.warning} />
               <Text style={styles.warnText}>
-                Leaving removes you from your organisation on Poolyn. This affects matching priority,
-                workplace-only features, and any commuter pickup location tied to the network.
+                Leaving removes you from this organisation on Poolyn. This affects matching priority,
+                workplace-only features for that network, and pickup settings tied to it when it was
+                your only network.
               </Text>
             </View>
             <Text style={styles.sectionTitle}>What you keep</Text>
             <Text style={styles.body}>
-              Your account, points, Flex credits, and commute credits stay on your profile. You can
-              keep using Poolyn as an independent Explorer.
+              Your account, points, Flex credits, and commute credits stay on your profile.
             </Text>
-            <Text style={styles.sectionTitle}>What you lose</Text>
+            <Text style={styles.sectionTitle}>Rejoining</Text>
             <Text style={styles.body}>
-              Organisation verification, network-priority matching, and admin-granted workplace
-              benefits tied to that network. You may need a new invite to rejoin later.
+              If you leave an organisation team, you must be invited again before you can rejoin.
             </Text>
-            {isOrgAdmin ? (
-              <View style={styles.adminCard}>
-                <Ionicons name="shield-outline" size={20} color={Colors.primary} />
-                <Text style={styles.adminCardText}>
-                  You are the organisation admin. Transfer admin to a colleague first, then you can
-                  leave as a normal member.
-                </Text>
-              </View>
-            ) : null}
             <TouchableOpacity
-              style={[styles.primaryBtn, isOrgAdmin && styles.secondaryBtn]}
-              onPress={() =>
-                isOrgAdmin
-                  ? router.push("/(tabs)/profile/transfer-workplace-admin")
-                  : goLeaveFlow()
-              }
+              style={styles.primaryBtn}
+              onPress={() => setStep("confirm")}
               activeOpacity={0.85}
             >
-              <Text
-                style={[styles.primaryBtnText, isOrgAdmin && styles.secondaryBtnText]}
-              >
-                {isOrgAdmin ? "Transfer admin" : "Continue to leave network"}
-              </Text>
+              <Text style={styles.primaryBtnText}>Continue</Text>
             </TouchableOpacity>
-            {!isOrgAdmin ? (
-              <TouchableOpacity style={styles.textBtn} onPress={() => router.back()}>
-                <Text style={styles.textBtnLabel}>Cancel</Text>
-              </TouchableOpacity>
-            ) : null}
+            <TouchableOpacity style={styles.textBtn} onPress={resetFlow}>
+              <Text style={styles.textBtnLabel}>Cancel</Text>
+            </TouchableOpacity>
           </>
         )}
 
-        {step === "confirm" && (
+        {step === "confirm" && target && (
           <>
-            <Text style={styles.lead}>Are you sure?</Text>
+            <Text style={styles.lead}>Confirm</Text>
             <Text style={styles.body}>
-              You will leave your workplace network immediately and become an Explorer. This cannot
-              be undone from here without a new admin invite.
+              You will leave {target.name} immediately. This cannot be undone from here without a new
+              invite from an organisation admin.
             </Text>
             <TouchableOpacity
               style={[styles.destructiveBtn, leaving && { opacity: 0.7 }]}
               onPress={() =>
-                showAlert("Leave workplace network?", "You will lose network membership now.", [
-                  { text: "Not now", style: "cancel" },
-                  {
-                    text: "Leave network",
-                    style: "destructive",
-                    onPress: () => void runLeave(),
-                  },
-                ])
+                showAlert(
+                  "Leave this organisation?",
+                  "If you leave this organisation team, you must be invited again before you can rejoin.",
+                  [
+                    { text: "Not now", style: "cancel" },
+                    {
+                      text: "Leave organisation",
+                      style: "destructive",
+                      onPress: () => void runLeave(target.organisationId),
+                    },
+                  ]
+                )
               }
               disabled={leaving}
               activeOpacity={0.85}
@@ -190,7 +231,7 @@ export default function WorkplaceNetworkScreen() {
               {leaving ? (
                 <ActivityIndicator color={Colors.textOnPrimary} />
               ) : (
-                <Text style={styles.destructiveBtnText}>Leave network</Text>
+                <Text style={styles.destructiveBtnText}>Leave organisation</Text>
               )}
             </TouchableOpacity>
             <TouchableOpacity style={styles.textBtn} onPress={() => setStep("intro")}>
@@ -199,12 +240,12 @@ export default function WorkplaceNetworkScreen() {
           </>
         )}
 
-        {step === "admin_block" && (
+        {step === "admin_block" && target && (
           <>
             <Text style={styles.lead}>Transfer admin first</Text>
             <Text style={styles.body}>
-              Organisation admins cannot leave until someone else is the admin. Transfer admin from
-              the button below, then open this screen again to leave as a member.
+              Organisation admins cannot leave {target.name} until someone else is the admin.
+              Transfer admin from the button below, then return here to leave as a member.
             </Text>
             <TouchableOpacity
               style={styles.primaryBtn}
@@ -213,7 +254,7 @@ export default function WorkplaceNetworkScreen() {
             >
               <Text style={styles.primaryBtnText}>Open transfer admin</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.textBtn} onPress={() => setStep("intro")}>
+            <TouchableOpacity style={styles.textBtn} onPress={resetFlow}>
               <Text style={styles.textBtnLabel}>Back</Text>
             </TouchableOpacity>
           </>
@@ -236,6 +277,30 @@ const styles = StyleSheet.create({
   title: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.text },
   scroll: { paddingHorizontal: Spacing.xl, paddingBottom: Spacing["4xl"] },
   center: { flex: 1, padding: Spacing.xl, justifyContent: "center" },
+  leadSmall: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.sm,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  orgCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.md,
+    padding: Spacing.base,
+    marginBottom: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  orgTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.text },
+  orgMeta: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  leaveLink: { paddingVertical: Spacing.sm, paddingHorizontal: Spacing.sm },
+  leaveLinkText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.error },
   warnCard: {
     flexDirection: "row",
     gap: Spacing.md,
@@ -262,18 +327,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   body: { fontSize: FontSize.base, color: Colors.textSecondary, lineHeight: 22 },
-  adminCard: {
-    flexDirection: "row",
-    gap: Spacing.md,
-    alignItems: "flex-start",
-    backgroundColor: Colors.primaryLight,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
-    marginTop: Spacing.xl,
-    marginBottom: Spacing.lg,
-    ...Shadow.sm,
-  },
-  adminCardText: { flex: 1, fontSize: FontSize.sm, color: Colors.primaryDark, lineHeight: 20 },
   primaryBtn: {
     marginTop: Spacing.xl,
     backgroundColor: Colors.primary,
@@ -287,12 +340,6 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     color: Colors.textOnPrimary,
   },
-  secondaryBtn: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-  },
-  secondaryBtnText: { color: Colors.primary },
   destructiveBtn: {
     marginTop: Spacing.xl,
     backgroundColor: Colors.error,

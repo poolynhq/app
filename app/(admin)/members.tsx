@@ -209,15 +209,42 @@ export default function Members() {
       setOrgNetworkStatus((orgSnap?.status as OrganisationNetworkStatus) ?? null);
 
       const { data, error: err } = await supabase
-        .from("users")
+        .from("user_org_memberships")
         .select(
-          "id, full_name, email, role, org_role, active, onboarding_completed, org_member_verified, created_at"
+          "org_role, users!inner(id, full_name, email, role, active, onboarding_completed, org_member_verified, created_at)"
         )
-        .eq("org_id", profile.org_id)
-        .order("full_name");
+        .eq("organisation_id", profile.org_id);
 
       if (err) throw err;
-      const membersData = (data as MemberRow[]) ?? [];
+      const raw = data as {
+        org_role: OrgRole;
+        users: {
+          id: string;
+          full_name: string | null;
+          email: string;
+          role: UserRole;
+          active: boolean;
+          onboarding_completed: boolean;
+          org_member_verified: boolean;
+          created_at: string;
+        };
+      }[];
+      const membersData: MemberRow[] = (raw ?? []).map((row) => ({
+        id: row.users.id,
+        full_name: row.users.full_name,
+        email: row.users.email,
+        role: row.users.role,
+        org_role: row.org_role,
+        active: row.users.active,
+        onboarding_completed: row.users.onboarding_completed,
+        org_member_verified: row.users.org_member_verified,
+        created_at: row.users.created_at,
+      }));
+      membersData.sort((a, b) =>
+        (a.full_name ?? a.email).localeCompare(b.full_name ?? b.email, undefined, {
+          sensitivity: "base",
+        })
+      );
       setMembers(membersData);
 
       const memberIds = membersData.map((m) => m.id);

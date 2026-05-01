@@ -209,6 +209,27 @@ export interface Database {
         };
       };
 
+      user_org_memberships: {
+        Row: {
+          id: string;
+          user_id: string;
+          organisation_id: string;
+          org_role: OrgRole;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          organisation_id: string;
+          org_role?: OrgRole;
+          created_at?: string;
+        };
+        Update: {
+          org_role?: OrgRole;
+          created_at?: string;
+        };
+      };
+
       platform_super_admins: {
         Row: {
           user_id: string;
@@ -804,6 +825,8 @@ export interface Database {
           adhoc_destination_label: string | null;
           adhoc_trip_title: string | null;
           adhoc_depart_flex_days: number;
+          adhoc_toll_cents: number;
+          adhoc_parking_cents: number;
           created_at: string;
           updated_at: string;
         };
@@ -830,6 +853,8 @@ export interface Database {
           adhoc_destination_label?: string | null;
           adhoc_trip_title?: string | null;
           adhoc_depart_flex_days?: number;
+          adhoc_toll_cents?: number;
+          adhoc_parking_cents?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -848,6 +873,8 @@ export interface Database {
           adhoc_destination_label?: string | null;
           adhoc_trip_title?: string | null;
           adhoc_depart_flex_days?: number;
+          adhoc_toll_cents?: number;
+          adhoc_parking_cents?: number;
           origin_cluster?: string | null;
           destination_cluster?: string | null;
           seats_available?: number;
@@ -961,6 +988,8 @@ export interface Database {
             | "solo_driver"
             | "group_trip"
             | null;
+          trip_cost_share_breakdown: unknown;
+          payment_captured_at: string | null;
           created_at: string;
         };
         Insert: {
@@ -986,6 +1015,8 @@ export interface Database {
             | "solo_driver"
             | "group_trip"
             | null;
+          trip_cost_share_breakdown?: unknown;
+          payment_captured_at?: string | null;
           created_at?: string;
         };
         Update: {
@@ -1008,6 +1039,8 @@ export interface Database {
             | "solo_driver"
             | "group_trip"
             | null;
+          trip_cost_share_breakdown?: unknown;
+          payment_captured_at?: string | null;
         };
       };
 
@@ -1631,7 +1664,7 @@ export interface Database {
         Returns: Json;
       };
       poolyn_leave_organisation: {
-        Args: Record<string, never>;
+        Args: { p_org_id?: string | null };
         Returns: Json;
       };
       poolyn_admin_remove_org_member: {
@@ -1819,7 +1852,13 @@ export interface Database {
           p_trip_title?: string | null;
           p_depart_flex_days?: number;
           p_notes?: string | null;
+          p_toll_cents?: number | null;
+          p_parking_cents?: number | null;
         };
+        Returns: Json;
+      };
+      poolyn_driver_this_week_travel_cost_cents: {
+        Args: Record<string, never>;
         Returns: Json;
       };
       poolyn_search_adhoc_listings: {

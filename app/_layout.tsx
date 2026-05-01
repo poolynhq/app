@@ -184,7 +184,14 @@ function NavigationGuard() {
         router.replace("/(auth)/business-sign-up");
         return;
       }
-      if (!inOnboardingGroup && !inPublicGroup) router.replace("/(onboarding)/");
+      if (inAuthGroup) {
+        router.replace("/(tabs)/home");
+        return;
+      }
+      if (inOnboardingGroup && !commuterSetupFromAdmin && !onboardingLocationFromProfile) {
+        router.replace(isAdmin ? "/(admin)/" : "/(tabs)/home");
+        return;
+      }
     } else {
       if (inAuthGroup || (inOnboardingGroup && !onboardingLocationFromProfile)) {
         router.replace("/(tabs)/home");

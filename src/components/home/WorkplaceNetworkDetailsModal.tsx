@@ -57,14 +57,32 @@ export function WorkplaceNetworkDetailsModal({
     setLoadingAdmins(true);
     void (async () => {
       const { data, error } = await supabase
-        .from("users")
-        .select("full_name, email, phone_number")
-        .eq("org_id", org.id)
+        .from("user_org_memberships")
+        .select("users(full_name, email, phone_number)")
+        .eq("organisation_id", org.id)
         .eq("org_role", "admin")
-        .order("full_name", { ascending: true })
-        .limit(12);
+        .limit(24);
       if (!cancelled) {
-        setAdmins(error ? [] : (data as AdminRow[]) ?? []);
+        const rows =
+          (data as { users: AdminRow | AdminRow[] | null }[] | null | undefined) ?? [];
+        const flat: AdminRow[] = [];
+        for (const r of rows) {
+          const u = r.users;
+          if (!u) continue;
+          if (Array.isArray(u)) {
+            flat.push(...u.filter(Boolean));
+          } else {
+            flat.push(u);
+          }
+        }
+        flat.sort((a, b) =>
+          String(a.full_name ?? a.email ?? "").localeCompare(
+            String(b.full_name ?? b.email ?? ""),
+            undefined,
+            { sensitivity: "base" }
+          )
+        );
+        setAdmins(error ? [] : flat.slice(0, 12));
         setLoadingAdmins(false);
       }
     })();

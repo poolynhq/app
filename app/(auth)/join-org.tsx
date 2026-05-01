@@ -72,6 +72,10 @@ export default function JoinOrg() {
         setError(
           "This organisation's network is not active yet. Ask your admin to activate it before you can join."
         );
+      } else if (msg.toLowerCase().includes("at most three")) {
+        setError(
+          "You already belong to three organisations. Leave one from Profile, Workplace networks, before joining another."
+        );
       } else if (msg.includes("invalid") || msg.includes("not found")) {
         setError("Invalid invite code. Please check and try again.");
       } else {
@@ -104,7 +108,7 @@ export default function JoinOrg() {
           </Text>
           <TouchableOpacity
             style={styles.button}
-            onPress={() => router.replace("/(onboarding)/")}
+            onPress={() => router.replace("/(tabs)/home")}
             activeOpacity={0.8}
           >
             <Text style={styles.buttonText}>Continue to setup</Text>
@@ -137,8 +141,7 @@ export default function JoinOrg() {
 
         <Text style={styles.title}>Join Your Network</Text>
         <Text style={styles.subtitle}>
-          Enter an invite code if you have one. You can also skip this and
-          continue onboarding now.
+          Enter an invite code if you have one, or skip and go straight to the app.
         </Text>
 
         <View style={styles.inputGroup}>
@@ -187,7 +190,7 @@ export default function JoinOrg() {
 
         <TouchableOpacity
           style={styles.skipBtn}
-          onPress={() => router.replace("/(onboarding)/")}
+          onPress={() => router.replace("/(tabs)/home")}
           activeOpacity={0.7}
         >
           <Text style={styles.skipText}>Skip for now</Text>

@@ -13,7 +13,7 @@ export default function PrivacyScreen() {
           <Ionicons name="shield-checkmark-outline" size={28} color={Colors.primary} />
           <Text style={styles.summaryTitle}>Your privacy matters</Text>
           <Text style={styles.summaryBody}>
-            Poolyn is built around trust. We collect only what's necessary to connect you with
+            Poolyn is built around trust. We collect only what&apos;s necessary to connect you with
             compatible commuters, and we never sell your personal data.
           </Text>
         </View>

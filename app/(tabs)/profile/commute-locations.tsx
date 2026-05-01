@@ -9,9 +9,11 @@ import {
   ActivityIndicator,
   Image,
   Platform,
+  Modal,
+  Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Stack, useRouter } from "expo-router";
+import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import * as Location from "expo-location";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
@@ -37,7 +39,6 @@ import { canViewerActAsPassenger } from "@/lib/commuteMatching";
 import { estimateIllustrativeCommuteContributionRangeAud } from "@/lib/costModel";
 import { computeClientNetworkFeePreview } from "@/lib/passengerPaymentPreview";
 import { poolynExplorerCashFeeFraction } from "@/lib/poolynPricingConfig";
-import { openPassengerPaymentExplainer } from "@/components/home/PassengerPaymentCostLines";
 
 function distanceMeters(
   a: { lat: number; lng: number },
@@ -63,6 +64,9 @@ type LocationRowSnapshot = {
 export default function CommuteLocationsScreen() {
   const router = useRouter();
   const isFocused = useIsFocused();
+  const focusParam = useLocalSearchParams<{ focus?: string | string[] }>().focus;
+  const focusWork =
+    (Array.isArray(focusParam) ? focusParam[0] : focusParam)?.toLowerCase() === "work";
   const { profile, refreshProfile } = useAuth();
   const [savingPickup, setSavingPickup] = useState(false);
   const [locRow, setLocRow] = useState<LocationRowSnapshot | null>(null);
@@ -75,6 +79,11 @@ export default function CommuteLocationsScreen() {
   const [homeLabel, setHomeLabel] = useState<string | null>(null);
   const [workLabelGeo, setWorkLabelGeo] = useState<string | null>(null);
   const [pickupLabelGeo, setPickupLabelGeo] = useState<string | null>(null);
+
+  const [estimateExplainer, setEstimateExplainer] = useState<{
+    withNetworkFee: boolean;
+    explorerFeePct: number;
+  } | null>(null);
 
   const canRide = profile ? canViewerActAsPassenger(profile) : false;
 
@@ -276,6 +285,8 @@ export default function CommuteLocationsScreen() {
     };
   }, [costRange]);
 
+  const showIndependentTotalWithFee = Boolean(!profile?.org_id && illustrativeExplorerCash);
+
   const setPickupFromDevice = useCallback(async () => {
     if (!profile?.id) return;
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -374,9 +385,11 @@ export default function CommuteLocationsScreen() {
         {!hasCommute ? (
           <View style={styles.emptyCard}>
             <Ionicons name="map-outline" size={36} color={Colors.primary} />
-            <Text style={styles.emptyTitle}>Set your commute</Text>
+            <Text style={styles.emptyTitle}>{focusWork ? "Add your workplace" : "Set your commute"}</Text>
             <Text style={styles.emptyBody}>
-              Add your home and workplace pins so we can show your route and match you accurately.
+              {focusWork
+                ? "Save your work pin with your home so we can show your main route and alternates."
+                : "Add your home and workplace pins so we can show your route and match you accurately."}
             </Text>
             <TouchableOpacity
               style={styles.primaryBtn}
@@ -482,32 +495,38 @@ export default function CommuteLocationsScreen() {
                   {costRange ? (
                     <View style={styles.costBox}>
                       <View style={styles.costLabelRow}>
-                        <Text style={styles.costLabel}>Approx. trip share (one way)</Text>
+                        <Text style={styles.costLabel}>
+                          {showIndependentTotalWithFee
+                            ? "Approx. total (one way)"
+                            : "Approx. trip share (one way)"}
+                        </Text>
                         <TouchableOpacity
                           onPress={() =>
-                            openPassengerPaymentExplainer({
-                              hasWorkplaceNetworkOnProfile: Boolean(profile?.org_id),
-                              context: "profile_estimate",
+                            setEstimateExplainer({
+                              withNetworkFee: showIndependentTotalWithFee,
+                              explorerFeePct,
                             })
                           }
                           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                          accessibilityLabel="What this payment covers"
+                          accessibilityLabel="About this price estimate"
                         >
                           <Ionicons name="information-circle-outline" size={18} color={Colors.primaryDark} />
                         </TouchableOpacity>
                       </View>
                       <Text style={styles.costValue}>
-                        ${costRange.low} – ${costRange.high} AUD
+                        {showIndependentTotalWithFee && illustrativeExplorerCash
+                          ? `$${(illustrativeExplorerCash.totalLow / 100).toFixed(2)} – $${(illustrativeExplorerCash.totalHigh / 100).toFixed(2)} AUD`
+                          : `$${costRange.low} – $${costRange.high} AUD`}
                       </Text>
-                      {!profile?.org_id && illustrativeExplorerCash ? (
-                        <Text style={styles.costFeeNote}>
-                          {`Independent Mingle riders: + ~${explorerFeePct}% cash service fee (routing, matching, payments) → fee ~$${(illustrativeExplorerCash.feeLow / 100).toFixed(2)} – $${(illustrativeExplorerCash.feeHigh / 100).toFixed(2)} · est. total cash ~$${(illustrativeExplorerCash.totalLow / 100).toFixed(2)} – $${(illustrativeExplorerCash.totalHigh / 100).toFixed(2)}`}
+                      {showIndependentTotalWithFee ? (
+                        <Text style={[styles.costFeeNote, { marginTop: Spacing.sm }]}>
+                          {explorerFeePct}% network fee included
                         </Text>
                       ) : null}
                       <Text style={styles.costDisclaimer}>
-                        Indicative only — actual pricing depends on the trip, vehicle class, pool size, and
-                        network. Workplace members on an active Poolyn plan normally skip the explorer platform
-                        fee (confirmed when you book).
+                        {showIndependentTotalWithFee
+                          ? "Indicative only. Final amount when you book."
+                          : "Indicative only. Workplace members on an active plan often skip the explorer network fee (confirmed when you book)."}
                       </Text>
                     </View>
                   ) : null}
@@ -573,6 +592,51 @@ export default function CommuteLocationsScreen() {
         ) : null}
       </ScrollView>
     </SafeAreaView>
+
+      <Modal
+        visible={estimateExplainer != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEstimateExplainer(null)}
+      >
+        <Pressable style={styles.estimateModalBackdrop} onPress={() => setEstimateExplainer(null)}>
+          <Pressable style={styles.estimateModalCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.estimateModalTitle}>About this estimate</Text>
+            {estimateExplainer?.withNetworkFee ? (
+              <>
+                <Text style={styles.estimateModalBody}>
+                  Includes your trip share plus the {estimateExplainer.explorerFeePct}% network fee (routing,
+                  matching, secure payments).
+                </Text>
+                <Text style={styles.estimateModalBody}>
+                  Shown as if you are the only passenger. When several people share the ride, the trip share is
+                  split and what you each pay usually drops.
+                </Text>
+                <Text style={styles.estimateModalBody}>
+                  Ask your employer to create a Poolyn Network account and add you to waive the network fee.
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.estimateModalBody}>
+                  Rough one-way trip share for this distance. Shown as if you are the only passenger; when
+                  several people share the ride, each person’s share usually drops.
+                </Text>
+                <Text style={styles.estimateModalBody}>
+                  Indicative only. Final amount when you book.
+                </Text>
+              </>
+            )}
+            <TouchableOpacity
+              style={styles.estimateModalClose}
+              onPress={() => setEstimateExplainer(null)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.estimateModalCloseText}>Got it</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </>
   );
 }
@@ -753,13 +817,52 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: Colors.textSecondary,
     lineHeight: 16,
-    marginTop: Spacing.sm,
   },
   costDisclaimer: {
     fontSize: 10,
     color: Colors.textSecondary,
     lineHeight: 15,
     marginTop: Spacing.sm,
+  },
+  estimateModalBackdrop: {
+    flex: 1,
+    backgroundColor: Colors.overlay,
+    justifyContent: "center",
+    padding: Spacing.lg,
+  },
+  estimateModalCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    maxWidth: 420,
+    alignSelf: "center",
+    width: "100%",
+  },
+  estimateModalTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginBottom: Spacing.md,
+  },
+  estimateModalBody: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+    marginBottom: Spacing.md,
+  },
+  estimateModalClose: {
+    marginTop: Spacing.sm,
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    alignItems: "center",
+  },
+  estimateModalCloseText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textOnPrimary,
   },
   editBtn: {
     flexDirection: "row",

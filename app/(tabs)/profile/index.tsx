@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Platform,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
 import { showAlert } from "@/lib/platformAlert";
 import { prepareAvatarJpegBuffer, uploadUserAvatarJpeg } from "@/lib/avatarUpload";
@@ -33,6 +34,12 @@ import {
   Shadow,
 } from "@/constants/theme";
 import { ORG_PLAN_LABELS } from "@/lib/orgPlanLabels";
+import {
+  fetchDriverWeekTravelCostRecoveryCents,
+  openDriverBankConnectSetup,
+} from "@/lib/ridePassengerPayment";
+import { userTripPayoutsReady } from "@/lib/userTripPayouts";
+import { useOrgAffiliations } from "@/hooks/useOrgAffiliations";
 /* FUTURE USE: Poolyn Credits profile card
 import { PoolynCreditsCard } from "@/components/profile/PoolynCreditsCard";
 */
@@ -55,6 +62,10 @@ function phoneDigitsOnly(value: string, maxLen = 10): string {
   return value.replace(/\D/g, "").slice(0, maxLen);
 }
 
+function formatAudFromCents(cents: number): string {
+  return (cents / 100).toLocaleString(undefined, { style: "currency", currency: "AUD" });
+}
+
 export default function Profile() {
   const router = useRouter();
   const params = useLocalSearchParams<{ edit?: string | string[] }>();
@@ -74,14 +85,11 @@ export default function Profile() {
   const [phoneError, setPhoneError] = useState("");
   const [nameError, setNameError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [org, setOrg] = useState<Organisation | null>(null);
-  const [orgMemberCount, setOrgMemberCount] = useState(0);
-  const [workplaceNetworkModal, setWorkplaceNetworkModal] = useState<"enterprise" | "community" | null>(
-    null
-  );
+  const [networkDetailOrg, setNetworkDetailOrg] = useState<Organisation | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
   /** True when an organisations row exists for this email domain but user has org_id null (Explorer). */
   const [domainHasWorkplaceOrg, setDomainHasWorkplaceOrg] = useState(false);
+  const [weekTravelCostCents, setWeekTravelCostCents] = useState(0);
 
   const editParam = params.edit;
   const editFromQuery = Array.isArray(editParam) ? editParam[0] : editParam;
@@ -99,37 +107,38 @@ export default function Profile() {
     setEditSameGender(profile?.same_gender_pref ?? false);
   }, [profile]);
 
+  const { affiliations, reloadAffiliations } = useOrgAffiliations(profile?.id);
+
+  useFocusEffect(
+    useCallback(() => {
+      void reloadAffiliations();
+    }, [reloadAffiliations])
+  );
+
+  const detailOrgPlanLabel = useMemo(() => {
+    if (!networkDetailOrg) return "";
+    return ORG_PLAN_LABELS[networkDetailOrg.plan ?? "free"] ?? String(networkDetailOrg.plan ?? "");
+  }, [networkDetailOrg]);
+
   useEffect(() => {
-    async function loadOrg() {
-      if (!profile?.org_id) {
-        setOrg(null);
-        setOrgMemberCount(0);
-        return;
-      }
-      const [orgRes, memberRes] = await Promise.all([
-        supabase.from("organisations").select("*").eq("id", profile.org_id).single(),
-        supabase
-          .from("users")
-          .select("id", { count: "exact", head: true })
-          .eq("org_id", profile.org_id),
-      ]);
-      setOrg(orgRes.data ?? null);
-      setOrgMemberCount(memberRes.count ?? 0);
+    if (!profile?.id || !userTripPayoutsReady(profile)) {
+      setWeekTravelCostCents(0);
+      return;
     }
-    loadOrg();
-  }, [profile?.org_id]);
-
-  const orgPlanLabel = useMemo(() => {
-    if (!org) return "";
-    return ORG_PLAN_LABELS[org.plan ?? "free"] ?? String(org.plan ?? "");
-  }, [org]);
-
-  const orgLogoUri = getOrganisationLogoPublicUrl(org);
+    let cancelled = false;
+    void (async () => {
+      const cents = await fetchDriverWeekTravelCostRecoveryCents();
+      if (!cancelled) setWeekTravelCostCents(cents);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, profile?.stripe_connect_account_id, profile?.stripe_connect_onboarding_complete]);
 
   useEffect(() => {
     async function checkDomainOrg() {
       const domain = profile?.email ? extractDomain(profile.email) : "";
-      if (!domain || profile?.org_id) {
+      if (!domain || affiliations.length > 0) {
         setDomainHasWorkplaceOrg(false);
         return;
       }
@@ -143,7 +152,7 @@ export default function Profile() {
       setDomainHasWorkplaceOrg(data === true);
     }
     checkDomainOrg();
-  }, [profile?.org_id, profile?.email]);
+  }, [affiliations.length, profile?.email]);
 
   const initials = (profile?.full_name ?? "?")
     .split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
@@ -316,6 +325,11 @@ export default function Profile() {
       title: "SETTINGS",
       items: [
         { icon: "car-outline" as const, label: "My vehicles", route: "/(tabs)/profile/vehicles" },
+        {
+          icon: "car-sport-outline" as const,
+          label: "Driver profile",
+          route: "/(tabs)/profile/driver-setup",
+        },
         { icon: "calendar-outline" as const, label: "Schedule", route: "/(tabs)/profile/schedule" },
         {
           icon: "map-outline" as const,
@@ -339,11 +353,11 @@ export default function Profile() {
         { icon: "notifications-outline" as const, label: "Notifications", route: "/(tabs)/profile/notifications" },
         { icon: "pulse-outline" as const, label: "Activity", route: "/(tabs)/profile/activity" },
         { icon: "dice-outline" as const, label: "Poolyn Crews", route: "/(tabs)/profile/crews" },
-        ...(profile?.org_id
+        ...(affiliations.length > 0
           ? [
               {
                 icon: "business-outline" as const,
-                label: "Workplace network",
+                label: "Workplace networks",
                 route: "/(tabs)/profile/workplace-network",
               },
             ]
@@ -536,45 +550,95 @@ export default function Profile() {
           </View>
         </View>
 
-        {/* Organisation */}
-        {profile?.org_id && org ? (
+        {profile ? (
           <TouchableOpacity
-            style={styles.infoCard}
+            style={styles.payoutCard}
             activeOpacity={0.75}
-            onPress={() =>
-              setWorkplaceNetworkModal(org.org_type === "enterprise" ? "enterprise" : "community")
-            }
+            onPress={() => {
+              if (userTripPayoutsReady(profile)) {
+                showAlert(
+                  "Trip costs",
+                  "Each rider payment goes to your Stripe Connect account. Stripe sends money to your bank on a weekly schedule (for example Saturdays)."
+                );
+                return;
+              }
+              showAlert(
+                "Connect your bank",
+                "Poolyn uses Stripe Connect. We only ask for identity and bank details when you host a trip that colleagues pay by card. Riders do not go through this step.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Continue", onPress: () => void openDriverBankConnectSetup() },
+                ]
+              );
+            }}
             accessibilityRole="button"
-            accessibilityLabel="Open company details"
+            accessibilityLabel="Trip costs and Stripe Connect"
           >
-            {orgLogoUri ? (
-              <Image source={{ uri: orgLogoUri }} style={styles.orgThumbImage} />
-            ) : (
-              <View
-                style={[
-                  styles.orgThumbImage,
-                  styles.orgThumbPlaceholder,
-                  org.org_type === "enterprise" ? styles.orgThumbPlaceholderEnt : styles.orgThumbPlaceholderCom,
-                ]}
-              >
-                <Ionicons
-                  name={org.org_type === "enterprise" ? "business-outline" : "people-outline"}
-                  size={22}
-                  color={org.org_type === "enterprise" ? Colors.primary : Colors.info}
-                />
-              </View>
-            )}
+            <Ionicons name="card-outline" size={22} color={Colors.primary} />
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={styles.infoLabel}>Organisation</Text>
-              <Text style={styles.infoValue}>{org.name?.trim() || orgDomain}</Text>
-              <Text style={styles.orgSubValue}>
-                {org.org_type === "enterprise"
-                  ? "Verified organization member"
-                  : "Community network member"}
-              </Text>
+              <Text style={styles.infoLabel}>Trip costs</Text>
+              {userTripPayoutsReady(profile) ? (
+                <>
+                  <Text style={styles.travelRecoveryHead}>
+                    {"You've recovered "}
+                    {formatAudFromCents(weekTravelCostCents)}
+                    {" in travel costs this week"}
+                  </Text>
+                  <Text style={styles.infoValue}>Next transfer to your bank: Saturday</Text>
+                </>
+              ) : (
+                <Text style={styles.infoValue}>Not set up. Tap to connect your bank.</Text>
+              )}
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
           </TouchableOpacity>
+        ) : null}
+
+        {/* Organisations (up to 3 workplace networks) */}
+        {affiliations.length > 0 ? (
+          <View style={{ marginBottom: Spacing.xl, gap: Spacing.sm }}>
+            <Text style={styles.menuSectionTitle}>Your organisations</Text>
+            {affiliations.map((a) => (
+              <TouchableOpacity
+                key={a.organisationId}
+                style={styles.infoCard}
+                activeOpacity={0.75}
+                onPress={() => setNetworkDetailOrg(a.org)}
+                accessibilityRole="button"
+                accessibilityLabel={"Open details for " + (a.org.name ?? "organisation")}
+              >
+                {a.logoPublicUrl ? (
+                  <Image source={{ uri: a.logoPublicUrl }} style={styles.orgThumbImage} />
+                ) : (
+                  <View
+                    style={[
+                      styles.orgThumbImage,
+                      styles.orgThumbPlaceholder,
+                      a.org.org_type === "enterprise"
+                        ? styles.orgThumbPlaceholderEnt
+                        : styles.orgThumbPlaceholderCom,
+                    ]}
+                  >
+                    <Ionicons
+                      name={a.org.org_type === "enterprise" ? "business-outline" : "people-outline"}
+                      size={22}
+                      color={a.org.org_type === "enterprise" ? Colors.primary : Colors.info}
+                    />
+                  </View>
+                )}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.infoLabel}>Organisation</Text>
+                  <Text style={styles.infoValue}>{a.org.name?.trim() || orgDomain}</Text>
+                  <Text style={styles.orgSubValue}>
+                    {a.org.org_type === "enterprise"
+                      ? "Verified organization member"
+                      : "Community network member"}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
+              </TouchableOpacity>
+            ))}
+          </View>
         ) : (
           <View style={styles.infoCard}>
             <Ionicons name="business-outline" size={20} color={Colors.primary} />
@@ -632,13 +696,17 @@ export default function Profile() {
       </ScrollView>
 
       <WorkplaceNetworkDetailsModal
-        visible={workplaceNetworkModal !== null}
-        onClose={() => setWorkplaceNetworkModal(null)}
-        variant={workplaceNetworkModal === "community" ? "community" : "enterprise"}
-        org={org}
-        orgMemberCount={orgMemberCount}
-        planLabel={orgPlanLabel}
-        logoPublicUrl={orgLogoUri}
+        visible={networkDetailOrg !== null}
+        onClose={() => setNetworkDetailOrg(null)}
+        variant={networkDetailOrg?.org_type === "enterprise" ? "enterprise" : "community"}
+        org={networkDetailOrg}
+        orgMemberCount={
+          networkDetailOrg
+            ? affiliations.find((x) => x.organisationId === networkDetailOrg.id)?.memberCount ?? 0
+            : 0
+        }
+        planLabel={detailOrgPlanLabel}
+        logoPublicUrl={networkDetailOrg ? getOrganisationLogoPublicUrl(networkDetailOrg) : null}
       />
     </SafeAreaView>
   );
@@ -728,6 +796,25 @@ const styles = StyleSheet.create({
   completionBarFill: { height: "100%", backgroundColor: Colors.primary, borderRadius: 3 },
   completionItem: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, paddingVertical: 3 },
   completionItemText: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  payoutCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.md,
+    padding: Spacing.base,
+    marginBottom: Spacing.lg,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadow.sm,
+  },
+  travelRecoveryHead: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.text,
+    marginTop: Spacing.xs,
+    lineHeight: 20,
+  },
   statsRow: { flexDirection: "row", backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.base, marginBottom: Spacing.lg, borderWidth: 1, borderColor: Colors.border, ...Shadow.sm },
   stat: { flex: 1, alignItems: "center" },
   statValue: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.text },

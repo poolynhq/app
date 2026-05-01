@@ -37,12 +37,19 @@ function inviteCodeFromData(data: unknown): string {
   return raw.trim().toUpperCase().slice(0, 8);
 }
 
+function jsonStringField(data: unknown, key: string): string {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return "";
+  const v = (data as Record<string, unknown>)[key];
+  return typeof v === "string" ? v.trim() : "";
+}
+
 export default function ActivityScreen() {
   const router = useRouter();
   const [rows, setRows] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [respondingId, setRespondingId] = useState<string | null>(null);
 
   useEffect(() => {
     void AsyncStorage.getItem(ACTIVITY_DISMISSED_KEY).then((raw) => {
@@ -122,6 +129,39 @@ export default function ActivityScreen() {
   async function markRead(id: string) {
     await supabase.from("notifications").update({ read: true }).eq("id", id);
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, read: true } : r)));
+  }
+
+  async function respondCorridorIntro(item: Notification, accept: boolean) {
+    const rid = jsonStringField(item.data, "request_id");
+    if (!rid) {
+      showAlert("Error", "Missing request.");
+      return;
+    }
+    setRespondingId(item.id);
+    try {
+      const { data, error } = await supabase.rpc("poolyn_respond_corridor_intro_request", {
+        p_request_id: rid,
+        p_accept: accept,
+      });
+      const payload = data as { ok?: boolean } | null;
+      if (error || !payload?.ok) {
+        showAlert("Could not update", error?.message ?? "Try again.");
+        return;
+      }
+      await markRead(item.id);
+      await load();
+      if (accept) {
+        const fromUid = jsonStringField(item.data, "from_user_id");
+        if (fromUid) {
+          router.push({
+            pathname: "/(tabs)/profile/corridor-thread/[peerId]",
+            params: { peerId: fromUid },
+          });
+        }
+      }
+    } finally {
+      setRespondingId(null);
+    }
   }
 
   function openJoinInvite(item: Notification) {
@@ -207,70 +247,133 @@ export default function ActivityScreen() {
             item.type === "adhoc_driver_removed_you" ||
             item.type === "adhoc_trip_cancelled_by_driver" ||
             item.type === "adhoc_you_cancelled_seat";
+          const isCorridorIntroRequest = item.type === "corridor_intro_request";
+          const isCorridorIntroAccepted = item.type === "corridor_intro_accepted";
+          const isCorridorIntroDeclined = item.type === "corridor_intro_declined";
+          const isCorridorDm = item.type === "corridor_dm_message";
           const summary = summarizeActivityNotification({
             type: item.type,
             title: item.title,
             body: item.body,
           });
           const cta = shortActivityCta({ type: item.type });
+          const busy = respondingId === item.id;
           return (
-            <View style={[styles.row, !item.read && styles.rowUnread]}>
-              {!item.read ? <View style={styles.unreadDot} /> : null}
-              <TouchableOpacity
-                style={styles.rowTextCol}
-                accessibilityHint={cta ?? undefined}
-                onPress={() => {
-                  if (isJoinInvite) {
-                    openJoinInvite(item);
-                    return;
+            <View style={[styles.rowWrap, !item.read && styles.rowUnread]}>
+              <View style={styles.rowInner}>
+                {!item.read ? <View style={styles.unreadDot} /> : null}
+                <TouchableOpacity
+                  style={styles.rowTextCol}
+                  accessibilityHint={
+                    isCorridorIntroRequest ? "Use Accept or Decline below" : (cta ?? undefined)
                   }
-                  if (isRideRequest) {
+                  onPress={() => {
+                    if (isJoinInvite) {
+                      openJoinInvite(item);
+                      return;
+                    }
+                    if (isRideRequest) {
+                      void markRead(item.id);
+                      router.push("/(tabs)/rides?tab=open");
+                      return;
+                    }
+                    if (isRideAccepted) {
+                      void markRead(item.id);
+                      router.push("/(tabs)/rides");
+                      return;
+                    }
+                    if (isCrewTripStarted) {
+                      void markRead(item.id);
+                      router.push("/(tabs)/home");
+                      return;
+                    }
+                    if (isContributionUpdated) {
+                      void markRead(item.id);
+                      router.push("/(tabs)/rides");
+                      return;
+                    }
+                    if (isAdhocSeatOrTrip) {
+                      void markRead(item.id);
+                      router.push("/(tabs)/rides");
+                      return;
+                    }
+                    if (isCorridorIntroRequest) {
+                      void markRead(item.id);
+                      return;
+                    }
+                    if (isCorridorIntroAccepted) {
+                      void markRead(item.id);
+                      const peer = jsonStringField(item.data, "peer_user_id");
+                      if (peer) {
+                        router.push({
+                          pathname: "/(tabs)/profile/corridor-thread/[peerId]",
+                          params: { peerId: peer },
+                        });
+                      }
+                      return;
+                    }
+                    if (isCorridorDm) {
+                      void markRead(item.id);
+                      const peer = jsonStringField(item.data, "from_user_id");
+                      if (peer) {
+                        router.push({
+                          pathname: "/(tabs)/profile/corridor-thread/[peerId]",
+                          params: { peerId: peer },
+                        });
+                      }
+                      return;
+                    }
+                    if (isCorridorIntroDeclined) {
+                      void markRead(item.id);
+                      return;
+                    }
                     void markRead(item.id);
-                    router.push("/(tabs)/rides?tab=open");
-                    return;
-                  }
-                  if (isRideAccepted) {
-                    void markRead(item.id);
-                    router.push("/(tabs)/rides");
-                    return;
-                  }
-                  if (isCrewTripStarted) {
-                    void markRead(item.id);
-                    router.push("/(tabs)/home");
-                    return;
-                  }
-                  if (isContributionUpdated) {
-                    void markRead(item.id);
-                    router.push("/(tabs)/rides");
-                    return;
-                  }
-                  if (isAdhocSeatOrTrip) {
-                    void markRead(item.id);
-                    router.push("/(tabs)/rides");
-                    return;
-                  }
-                  void markRead(item.id);
-                }}
-                activeOpacity={0.75}
-              >
-                <Text style={styles.rowTitle}>{summary.title}</Text>
-                {summary.body ? (
-                  <Text style={styles.rowBody} numberOfLines={4}>
-                    {summary.body}
-                  </Text>
-                ) : null}
-                <Text style={styles.rowMeta}>{new Date(item.created_at).toLocaleString()}</Text>
-                {cta ? <Text style={styles.rowCta}>{cta}</Text> : null}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.dismissBtn}
-                onPress={() => void dismissNotification(item.id)}
-                accessibilityRole="button"
-                accessibilityLabel="Dismiss"
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Ionicons name="close-circle-outline" size={22} color={Colors.textTertiary} />
-              </TouchableOpacity>
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={styles.rowTitle}>{summary.title}</Text>
+                  {summary.body ? (
+                    <Text style={styles.rowBody} numberOfLines={4}>
+                      {summary.body}
+                    </Text>
+                  ) : null}
+                  <Text style={styles.rowMeta}>{new Date(item.created_at).toLocaleString()}</Text>
+                  {cta ? <Text style={styles.rowCta}>{cta}</Text> : null}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.dismissBtn}
+                  onPress={() => void dismissNotification(item.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Dismiss"
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Ionicons name="close-circle-outline" size={22} color={Colors.textTertiary} />
+                </TouchableOpacity>
+              </View>
+              {isCorridorIntroRequest ? (
+                <View style={styles.corridorActions}>
+                  <TouchableOpacity
+                    style={[styles.corridorBtn, styles.corridorAccept]}
+                    disabled={busy}
+                    onPress={() => void respondCorridorIntro(item, true)}
+                    activeOpacity={0.85}
+                  >
+                    {busy ? (
+                      <ActivityIndicator color={Colors.textOnPrimary} />
+                    ) : (
+                      <Text style={[styles.corridorBtnText, styles.corridorAcceptText]}>Accept</Text>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.corridorBtn, styles.corridorDecline]}
+                    disabled={busy}
+                    onPress={() => void respondCorridorIntro(item, false)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.corridorBtnText, styles.corridorDeclineText]}>Decline</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
             </View>
           );
         }}
@@ -283,16 +386,16 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   listContent: { padding: Spacing.xl, paddingBottom: Spacing["4xl"] },
-  row: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    padding: Spacing.md,
+  rowWrap: {
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
     marginBottom: Spacing.sm,
+    padding: Spacing.md,
+    paddingBottom: Spacing.sm,
   },
+  rowInner: { flexDirection: "row", alignItems: "flex-start" },
   rowUnread: { borderColor: Colors.primary },
   rowTextCol: { flex: 1, minWidth: 0 },
   dismissBtn: { paddingTop: 2, marginLeft: Spacing.xs },
@@ -310,6 +413,28 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     marginTop: Spacing.sm,
   },
+  corridorActions: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  corridorBtn: {
+    flex: 1,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 40,
+  },
+  corridorAccept: { backgroundColor: Colors.primary },
+  corridorDecline: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  corridorBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  corridorAcceptText: { color: Colors.textOnPrimary },
+  corridorDeclineText: { color: Colors.textSecondary },
   unreadDot: {
     width: 8,
     height: 8,

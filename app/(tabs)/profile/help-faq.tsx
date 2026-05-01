@@ -50,6 +50,10 @@ const FAQ_SECTIONS: FaqSection[] = [
         q: "How do listed trips differ from Crew Poolyn for payment?",
         a: "Listed (ad-hoc) trips in My Rides charge your saved card for that booking. Crew Poolyn uses trip settlement balances so each rider's share is tracked for the crew run; that is trip accounting between confirmed participants, not a prepaid balance you load and spend like a wallet.",
       },
+      {
+        q: "When do I need Stripe Connect or bank details?",
+        a: "Only when you want to receive money from a trip you host (for example posting a dated trip that colleagues pay for by card). Riders pay with a normal card flow and do not complete Connect onboarding. Open Profile, Trip payouts, when you are ready.",
+      },
     ],
   },
   {
@@ -149,7 +153,7 @@ export default function HelpFaqScreen() {
           <Ionicons name="help-buoy-outline" size={40} color={Colors.primary} />
           <Text style={styles.heroTitle}>How can we help?</Text>
           <Text style={styles.heroSubtitle}>
-            Find answers to common questions about Poolyn below. Can't find what you need? Contact us at{" "}
+            Find answers to common questions about Poolyn below. Can&apos;t find what you need? Contact us at{" "}
             <Text style={styles.link}>poolynhq@gmail.com</Text>
             {" "}(same inbox as Contact us on Home).
           </Text>

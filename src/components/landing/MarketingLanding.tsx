@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Svg, { Path as SvgPath } from "react-native-svg";
 import type { ImageSourcePropType } from "react-native";
 import {
   Animated,
@@ -18,7 +19,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Link, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import { FontAwesome5, Ionicons } from "@expo/vector-icons";
 import {
   BorderRadius,
   Colors,
@@ -72,8 +73,31 @@ const SECTION_BLOCK_PAD_V = 60;
 const SECTION_EYEBROW_MARGIN_BOTTOM = 8;
 const COMMUNITY_SIDE_BY_SIDE_MIN_WIDTH = 1200;
 
+/**
+ * Hero background photo tuning (web only).
+ * HERO_BG_MIN_HEIGHT: minimum pixel height of the hero section.
+ * HERO_BG_POSITION: CSS object-position "X Y".
+ *   X: left | center | right  or  0%-100% (0% = left edge, 100% = right edge)
+ *   Y: 0% = top of photo, 50% = centre, 100% = bottom
+ * Example: "center 30%" shows the photo 30% down from the top.
+ */
+const HERO_BG_MIN_HEIGHT = 520;
+const HERO_BG_POSITION = "center 20%";
+
 const FOOTER_SWEEP_ICON = 60;
 const FOOTER_SWEEP_DURATION_MS = 17000;
+
+/** Official X (formerly Twitter) logo mark as SVG — no icon-font approximation. */
+function XLogo({ size = 20, color }: { size?: number; color: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <SvgPath
+        d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.74l7.73-8.835L1.254 2.25H8.08l4.253 5.622zm-1.161 17.52h1.833L7.084 4.126H5.117z"
+        fill={color}
+      />
+    </Svg>
+  );
+}
 
 function FooterFaviconSweep({
   sweepWidth,
@@ -221,6 +245,18 @@ export default function MarketingLanding() {
           ? 108
           : 184;
 
+  // Inject CSS for hero background image positioning on web.
+  // objectPosition in imageStyle is silently ignored by React Native Web;
+  // raw CSS on the underlying img element is the only reliable approach.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const el = document.createElement("style");
+    el.id = "poolyn-hero-bg-pos";
+    el.textContent = `[data-testid="heroBg"] img { object-position: ${HERO_BG_POSITION} !important; }`;
+    document.head.appendChild(el);
+    return () => { el.remove(); };
+  }, []);
+
   // Web: full-width content (no narrow centered column).
   const webContentLayout =
     Platform.OS === "web" ? ({ width: "100%", alignSelf: "stretch" } as const) : null;
@@ -242,6 +278,7 @@ export default function MarketingLanding() {
             source={heroBackground}
             style={styles.heroBg}
             imageStyle={styles.heroBgImage}
+            testID="heroBg"
           >
             <LinearGradient
               colors={LandingGradients.heroPhotoOverlay}
@@ -296,7 +333,7 @@ export default function MarketingLanding() {
                       <Text style={styles.navLinkOnHero}>How it works</Text>
                     </Pressable>
                     <Pressable onPress={() => jump("features")} hitSlop={6}>
-                      <Text style={styles.navLinkOnHero}>Differentiators</Text>
+                      <Text style={styles.navLinkOnHero}>Why Poolyn</Text>
                     </Pressable>
                     <Pressable onPress={() => jump("impact")} hitSlop={6}>
                       <Text style={styles.navLinkOnHero}>Impact</Text>
@@ -322,7 +359,7 @@ export default function MarketingLanding() {
                           style={[styles.navCtaText, styles.navCtaTextCompact]}
                           numberOfLines={1}
                         >
-                          Join the waitlist
+                          Get early access
                         </Text>
                       </Pressable>
                       <Pressable
@@ -351,7 +388,7 @@ export default function MarketingLanding() {
                         style={styles.navCta}
                         onPress={() => openWaitlist()}
                       >
-                        <Text style={styles.navCtaText}>Join the waitlist</Text>
+                        <Text style={styles.navCtaText}>Get early access</Text>
                       </Pressable>
                     </>
                   )}
@@ -386,8 +423,8 @@ export default function MarketingLanding() {
                     isWide && Platform.OS === "web" && styles.heroTitleLgWeb,
                   ]}
                 >
-                  Stop driving alone.{"\n"}
-                  <Text style={styles.heroTitleAccent}>Start commuting smarter.</Text>
+                  You drive to work alone.{"\n"}
+                  <Text style={styles.heroTitleAccent}>Why pay for empty seats?</Text>
                 </Text>
                 <Text
                   style={[
@@ -395,16 +432,14 @@ export default function MarketingLanding() {
                     isWide && Platform.OS === "web" && styles.heroSubLgWeb,
                   ]}
                 >
-                  Poolyn connects verified professionals who share routes and
-                  schedules, cutting costs, congestion, and carbon. Aligned by
-                  route. Synced by schedule.
+                  Cut your commute cost.{"\n"}Share the ride with people on your route.
                 </Text>
                 <View style={styles.heroBtnRow}>
                   <Pressable
                     style={styles.heroPrimary}
                     onPress={() => openWaitlist()}
                   >
-                    <Text style={styles.heroPrimaryText}>Join the waitlist</Text>
+                    <Text style={styles.heroPrimaryText}>Find my commute match</Text>
                     <Ionicons name="arrow-forward" size={18} color={Landing.onOrange} />
                   </Pressable>
                   <Pressable
@@ -425,6 +460,44 @@ export default function MarketingLanding() {
             </View>
           </ImageBackground>
         </View>
+
+        {/* Video: See Poolyn in action */}
+        {Platform.OS === "web" ? (
+          <View style={styles.videoSectionBleed}>
+            <View
+              style={[
+                styles.landingShell,
+                styles.sectionPadV,
+                { paddingHorizontal: contentPad },
+              ]}
+            >
+              <Text style={[styles.eyebrow, styles.eyebrowCenter]}>Watch</Text>
+              <Text style={[styles.sectionH1, styles.sectionH1CenterText]}>
+                See Poolyn in{" "}
+                <Text style={styles.sectionH1Leaf}>action</Text>
+              </Text>
+              <Text style={[styles.sectionLead, styles.sectionLeadCenter]}>
+                Two minutes. See why professionals are rethinking how they commute.
+              </Text>
+              <View style={styles.videoWrapOuter}>
+                {createElement("iframe", {
+                  src: "https://www.youtube.com/embed/jTdcCebsoSM?rel=0&modestbranding=1",
+                  title: "Poolyn — smarter commuting for professionals",
+                  allow:
+                    "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
+                  allowFullScreen: true,
+                  style: {
+                    width: "100%",
+                    aspectRatio: "16 / 9",
+                    border: "none",
+                    borderRadius: 16,
+                    display: "block",
+                  },
+                })}
+              </View>
+            </View>
+          </View>
+        ) : null}
 
         {/* How it works */}
         <View onLayout={(e) => mark("how", e)} style={styles.sectionBleedWhite}>
@@ -514,9 +587,9 @@ export default function MarketingLanding() {
               body="Fair splits that account for distance, detours, tolls, and passenger count."
             />
             <FeatureCard
-              icon="ribbon-outline"
-              title="Poolyn credits for drivers"
-              body="Driving earns in-app Poolyn credits for future rides: flexible, not awkward."
+              icon="calendar-outline"
+              title="Plan trips in advance"
+              body="Plan getaways, road trips, and work events with colleagues. Ad-hoc or recurring, sorted."
             />
             <FeatureCard
               icon="happy-outline"
@@ -602,9 +675,9 @@ export default function MarketingLanding() {
                     small talk.
                   </Text>
                   <View style={styles.commMiniGrid}>
-                    <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
-                    <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
-                    <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
+                    <CommMini icon="aperture-outline" title="Spin the wheel, pick your driver" body="Multiple drivers in your group? Let the in-app spin wheel decide fairly and keep things fun." />
+                    <CommMini icon="chatbubbles-outline" title="Your podcast, but better" body="Skip the solo earbuds. Share interesting takes, swap recommendations, and actually talk on the way in." />
+                    <CommMini icon="musical-notes-outline" title="Your own karaoke crew" body="Share your playlist and turn the morning commute into a sing-along. Your car, your vibe." />
                     <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
                   </View>
                 </View>
@@ -645,9 +718,9 @@ export default function MarketingLanding() {
                   </View>
                 </LinearGradient>
                 <View style={[styles.commMiniGrid, styles.commMiniGridBelowArt]}>
-                  <CommMini icon="dice-outline" title="Roll the dice or spin the wheel" body="Multiple drivers? Let the app pick fairly." />
-                  <CommMini icon="chatbubbles-outline" title="Talking points" body="Optional icebreakers for meaningful conversations." />
-                  <CommMini icon="musical-notes-outline" title="Shared audio" body="Vote on playlists and podcasts together." />
+                  <CommMini icon="aperture-outline" title="Spin the wheel, pick your driver" body="Multiple drivers in your group? Let the in-app spin wheel decide fairly and keep things fun." />
+                  <CommMini icon="chatbubbles-outline" title="Your podcast, but better" body="Skip the solo earbuds. Share interesting takes, swap recommendations, and actually talk on the way in." />
+                  <CommMini icon="musical-notes-outline" title="Your own karaoke crew" body="Share your playlist and turn the morning commute into a sing-along. Your car, your vibe." />
                   <CommMini icon="game-controller-outline" title="Gamified rides" body="Badges and perks the more you ride together." />
                 </View>
               </>
@@ -786,16 +859,16 @@ export default function MarketingLanding() {
             ]}
           >
           <Text style={styles.finalTitleLight}>
-            Your commute is already shared. You&apos;re just not using it yet.
+            Your seat is already waiting. You just have to claim it.
           </Text>
           <Text style={styles.finalSubLight}>
-            Be among the first to experience smarter commuting with Poolyn.
+            Hundreds of professionals are already on the list. Don&apos;t be the last one on your route.
           </Text>
           <Pressable
             style={styles.finalCtaSolid}
             onPress={() => openWaitlist()}
           >
-            <Text style={styles.finalCtaSolidText}>Join the waitlist</Text>
+            <Text style={styles.finalCtaSolidText}>Find my commute match</Text>
             <Ionicons name="arrow-forward" size={18} color={Landing.white} />
           </Pressable>
           </View>
@@ -848,42 +921,58 @@ export default function MarketingLanding() {
             <Pressable
               accessibilityLabel="Poolyn on LinkedIn"
               onPress={() =>
-                Linking.openURL("https://www.linkedin.com/company/poolyn")
+                Linking.openURL("https://www.linkedin.com/company/poolyn/?viewAsMember=true")
               }
               hitSlop={8}
               style={styles.footerSocialHit}
             >
-              <Ionicons
-                name="logo-linkedin"
-                size={24}
-                color="rgba(255,255,255,0.88)"
-              />
+              <Ionicons name="logo-linkedin" size={24} color="rgba(255,255,255,0.88)" />
             </Pressable>
             <Pressable
-              accessibilityLabel="Poolyn on X"
-              onPress={() => Linking.openURL("https://x.com/poolyn")}
+              accessibilityLabel="Poolyn on YouTube"
+              onPress={() => Linking.openURL("https://www.youtube.com/@CAR-Poolyn")}
               hitSlop={8}
               style={styles.footerSocialHit}
             >
-              <Ionicons
-                name="logo-twitter"
-                size={22}
-                color="rgba(255,255,255,0.88)"
-              />
+              <Ionicons name="logo-youtube" size={25} color="rgba(255,255,255,0.88)" />
             </Pressable>
             <Pressable
               accessibilityLabel="Poolyn on Instagram"
               onPress={() =>
-                Linking.openURL("https://www.instagram.com/poolyn")
+                Linking.openURL(
+                  "https://www.instagram.com/joinpoolyn?igsh=MTYxMXA4emFuYmE5NA%3D%3D"
+                )
               }
               hitSlop={8}
               style={styles.footerSocialHit}
             >
-              <Ionicons
-                name="logo-instagram"
-                size={24}
-                color="rgba(255,255,255,0.88)"
-              />
+              <Ionicons name="logo-instagram" size={24} color="rgba(255,255,255,0.88)" />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Poolyn on Facebook"
+              onPress={() =>
+                Linking.openURL("https://www.facebook.com/profile.php?id=61574365387986")
+              }
+              hitSlop={8}
+              style={styles.footerSocialHit}
+            >
+              <Ionicons name="logo-facebook" size={24} color="rgba(255,255,255,0.88)" />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Poolyn on TikTok"
+              onPress={() => Linking.openURL("https://www.tiktok.com/@car_poolyn")}
+              hitSlop={8}
+              style={styles.footerSocialHit}
+            >
+              <FontAwesome5 name="tiktok" size={20} color="rgba(255,255,255,0.88)" />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Poolyn on X"
+              onPress={() => Linking.openURL("https://x.com/JoinPoolyn")}
+              hitSlop={8}
+              style={styles.footerSocialHit}
+            >
+              <XLogo size={20} color="rgba(255,255,255,0.88)" />
             </Pressable>
           </View>
           <View style={styles.footerRow}>
@@ -939,7 +1028,7 @@ export default function MarketingLanding() {
               style={styles.heroMenuRow}
               onPress={() => jumpFromHeroMenu("features")}
             >
-              <Text style={styles.heroMenuLink}>Differentiators</Text>
+              <Text style={styles.heroMenuLink}>Why Poolyn</Text>
             </Pressable>
             <Pressable
               style={styles.heroMenuRow}
@@ -1398,8 +1487,10 @@ const styles = StyleSheet.create({
     color: Landing.white,
   },
 
-  heroWrap: { minHeight: 580 },
-  heroBg: { minHeight: 580, width: "100%", justifyContent: "flex-end" },
+  heroWrap: { minHeight: HERO_BG_MIN_HEIGHT },
+  heroBg: { minHeight: HERO_BG_MIN_HEIGHT, width: "100%", justifyContent: "flex-end" },
+  // object-position is applied via CSS injection in useEffect (objectPosition in
+  // imageStyle is silently dropped by React Native Web's style converter).
   heroBgImage: { resizeMode: "cover" },
   heroInner: { paddingBottom: 48 },
   badgeRow: {
@@ -1435,14 +1526,14 @@ const styles = StyleSheet.create({
   heroTitle: {
     fontFamily: LandingFont.displayBold,
     color: Landing.white,
-    fontSize: 40,
-    lineHeight: 46,
-    letterSpacing: Platform.OS === "web" ? -1.1 : -0.3,
+    fontSize: 46,
+    lineHeight: 52,
+    letterSpacing: Platform.OS === "web" ? -1.2 : -0.4,
   },
   heroTitleLgWeb: {
-    fontSize: 48,
-    lineHeight: 54,
-    letterSpacing: -1.15,
+    fontSize: 58,
+    lineHeight: 64,
+    letterSpacing: -1.4,
   },
   heroTitleAccent: { color: Landing.orange },
   heroSub: {
@@ -1995,6 +2086,24 @@ const styles = StyleSheet.create({
     color: Landing.subtle,
     marginTop: Spacing.sm,
     lineHeight: 18,
+  },
+
+  videoSectionBleed: {
+    width: "100%",
+    backgroundColor: Landing.sectionAlt,
+  },
+  videoWrapOuter: {
+    width: "100%",
+    maxWidth: 820,
+    alignSelf: "center",
+    borderRadius: 16,
+    overflow: "hidden",
+    ...Platform.select({
+      web: {
+        boxShadow: "0 8px 48px rgba(0,0,0,0.13)",
+      } as object,
+      default: Shadow.lg,
+    }),
   },
 
   finalBleed: {
